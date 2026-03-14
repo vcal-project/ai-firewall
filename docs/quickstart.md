@@ -73,8 +73,14 @@ http://localhost:3000
 
 ### Verifying the Container Image (Optional)
 
-The `vcalproject/ai-firewall` container image is signed with Cosign.
+The `vcalproject/ai-firewall:vx.x.x` container image is signed with Cosign.
 If you want to verify the integrity and authenticity of the image before running it, you can check the signature using the public key provided in this repository.
+
+Public key:
+
+```text
+https://raw.githubusercontent.com/vcal-project/ai-firewall/main/security/cosign.pub
+```
 
 Example:
 
