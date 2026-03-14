@@ -1,0 +1,24 @@
+# Rust
+/target/
+
+# Environment files
+.env
+.env.*
+
+# Local configuration with secrets
+configs/*.conf
+!configs/ai-firewall.conf.example
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.swp

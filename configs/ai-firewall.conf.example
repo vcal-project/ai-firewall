@@ -1,0 +1,29 @@
+listen_addr 0.0.0.0:8080;
+
+redis_url redis://redis:6379;
+
+upstream_base_url https://api.openai.com;
+upstream_api_key sk-your-api-key;
+
+embedding_base_url https://api.openai.com;
+embedding_api_key sk-your-api-key;
+embedding_model text-embedding-3-small;
+
+qdrant_url http://qdrant:6334;
+qdrant_collection aif_semantic_cache;
+qdrant_vector_size 1536;
+
+cache_ttl_seconds 2592000;
+request_timeout_seconds 120;
+
+semantic_cache_enabled true;
+semantic_similarity_threshold 0.92;
+
+# Chat-completion pricing (USD per 1M tokens)
+# model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
+
+model_price gpt-4o-mini 0.15 0.60;
+model_price gpt-4.1-mini 0.30 1.20;
+
+# These prices affect only aif_cost_saved_micro_usd.
+# Embedding costs are not yet included in v0.1.0.

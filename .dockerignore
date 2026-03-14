@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+
+# Rust build artifacts
+target/
+
+# Local configs and secrets
+configs/
+.env
+.env.*
+
+# Development artifacts
+.vscode
+.idea
+
+# Documentation and examples
+docs/
+examples/
+tests/
+
+# Temporary files
+*.log
+*.tmp
