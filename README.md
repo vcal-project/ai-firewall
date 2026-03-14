@@ -291,7 +291,7 @@ Contributions are welcome.
 If you would like to contribute to AI Cost Firewall — whether through bug reports, feature suggestions, documentation improvements, or code —
 please see:
 
-docs/CONTRIBUTING.md
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 
 Before submitting a pull request, please open an issue to discuss the change.
 
