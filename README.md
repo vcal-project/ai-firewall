@@ -119,7 +119,7 @@ gpt-4o-mini-2024-07-18
 Download the Docker Compose file:
 
 ```bash
-curl -L https://raw.githubusercontent.com/vcal-project/ai-firewall/main/deploy/docker-compose.yml -o docker-compose.yml
+curl -L https://raw.githubusercontent.com/vcal-project/ai-firewall/main/docker-compose.yml -o docker-compose.yml
 ```
 
 Start the stack:
