@@ -40,6 +40,17 @@ The firewall behaves similarly to "nginx for LLM APIs".
 
 ---
 
+## Example: Cost Savings in Action
+
+**95.6% hit rate • $10.5 saved in 30 minutes • Redis + Qdrant**
+
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard.png)](assets/grafana/dashboard.png)
+
+*Local synthetic workload simulating internal support queries.  
+Exact + semantic caching eliminates repeated LLM calls and reduces cost in real time.*
+
+---
+
 # Key Features
 
 -   OpenAI-compatible `/v1/chat/completions` endpoint
@@ -94,35 +105,33 @@ docker --version
 docker compose version
 ```
 
-## Download configuration
+## Clone the repository
 
-Download the example configuration:
-
-```bash
-curl -L https://raw.githubusercontent.com/vcal-project/ai-firewall/main/configs/ai-firewall.conf.example -o ai-firewall.conf
-```
-
-Edit the file and add your API keys:
+Clone the repository and prepare the configuration:
 
 ```bash
-nano ai-firewall.conf
+git clone https://github.com/vcal-project/ai-firewall.git
+cd ai-firewall
+cp configs/ai-firewall.conf.example configs/ai-firewall.conf
 ```
 
-You must specify the exact model names returned by the API, for example:
+Edit the configuration file and add your API keys:
+
+```bash
+nano configs/ai-firewall.conf
+```
+
+You should also specify the exact model names returned by your LLM provider (used for cost calculation), for example:
 
 ```text
 gpt-4o-mini-2024-07-18
 ```
 
-## Run Docker Compose
+> The repository already includes all required Prometheus and Grafana configuration 
 
-Download the Docker Compose file:
+## Start the stack
 
-```bash
-curl -L https://raw.githubusercontent.com/vcal-project/ai-firewall/main/docker-compose.yml -o docker-compose.yml
-```
-
-Start the stack:
+This will start the full stack (Firewall, Redis, Qdrant, Prometheus, Grafana):
 
 ```bash
 ```bash
@@ -130,7 +139,8 @@ docker compose pull
 docker compose up -d
 ```
 
-View logs:
+## View logs
+
 ```bash
 docker compose logs -f firewall
 ```
