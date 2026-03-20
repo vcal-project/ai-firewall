@@ -20,37 +20,29 @@ OpenAI API
 
 ## Quickest Start (Docker)
 
-If you want to quickly test the firewall, the easiest method is using Docker Compose:
+If you want to quickly test the firewall, the easiest method is cloning the repository and using Docker Compose:
+
+Clone the repository and prepare the configuration:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-This starts:
-
-- Redis
-- Qdrant
-- AI Cost Firewall
-- Prometheus
-- Grafana
-
-You only need to edit:
-
-```text
-configs/ai-firewall.conf
-```
-
-Copy the example configuration:
-
-```bash
+git clone https://github.com/vcal-project/ai-firewall.git
+cd ai-firewall
 cp configs/ai-firewall.conf.example configs/ai-firewall.conf
 ```
 
-Adjust the settings:
+Edit the configuration file and add your API keys:
 
 ```bash
 nano configs/ai-firewall.conf
 ```
+
+You should also specify the exact model names returned by your LLM provider (used for cost calculation), for example:
+
+```text
+gpt-4o-mini-2024-07-18
+```
+
+> The repository already includes all required Prometheus and Grafana configuration 
 
 After starting the stack:
 
