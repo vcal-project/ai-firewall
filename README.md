@@ -69,17 +69,7 @@ Exact + semantic caching eliminates repeated LLM calls and reduces cost in real 
 
 Client applications send requests to the firewall instead of directly to the LLM provider.
 
-```mermaid
-flowchart TD
-    C[Client / SDK] --> F[AI Cost Firewall<br/>OpenAI-compatible API gateway]
-
-    F --> R[Redis / Valkey<br/>Exact cache]
-    F --> Q[Qdrant<br/>Semantic cache]
-    F --> U[Upstream LLM API<br/>OpenAI-compatible]
-
-    F --> P[Prometheus]
-    P --> G[Grafana]
-```
+[![AI Cost Firewall Architecture Diasgram](assets/architecture/ai-cost-firewall-diagram.png)](assets/architecture/ai-cost-firewall-diagram.png)
 
 Full architecture documentation:
 
