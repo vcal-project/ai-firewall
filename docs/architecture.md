@@ -229,41 +229,66 @@ The result is then stored in both caches.
 
 # Request Flow
 
+## Exact Cache Hit (Redis / Valkey)
+
 ```mermaid
 flowchart LR
 
     Client[Client Application]
-
     Firewall[AI Cost Firewall]
-
     Redis[Redis / Valkey<br/>Exact Cache]
 
-    Qdrant[Qdrant<br/>Semantic Cache]
-
-    Upstream[LLM Provider<br/>OpenAI API]
-
-    Metrics[Prometheus Metrics]
-
-    Cost[Cost Savings<br/>Tokens + USD]
-
     Client --> Firewall
-
     Firewall --> Redis
     Redis -->|Exact hit| Firewall
+    Firewall --> Client
+```
+
+## Semantic Cache Hit (Qdrant)
+
+```mermaid
+flowchart LR
+
+    Client[Client Application]
+    Firewall[AI Cost Firewall]
+    Redis[Redis / Valkey<br/>Exact Cache]
+    Qdrant[Qdrant<br/>Semantic Cache]
+
+    Client --> Firewall
+    Firewall --> Redis
+    Redis -->|Miss| Firewall
 
     Firewall --> Qdrant
     Qdrant -->|Semantic hit| Firewall
 
-    Firewall -->|Cache miss| Upstream
+    Firewall --> Client
+```
+## Cache Miss (Upstream LLM)
+
+```mermaid
+flowchart LR
+
+    Client[Client Application]
+    Firewall[AI Cost Firewall]
+    Redis[Redis / Valkey<br/>Exact Cache]
+    Qdrant[Qdrant<br/>Semantic Cache]
+    Upstream[LLM Provider<br/>OpenAI API]
+
+    Client --> Firewall
+
+    Firewall --> Redis
+    Redis -->|Miss| Firewall
+
+    Firewall --> Qdrant
+    Qdrant -->|Miss| Firewall
+
+    Firewall --> Upstream
     Upstream -->|Response| Firewall
 
     Firewall -->|Store exact response| Redis
     Firewall -->|Store embedding + response| Qdrant
 
     Firewall --> Client
-
-    Firewall --> Metrics
-    Metrics --> Cost
 ```
 
 ---
