@@ -124,7 +124,6 @@ gpt-4o-mini-2024-07-18
 This will start the full stack (Firewall, Redis, Qdrant, Prometheus, Grafana):
 
 ```bash
-```bash
 docker compose pull
 docker compose up -d
 ```
