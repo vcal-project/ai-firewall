@@ -61,14 +61,12 @@ semantic_similarity_threshold 0.92;
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 
-# These prices affect only aif_cost_saved_micro_usd.
-# Embedding costs are not yet included in v0.1.0.
+embedding_price 0.020;
 ```
 
 Note: AI Cost Firewall uses the Qdrant gRPC interface by default, which runs on port `6334`.
 The REST API port (`6333`) is not used by the firewall.
 
-> Note: `model_price` matching is **exact** in v0.1.0.
 If the upstream API returns a versioned model name such as `gpt-4o-mini-2024-07-18`, that exact name must be present in the configuration for `aif_cost_saved_micro_usd` to be calculated.
 
 This configuration is sufficient to run the firewall with Redis, Qdrant, and OpenAI APIs using the default Docker Compose setup.
@@ -97,11 +95,15 @@ Example:
 model_price gpt-4o-mini 0.15 0.60;
 ```
 
+Example:
+
+```text
+embedding_price 0.020;
+```
+
 Note:
 
 This pricing is used to estimate cost savings when a cached `/v1/chat/completions` response is reused.
-
-Embedding requests used for semantic caching are **not included** in the cost accounting in the current version.
 
 ---
 
