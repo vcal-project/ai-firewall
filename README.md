@@ -258,9 +258,10 @@ semantic_similarity_threshold 0.92;
 
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
+
+embedding_price 0.020;
 ```
 
-> `model_price` matching is **exact in v0.1.0**.  
 > If the API returns `gpt-4o-mini-2024-07-18`, the same name must appear in the configuration.
 
 Full configuration reference:
