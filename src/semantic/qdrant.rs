@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::{
     core::hashing::sha256_hex,
     embeddings::provider::EmbeddingProvider,
-    semantic::semantic_cache::SemanticCache,
+    semantic::semantic_cache::{SemanticCache, SemanticLookupHit},
     types::{openai::ChatCompletionResponse, semantic::SemanticCacheRecord},
 };
 
@@ -88,8 +88,10 @@ impl SemanticCache for QdrantSemanticCache {
         &self,
         model: &str,
         normalized_prompt: &str,
-    ) -> Result<Option<ChatCompletionResponse>> {
-        let vector = self.embedder.embed_text(normalized_prompt).await?;
+    ) -> Result<Option<SemanticLookupHit>> {
+        let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
+        let vector = embedding_result.embedding.clone();
+        let embedding_usage = embedding_result.usage.clone();
 
         let search_result = self
             .client
@@ -139,7 +141,10 @@ impl SemanticCache for QdrantSemanticCache {
                 serde_json::from_str(&raw_response).context("invalid cached semantic response")?;
 
             tracing::debug!("semantic hit with score={score:.4}");
-            return Ok(Some(parsed));
+            return Ok(Some(SemanticLookupHit {
+                response: parsed,
+                embedding_usage: embedding_usage.clone(),
+            }));
         }
 
         Ok(None)
@@ -151,7 +156,8 @@ impl SemanticCache for QdrantSemanticCache {
         normalized_prompt: &str,
         response: &ChatCompletionResponse,
     ) -> Result<()> {
-        let vector = self.embedder.embed_text(normalized_prompt).await?;
+        let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
+        let vector = embedding_result.embedding;
 
         let request_hash = sha256_hex(normalized_prompt);
 

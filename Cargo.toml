@@ -1,7 +1,8 @@
 [package]
 name = "ai-firewall"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+license = "Apache-2.0"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
@@ -22,7 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tower-http = { version = "0.6", features = ["trace"] }
 
 async-trait = "0.1"
-qdrant-client = "1.17"
+qdrant-client = "1.17.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 

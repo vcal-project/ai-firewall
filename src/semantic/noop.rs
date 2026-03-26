@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 
-use crate::{semantic::semantic_cache::SemanticCache, types::openai::ChatCompletionResponse};
+use crate::{
+    semantic::semantic_cache::{SemanticCache, SemanticLookupHit},
+    types::openai::ChatCompletionResponse,
+};
 
 pub struct NoopSemanticCache;
 
@@ -10,7 +13,7 @@ impl SemanticCache for NoopSemanticCache {
         &self,
         _model: &str,
         _normalized_prompt: &str,
-    ) -> anyhow::Result<Option<ChatCompletionResponse>> {
+    ) -> anyhow::Result<Option<SemanticLookupHit>> {
         Ok(None)
     }
 

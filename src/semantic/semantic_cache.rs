@@ -1,6 +1,12 @@
 use async_trait::async_trait;
 
-use crate::types::openai::ChatCompletionResponse;
+use crate::{embeddings::provider::EmbeddingUsage, types::openai::ChatCompletionResponse};
+
+#[derive(Debug, Clone)]
+pub struct SemanticLookupHit {
+    pub response: ChatCompletionResponse,
+    pub embedding_usage: Option<EmbeddingUsage>,
+}
 
 #[async_trait]
 pub trait SemanticCache: Send + Sync {
@@ -8,7 +14,7 @@ pub trait SemanticCache: Send + Sync {
         &self,
         model: &str,
         normalized_prompt: &str,
-    ) -> anyhow::Result<Option<ChatCompletionResponse>>;
+    ) -> anyhow::Result<Option<SemanticLookupHit>>;
 
     async fn store(
         &self,

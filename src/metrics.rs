@@ -41,10 +41,26 @@ pub static TOKENS_SAVED: Lazy<IntCounter> = Lazy::new(|| {
         .expect("metric aif_tokens_saved must be valid")
 });
 
+pub static CHAT_COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_chat_cost_saved_micro_usd",
+        "Estimated gross chat-completion cost saved in micro-USD",
+    )
+    .expect("metric aif_chat_cost_saved_micro_usd must be valid")
+});
+
+pub static EMBEDDING_COST_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_embedding_cost_micro_usd",
+        "Estimated embedding cost in micro-USD",
+    )
+    .expect("metric aif_embedding_cost_micro_usd must be valid")
+});
+
 pub static COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_cost_saved_micro_usd",
-        "Estimated cost saved in micro-USD",
+        "Estimated net cost saved in micro-USD",
     )
     .expect("metric aif_cost_saved_micro_usd must be valid")
 });
@@ -63,6 +79,8 @@ pub fn init() {
             Box::new(CACHE_MISSES.clone()),
             Box::new(UPSTREAM_CALLS.clone()),
             Box::new(TOKENS_SAVED.clone()),
+            Box::new(CHAT_COST_SAVED_MICRO_USD.clone()),
+            Box::new(EMBEDDING_COST_MICRO_USD.clone()),
             Box::new(COST_SAVED_MICRO_USD.clone()),
             Box::new(INFLIGHT_REQUESTS.clone()),
         ];

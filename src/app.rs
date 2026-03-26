@@ -72,6 +72,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
         upstream,
         cfg.semantic_cache_enabled,
         cfg.model_prices.clone(),
+        cfg.embedding_price.clone(),
     )))
 }
 

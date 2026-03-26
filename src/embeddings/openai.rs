@@ -4,7 +4,7 @@ use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use crate::embeddings::provider::EmbeddingProvider;
+use crate::embeddings::provider::{EmbeddingProvider, EmbeddingResult, EmbeddingUsage};
 
 #[derive(Clone)]
 pub struct OpenAiEmbeddingProvider {
@@ -51,17 +51,26 @@ struct EmbeddingRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct EmbeddingResponse {
     data: Vec<EmbeddingItem>,
+    #[serde(default)]
+    usage: Option<EmbeddingUsageResponse>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingUsageResponse {
+    prompt_tokens: u32,
+    total_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
 struct EmbeddingItem {
     embedding: Vec<f32>,
-    index: usize,
 }
 
 #[async_trait]
 impl EmbeddingProvider for OpenAiEmbeddingProvider {
-    async fn embed_text(&self, input: &str) -> Result<Vec<f32>> {
+    async fn embed_text(&self, input: &str) -> Result<EmbeddingResult> {
         let url = format!("{}/v1/embeddings", self.base_url.trim_end_matches('/'));
 
         let req = EmbeddingRequest {
@@ -94,9 +103,16 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
         let first = parsed
             .data
             .into_iter()
-            .min_by_key(|item| item.index)
+            .next()
             .context("embedding response contained no vectors")?;
 
-        Ok(first.embedding)
+        Ok(EmbeddingResult {
+            embedding: first.embedding,
+            usage: parsed.usage.map(|u| EmbeddingUsage {
+                prompt_tokens: u.prompt_tokens,
+                total_tokens: u.total_tokens,
+            }),
+            model: parsed.model.or_else(|| Some(self.model.clone())),
+        })
     }
 }

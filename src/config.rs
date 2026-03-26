@@ -11,6 +11,11 @@ pub struct ModelPrice {
     pub output_usd_per_1m_tokens: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct EmbeddingPrice {
+    pub usd_per_1m_tokens: f64,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub listen_addr: String,
@@ -22,6 +27,7 @@ pub struct Config {
     pub embedding_base_url: String,
     pub embedding_api_key: String,
     pub embedding_model: String,
+    pub embedding_price: Option<EmbeddingPrice>,
 
     pub qdrant_url: String,
     pub qdrant_api_key: Option<String>,
@@ -125,6 +131,16 @@ impl Config {
             }
         }
 
+        if let Some(price) = &self.embedding_price {
+            if !price.usd_per_1m_tokens.is_finite() {
+                return Err(anyhow!("embedding_price must be finite"));
+            }
+
+            if price.usd_per_1m_tokens < 0.0 {
+                return Err(anyhow!("embedding_price must be >= 0"));
+            }
+        }
+
         Ok(())
     }
 
@@ -144,6 +160,13 @@ impl Config {
                 .unwrap_or_else(|_| env::var("AIF_UPSTREAM_API_KEY").unwrap_or_default()),
             embedding_model: env::var("AIF_EMBEDDING_MODEL")
                 .unwrap_or_else(|_| "text-embedding-3-small".into()),
+
+            embedding_price: env::var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS")
+                .ok()
+                .map(|v| v.parse::<f64>())
+                .transpose()
+                .context("invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS")?
+                .map(|usd_per_1m_tokens| EmbeddingPrice { usd_per_1m_tokens }),
 
             qdrant_url: env::var("AIF_QDRANT_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:6334".into()),
@@ -204,6 +227,15 @@ impl Config {
                 .unwrap_or_else(|| map.get("upstream_api_key").cloned().unwrap_or_default()),
             embedding_model: get_or_default(&map, "embedding_model", "text-embedding-3-small"),
 
+            embedding_price: map
+                .get("embedding_price")
+                .map(|v| {
+                    v.parse::<f64>()
+                        .map(|usd_per_1m_tokens| EmbeddingPrice { usd_per_1m_tokens })
+                        .map_err(|e| anyhow!("invalid value for embedding_price: {e}"))
+                })
+                .transpose()?,
+
             qdrant_url: get_or_default(&map, "qdrant_url", "http://127.0.0.1:6334"),
             qdrant_api_key: map.get("qdrant_api_key").cloned(),
             qdrant_collection: get_or_default(&map, "qdrant_collection", "aif_semantic_cache"),
@@ -257,6 +289,7 @@ impl fmt::Debug for Config {
             .field("embedding_base_url", &self.embedding_base_url)
             .field("embedding_api_key", &mask_secret(&self.embedding_api_key))
             .field("embedding_model", &self.embedding_model)
+            .field("embedding_price", &self.embedding_price)
             .field("qdrant_url", &self.qdrant_url)
             .field(
                 "qdrant_api_key",
@@ -300,6 +333,7 @@ fn allowed_directives() -> HashSet<&'static str> {
         "embedding_base_url",
         "embedding_api_key",
         "embedding_model",
+        "embedding_price",
         "qdrant_url",
         "qdrant_api_key",
         "qdrant_collection",
@@ -483,5 +517,120 @@ where
             .parse::<T>()
             .map_err(|e| anyhow!("invalid value for {key}: {e}")),
         None => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_config_path(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        std::env::temp_dir().join(format!("{}_{}.conf", name, nanos))
+    }
+
+    #[test]
+    fn parses_embedding_price_from_file() {
+        let path = temp_config_path("aif_config_embedding_price");
+
+        let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+embedding_api_key test-embedding-key;
+embedding_price 0.020;
+qdrant_vector_size 1536;
+cache_ttl_seconds 86400;
+request_timeout_seconds 120;
+semantic_cache_enabled false;
+semantic_similarity_threshold 0.92;
+
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+        fs::write(&path, text).unwrap();
+
+        let cfg = Config::from_file(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        let embedding_price = cfg
+            .embedding_price
+            .expect("embedding_price should be parsed");
+        assert!((embedding_price.usd_per_1m_tokens - 0.020).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parses_embedding_price_from_env() {
+        unsafe {
+            std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
+            std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
+            std::env::set_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS", "0.020");
+        }
+
+        let cfg = Config::from_env().unwrap();
+
+        let embedding_price = cfg
+            .embedding_price
+            .expect("embedding_price should be parsed");
+        assert!((embedding_price.usd_per_1m_tokens - 0.020).abs() < f64::EPSILON);
+
+        unsafe {
+            std::env::remove_var("AIF_REDIS_URL");
+            std::env::remove_var("AIF_UPSTREAM_API_KEY");
+            std::env::remove_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS");
+        }
+    }
+
+    #[test]
+    fn invalid_embedding_price_in_env_is_rejected() {
+        unsafe {
+            std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
+            std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
+            std::env::set_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS", "not-a-number");
+        }
+
+        let err = Config::from_env().unwrap_err().to_string();
+
+        assert!(err.contains("invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS"));
+
+        unsafe {
+            std::env::remove_var("AIF_REDIS_URL");
+            std::env::remove_var("AIF_UPSTREAM_API_KEY");
+            std::env::remove_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS");
+        }
+    }
+
+    #[test]
+    fn negative_embedding_price_fails_validation() {
+        let cfg = Config {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+            upstream_base_url: "https://api.openai.com".to_string(),
+            upstream_api_key: "test-upstream-key".to_string(),
+            embedding_base_url: "https://api.openai.com".to_string(),
+            embedding_api_key: "test-embedding-key".to_string(),
+            embedding_model: "text-embedding-3-small".to_string(),
+            qdrant_url: "http://127.0.0.1:6334".to_string(),
+            qdrant_api_key: None,
+            qdrant_collection: "aif_semantic_cache".to_string(),
+            qdrant_vector_size: 1536,
+            cache_ttl_seconds: 86400,
+            request_timeout_seconds: 120,
+            semantic_cache_enabled: false,
+            semantic_similarity_threshold: 0.92,
+            model_prices: HashMap::new(),
+            embedding_price: Some(EmbeddingPrice {
+                usd_per_1m_tokens: -0.020,
+            }),
+        };
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("embedding_price must be >= 0"));
     }
 }
