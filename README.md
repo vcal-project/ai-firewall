@@ -44,7 +44,7 @@ The firewall behaves similarly to "nginx for LLM APIs".
 
 **95.6% hit rate • $10.5 saved in 30 minutes • Redis + Qdrant**
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard.png)](assets/grafana/dashboard.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard2.png)](assets/grafana/dashboard.png)
 
 *Local synthetic workload simulating internal support queries.  
 Exact + semantic caching eliminates repeated LLM calls and reduces cost in real time.*
