@@ -41,6 +41,8 @@ pub struct Config {
     pub semantic_similarity_threshold: f32,
 
     pub model_prices: HashMap<String, ModelPrice>,
+
+    pub allow_unknown_models_pass_through: bool,
 }
 
 impl Config {
@@ -141,6 +143,12 @@ impl Config {
             }
         }
 
+        if !self.allow_unknown_models_pass_through && self.model_prices.is_empty() {
+            return Err(anyhow!(
+                "no models configured: either define at least one model_price or set allow_unknown_models_pass_through"
+            ));
+        }
+
         Ok(())
     }
 
@@ -199,6 +207,11 @@ impl Config {
                 .context("invalid AIF_SEMANTIC_SIMILARITY_THRESHOLD")?,
 
             model_prices: HashMap::new(),
+
+            allow_unknown_models_pass_through: env::var("AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH")
+                .unwrap_or_else(|_| "false".into())
+                .parse()
+                .context("invalid AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH")?,
         })
     }
 
@@ -252,6 +265,12 @@ impl Config {
             )?,
 
             model_prices,
+
+            allow_unknown_models_pass_through: parse_or_default(
+                &map,
+                "allow_unknown_models_pass_through",
+                false,
+            )?,
         })
     }
 
@@ -305,6 +324,10 @@ impl fmt::Debug for Config {
                 &self.semantic_similarity_threshold,
             )
             .field("model_prices", &self.model_prices)
+            .field(
+                "allow_unknown_models_pass_through",
+                &self.allow_unknown_models_pass_through,
+            )
             .finish()
     }
 }
@@ -343,6 +366,7 @@ fn allowed_directives() -> HashSet<&'static str> {
         "semantic_cache_enabled",
         "semantic_similarity_threshold",
         "model_price",
+        "allow_unknown_models_pass_through",
     ])
 }
 
@@ -523,6 +547,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -566,6 +591,7 @@ model_price gpt-4o-mini-2024-07-18 0.15 0.60;
     }
 
     #[test]
+    #[serial]
     fn parses_embedding_price_from_env() {
         unsafe {
             std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
@@ -588,6 +614,7 @@ model_price gpt-4o-mini-2024-07-18 0.15 0.60;
     }
 
     #[test]
+    #[serial]
     fn invalid_embedding_price_in_env_is_rejected() {
         unsafe {
             std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
@@ -595,15 +622,16 @@ model_price gpt-4o-mini-2024-07-18 0.15 0.60;
             std::env::set_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS", "not-a-number");
         }
 
-        let err = Config::from_env().unwrap_err().to_string();
-
-        assert!(err.contains("invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS"));
+        let result = Config::from_env();
 
         unsafe {
             std::env::remove_var("AIF_REDIS_URL");
             std::env::remove_var("AIF_UPSTREAM_API_KEY");
             std::env::remove_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS");
         }
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS"));
     }
 
     #[test]
@@ -628,9 +656,36 @@ model_price gpt-4o-mini-2024-07-18 0.15 0.60;
             embedding_price: Some(EmbeddingPrice {
                 usd_per_1m_tokens: -0.020,
             }),
+            allow_unknown_models_pass_through: false,
         };
 
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("embedding_price must be >= 0"));
+    }
+    #[test]
+    fn strict_model_validation_requires_model_price_or_passthrough() {
+        let cfg = Config {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+            upstream_base_url: "https://api.openai.com".to_string(),
+            upstream_api_key: "test-upstream-key".to_string(),
+            embedding_base_url: "https://api.openai.com".to_string(),
+            embedding_api_key: "test-embedding-key".to_string(),
+            embedding_model: "text-embedding-3-small".to_string(),
+            embedding_price: None,
+            qdrant_url: "http://127.0.0.1:6334".to_string(),
+            qdrant_api_key: None,
+            qdrant_collection: "aif_semantic_cache".to_string(),
+            qdrant_vector_size: 1536,
+            cache_ttl_seconds: 86400,
+            request_timeout_seconds: 120,
+            semantic_cache_enabled: false,
+            semantic_similarity_threshold: 0.92,
+            model_prices: HashMap::new(),
+            allow_unknown_models_pass_through: false,
+        };
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("no models configured: either define at least one model_price or set allow_unknown_models_pass_through"));
     }
 }

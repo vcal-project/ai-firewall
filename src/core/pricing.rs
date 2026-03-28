@@ -5,11 +5,27 @@ use crate::{
     types::openai::Usage,
 };
 
+pub fn is_priced_model(model: &str, model_prices: &HashMap<String, ModelPrice>) -> bool {
+    let model = model.trim();
+
+    if model.is_empty() {
+        return false;
+    }
+
+    model_prices.contains_key(model)
+}
+
 pub fn estimate_micro_usd_saved(
     model: &str,
     usage: &Usage,
     model_prices: &HashMap<String, ModelPrice>,
 ) -> u64 {
+    let model = model.trim();
+
+    if model.is_empty() {
+        return 0;
+    }
+
     let Some(price) = model_prices.get(model) else {
         return 0;
     };
@@ -94,15 +110,34 @@ mod tests {
     }
 
     #[test]
+    fn priced_model_is_detected() {
+        let prices = model_prices();
+        assert!(is_priced_model("gpt-4o-mini-2024-07-18", &prices));
+    }
+
+    #[test]
+    fn priced_model_lookup_trims_whitespace() {
+        let prices = model_prices();
+        assert!(is_priced_model("  gpt-4o-mini-2024-07-18  ", &prices));
+    }
+
+    #[test]
     fn exact_hit_savings_are_calculated_correctly() {
         let prices = model_prices();
         let usage = usage(1_000, 500);
 
         let saved = estimate_micro_usd_saved("gpt-4o-mini-2024-07-18", &usage, &prices);
 
-        // 1000 * 0.15 = 150 micro-USD
-        //  500 * 0.60 = 300 micro-USD
-        // total = 450 micro-USD
+        assert_eq!(saved, 450);
+    }
+
+    #[test]
+    fn exact_hit_savings_trim_model_name() {
+        let prices = model_prices();
+        let usage = usage(1_000, 500);
+
+        let saved = estimate_micro_usd_saved("  gpt-4o-mini-2024-07-18  ", &usage, &prices);
+
         assert_eq!(saved, 450);
     }
 
@@ -114,7 +149,6 @@ mod tests {
 
         let cost = estimate_embedding_micro_usd(1_000, Some(&embedding_price));
 
-        // 1000 * 0.020 = 20 micro-USD
         assert_eq!(cost, 20);
     }
 
@@ -134,9 +168,6 @@ mod tests {
             Some(&embedding_price),
         );
 
-        // gross = 450 micro-USD
-        // embedding cost = 20 micro-USD
-        // net = 430 micro-USD
         assert_eq!(net, 430);
     }
 
@@ -185,7 +216,6 @@ mod tests {
 
         let cost = estimate_embedding_micro_usd(100, Some(&embedding_price));
 
-        // 100 * 0.015 = 1.5 micro-USD -> rounds to 2
         assert_eq!(cost, 2);
     }
 }

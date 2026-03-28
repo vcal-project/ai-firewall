@@ -16,13 +16,39 @@ pub async fn chat_completions(
         .with_label_values(&["/v1/chat/completions"])
         .inc();
 
-    let service = {
-        let guard = state.chat_service.read().await;
-        guard.clone()
-    };
+    let result = async {
+        validate_chat_request(&state, &req).await?;
 
-    let result = service.handle(req).await;
+        let service = state.chat_service().await;
+        let response = service.handle(req).await?;
+
+        Ok::<Json<ChatCompletionResponse>, AppError>(Json(response))
+    }
+    .await;
 
     metrics::INFLIGHT_REQUESTS.dec();
-    result.map(Json)
+    result
+}
+
+async fn validate_chat_request(
+    state: &Arc<AppState>,
+    req: &ChatCompletionRequest,
+) -> Result<(), AppError> {
+    let model = req.normalized_model();
+
+    if model.is_empty() {
+        return Err(AppError::bad_request("Model must not be empty"));
+    }
+
+    let allow_unknown = state.allow_unknown_models_pass_through().await;
+    let is_allowed = state.is_model_allowed(model).await;
+
+    if !allow_unknown && !is_allowed {
+        return Err(AppError::bad_request(format!(
+            "Unsupported model: {}",
+            model
+        )));
+    }
+
+    Ok(())
 }

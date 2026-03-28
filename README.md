@@ -253,20 +253,77 @@ request_timeout_seconds 120;
 semantic_cache_enabled true;
 semantic_similarity_threshold 0.92;
 
+# Model validation behavior
+# By default, only models defined via `model_price` are allowed.
+# Unknown models will be rejected with 400.
+allow_unknown_models_pass_through false;
+
 # Chat-completion pricing (USD per 1M tokens)
 # model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
 
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 
+# Embedding pricing (optional, used for net cost estimation only)
 embedding_price 0.020;
 ```
 
 > If the API returns `gpt-4o-mini-2024-07-18`, the same name must appear in the configuration.
 
-Full configuration reference:
+## Model validation
 
-`docs/config-reference.md`
+AI Cost Firewall validates the `model` field before forwarding requests upstream.
+
+- Only models defined via `model_price` are considered supported
+- Requests with unknown models are rejected with 400 Bad Request
+- This prevents accidental or unauthorized upstream usage
+
+Example:
+
+```bash
+{
+  "error": {
+    "code": 400,
+    "message": "Unsupported model: gpt-unknown",
+    "type": "validation_error"
+  }
+}
+```
+
+## Optional: allow pass-through
+
+If you want the gateway to behave like a transparent proxy:
+
+```bash
+allow_unknown_models_pass_through true;
+```
+
+In this mode:
+
+- Unknown models are forwarded upstream
+- Cost tracking will not be applied for unknown models
+- Validation is relaxed
+
+## Environment Variables (Optional)
+
+If no configuration file is provided, AI Cost Firewall falls back to environment variables.
+
+For convenience, you can use a `.env` file in development:
+
+```conf
+AIF_REDIS_URL=redis://127.0.0.1:6379
+AIF_UPSTREAM_API_KEY=sk-xxxx
+AIF_EMBEDDING_MODEL=text-embedding-3-small
+AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS=0.020
+```
+
+- Variables follow the AIF_ prefix convention
+- `.env` is loaded automatically if present
+- Intended for development and simple deployments
+
+If neither a config file nor required environment variables are provided, the application will fail to start.
+
+Full configuration reference:
 
 [docs/config-reference.md](docs/config-reference.md)
 

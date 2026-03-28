@@ -191,9 +191,9 @@ Create the file:
 
     configs/ai-firewall.conf
 
-Example configuration:
+Example configuration
 
-``` conf
+```conf
 listen_addr 0.0.0.0:8080;
 
 redis_url redis://127.0.0.1:6379;
@@ -215,17 +215,97 @@ request_timeout_seconds 120;
 semantic_cache_enabled false;
 semantic_similarity_threshold 0.92;
 
+# Model validation behavior
+# By default, only models defined via `model_price` are allowed.
+allow_unknown_models_pass_through false;
+
 # Chat-completion pricing (USD per 1M tokens)
 # model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
 
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 
-# embedding model_price <model> <input_usd_per_1m_tokens> 
+# Embedding pricing (optional, used for cost estimation only)
 embedding_price 0.020;
 ```
 
-If the versioned model name is `gpt-4o-mini-2024-07-18`, you must add that exact name to the configuration for `aif_cost_saved_micro_usd` to be calculated correctly.
+Alternatively, you can use environment variables (via a `.env` file), but the config file is the recommended approach.
+
+---
+
+### Model validation (IMPORTANT)
+
+AI Cost Firewall validates the `model` field before forwarding requests upstream.
+
+#### Default behavior (strict mode)
+
+- Only models defined via `model_price` are allowed
+- Unknown models are rejected with `400 Bad Request`
+- Prevents accidental or unauthorized upstream usage
+
+Example error:
+
+```json
+{
+  "error": {
+    "code": 400,
+    "message": "Unsupported model: gpt-unknown",
+    "type": "validation_error"
+  }
+}
+```
+
+---
+
+#### Optional: allow pass-through
+
+To allow unknown models:
+
+```conf
+allow_unknown_models_pass_through true;
+```
+
+In this mode:
+
+- Unknown models are forwarded upstream
+- Cost tracking is not applied to unknown models
+- Firewall behaves more like a proxy
+
+---
+
+#### Common pitfall
+
+If:
+
+- `allow_unknown_models_pass_through = false`
+- AND no `model_price` entries are defined
+
+then requests will be rejected
+
+---
+
+#### Cost tracking note
+
+If the upstream returns a versioned model name such as:
+
+```
+gpt-4o-mini-2024-07-18
+```
+
+That exact name must be present in the configuration:
+
+```conf
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+```
+
+Otherwise:
+
+- Cost savings will NOT be calculated
+- `aif_cost_saved_micro_usd` will remain zero
+
+---
+
+### About service hostnames
 
 When running inside Docker Compose, use service hostnames:
 

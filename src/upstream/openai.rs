@@ -1,6 +1,6 @@
 use crate::types::openai::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::upstream::llm::LlmUpstream;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use reqwest::{header, Client};
 use std::time::Duration;
@@ -36,10 +36,7 @@ impl OpenAiUpstream {
 
 #[async_trait]
 impl LlmUpstream for OpenAiUpstream {
-    async fn chat_completion(
-        &self,
-        req: &ChatCompletionRequest,
-    ) -> anyhow::Result<ChatCompletionResponse> {
+    async fn chat_completion(&self, req: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
         let url = format!(
             "{}/v1/chat/completions",
             self.base_url.trim_end_matches('/')
@@ -52,7 +49,12 @@ impl LlmUpstream for OpenAiUpstream {
             .json(req)
             .send()
             .await
-            .context("upstream request failed")?;
+            .with_context(|| {
+                format!(
+                    "upstream request failed for model '{}'",
+                    req.normalized_model()
+                )
+            })?;
 
         let status = response.status();
         let body = response
@@ -61,11 +63,11 @@ impl LlmUpstream for OpenAiUpstream {
             .context("failed to read upstream body")?;
 
         if !status.is_success() {
-            anyhow::bail!("upstream returned {}: {}", status, body);
+            return Err(anyhow!("upstream returned {} with body: {}", status, body));
         }
 
         let parsed = serde_json::from_str::<ChatCompletionResponse>(&body)
-            .context("failed to parse upstream response")?;
+            .with_context(|| format!("failed to parse upstream response body: {}", body))?;
 
         Ok(parsed)
     }

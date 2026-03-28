@@ -61,3 +61,9 @@ pub struct Usage {
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
+
+impl ChatCompletionRequest {
+    pub fn normalized_model(&self) -> &str {
+        self.model.trim()
+    }
+}

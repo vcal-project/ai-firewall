@@ -72,7 +72,7 @@ async fn config_reload_loop(
         match config::Config::from_file(path) {
             Ok(new_config) => {
                 if let Err(e) = new_config.validate() {
-                    tracing::error!("config validation failed: {}", e);
+                    tracing::error!("config validation failed during reload: {}", e);
                     continue;
                 }
 
@@ -111,8 +111,6 @@ async fn config_reload_loop(
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    metrics::init();
-
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -121,6 +119,8 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    metrics::init();
+
     let test_config = parse_test_config();
     let print_config = parse_print_config();
 
@@ -128,7 +128,11 @@ async fn main() -> anyhow::Result<()> {
     let reload_config_path = resolve_config_path(explicit_config_path.clone());
 
     let cfg = config::Config::from_env_or_file(explicit_config_path.as_deref())?;
-    cfg.validate()?;
+
+    if let Err(e) = cfg.validate() {
+        tracing::error!("configuration validation failed: {}", e);
+        return Err(e);
+    }
 
     if print_config {
         println!("{:#?}", cfg);
@@ -141,7 +145,6 @@ async fn main() -> anyhow::Result<()> {
         app::build_runtime(&cfg).await?;
 
         tracing::info!("runtime dependencies initialized successfully");
-
         return Ok(());
     }
 

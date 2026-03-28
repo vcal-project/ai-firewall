@@ -1,3 +1,5 @@
+use crate::core::pricing::is_priced_model;
+
 use crate::{
     api,
     cache::{exact::ExactCache, redis_exact::RedisExactCache},
@@ -10,6 +12,7 @@ use crate::{
     services::chat_service::ChatService,
     upstream::{llm::LlmUpstream, openai::OpenAiUpstream},
 };
+
 use anyhow::Result;
 use axum::{
     routing::{get, post},
@@ -24,6 +27,28 @@ use tower_http::trace::TraceLayer;
 pub struct AppState {
     pub config: Arc<RwLock<Config>>,
     pub chat_service: Arc<RwLock<Arc<ChatService>>>,
+}
+
+impl AppState {
+    pub async fn chat_service(&self) -> Arc<ChatService> {
+        let guard = self.chat_service.read().await;
+        guard.clone()
+    }
+
+    pub async fn allow_unknown_models_pass_through(&self) -> bool {
+        let cfg = self.config.read().await;
+        cfg.allow_unknown_models_pass_through
+    }
+
+    pub async fn is_model_allowed(&self, model: &str) -> bool {
+        let cfg = self.config.read().await;
+
+        if model.is_empty() {
+            return false;
+        }
+
+        is_priced_model(model, &cfg.model_prices)
+    }
 }
 
 pub struct BuiltApp {

@@ -54,7 +54,7 @@ impl ChatService {
         }
 
         let normalized = normalize_chat_request(&req)
-            .map_err(|e| AppError::BadRequest(format!("normalize failed: {e}")))?;
+            .map_err(|e| AppError::bad_request(format!("normalize failed: {e}")))?;
         let semantic_text = semantic_text_from_request(&req);
 
         let exact_key = self.exact_cache_key(&normalized);
@@ -76,7 +76,7 @@ impl ChatService {
         if self.semantic_cache_enabled && self.semantic_eligible(&req) {
             if let Some(hit) = self
                 .semantic_cache
-                .lookup(&req.model, &semantic_text)
+                .lookup(req.normalized_model(), &semantic_text)
                 .await
                 .map_err(|e| AppError::Internal(format!("semantic lookup failed: {e}")))?
             {
@@ -124,7 +124,7 @@ impl ChatService {
         if self.semantic_cache_enabled && self.semantic_eligible(&req) {
             if let Err(e) = self
                 .semantic_cache
-                .store(&req.model, &semantic_text, &response)
+                .store(req.normalized_model(), &semantic_text, &response)
                 .await
             {
                 tracing::debug!("failed to store semantic cache entry: {e}");
@@ -135,12 +135,14 @@ impl ChatService {
     }
 
     fn validate(&self, req: &ChatCompletionRequest) -> Result<(), AppError> {
-        if req.model.trim().is_empty() {
-            return Err(AppError::BadRequest("model must not be empty".into()));
+        if req.normalized_model().is_empty() {
+            return Err(AppError::bad_request("model must not be empty"));
         }
+
         if req.messages.is_empty() {
-            return Err(AppError::BadRequest("messages must not be empty".into()));
+            return Err(AppError::bad_request("messages must not be empty"));
         }
+
         Ok(())
     }
 

@@ -55,21 +55,100 @@ request_timeout_seconds 120;
 semantic_cache_enabled true;
 semantic_similarity_threshold 0.92;
 
+# Model validation behavior
+# By default, only models defined via `model_price` are allowed.
+allow_unknown_models_pass_through false;
+
 # Chat-completion pricing (USD per 1M tokens)
 # model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
 
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 
+# Embedding pricing (optional, used for cost estimation only)
 embedding_price 0.020;
 ```
 
-Note: AI Cost Firewall uses the Qdrant gRPC interface by default, which runs on port `6334`.
+## Model validation
+
+AI Cost Firewall validates the `model` field before forwarding requests upstream.
+
+- Only models defined via `model_price` are considered supported
+- Requests with unknown models are rejected with 400 Bad Request
+- This prevents accidental or unauthorized upstream usage
+
+Example:
+
+```bash
+{
+  "error": {
+    "code": 400,
+    "message": "Unsupported model: gpt-unknown",
+    "type": "validation_error"
+  }
+}
+```
+
+## Optional: allow pass-through
+
+If you want the gateway to behave like a transparent proxy:
+
+```bash
+allow_unknown_models_pass_through true;
+```
+
+In this mode:
+
+- Unknown models are forwarded upstream
+- Cost tracking will not be applied for unknown models
+- The firewall behaves more like a proxy
+
+## Common Pitfall
+
+If:
+
+```text
+allow_unknown_models_pass_through = false
+AND no model_price entries are defined
+```
+
+then all requests will be rejected.
+
+## Model Pricing and Cost Tracking
+
+Cost savings are calculated only for models defined via model_price  
+
+The model name must exactly match the upstream response
+
+Example:
+
+```text
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+```
+
+If the upstream returns:
+
+```text
+gpt-4o-mini-2024-07-18
+```
+
+then cost is tracked
+
+If it returns:
+
+```text
+gpt-4o-mini
+```
+
+then no cost tracking
+
+## Qdrant Notes
+
+AI Cost Firewall uses the Qdrant gRPC interface by default, which runs on port `6334`.  
+
 The REST API port (`6333`) is not used by the firewall.
 
-If the upstream API returns a versioned model name such as `gpt-4o-mini-2024-07-18`, that exact name must be present in the configuration for `aif_cost_saved_micro_usd` to be calculated.
-
-This configuration is sufficient to run the firewall with Redis, Qdrant, and OpenAI APIs using the default Docker Compose setup.
+## Running with explicit config
 
 Alternatively, the configuration file can be specified explicitly:
 
@@ -125,6 +204,25 @@ Typical values:
 0.0.0.0:8080
 127.0.0.1:8080
 ```
+
+### Environment Variables (Optional)
+
+If no configuration file is provided, AI Cost Firewall falls back to environment variables.
+
+For convenience, you can use a `.env` file in development:
+
+```conf
+AIF_REDIS_URL=redis://127.0.0.1:6379
+AIF_UPSTREAM_API_KEY=sk-xxxx
+AIF_EMBEDDING_MODEL=text-embedding-3-small
+AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS=0.020
+```
+
+- Variables follow the AIF_ prefix convention
+- `.env` is loaded automatically if present
+- Intended for development and simple deployments
+
+If neither a config file nor required environment variables are provided, the application will fail to start.
 
 ### redis_url
 
