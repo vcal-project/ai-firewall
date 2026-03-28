@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:12.4.0
+    image: grafana/grafana:12.4.2
     container_name: ai-firewall-grafana
     depends_on:
       - prometheus
