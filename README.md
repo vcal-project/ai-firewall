@@ -42,7 +42,7 @@ The firewall behaves similarly to "nginx for LLM APIs".
 
 ## Example: Cost Savings with Exact + Semantic Caching
 
-**~96% hit rate • net savings after embedding overhead • real-time cost reduction**
+**cache hit rate • net savings after embedding overhead • real-time cost reduction**
 
 [![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard2.png)](assets/grafana/dashboard2.png)
 
