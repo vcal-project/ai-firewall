@@ -40,14 +40,14 @@ The firewall behaves similarly to "nginx for LLM APIs".
 
 ---
 
-## Example: Cost Savings in Action
+## Example: Cost Savings with Exact + Semantic Caching
 
-**95.6% hit rate • $10.5 saved in 30 minutes • Redis + Qdrant**
+**~96% hit rate • net savings after embedding overhead • real-time cost reduction**
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard2.png)](assets/grafana/dashboard.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard2.png)](assets/grafana/dashboard2.png)
 
-*Local synthetic workload simulating internal support queries.  
-Exact + semantic caching eliminates repeated LLM calls and reduces cost in real time.*
+*Local synthetic workload simulating enterprise support queries (VPN, onboarding, access requests).  
+Demonstrates real-time cost reduction using exact and semantic caching, with full cost breakdown (gross savings, embedding cost, and net savings).*
 
 ---
 
