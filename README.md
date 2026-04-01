@@ -192,13 +192,27 @@ aif_shutdown_rejections_total
 
 ### Note
 
-Token and cost savings are currently calculated only for:
+Token and cost savings are calculated for:
 
 ```text
 /v1/chat/completions
 ```
 
-Embedding requests used internally for semantic caching are not included in these metrics in the current version.
+For semantic cache hits:
+
+- Gross savings are based on avoided chat-completion tokens
+- Embedding lookup costs are included and deducted
+- Reported savings represent net savings
+
+Metrics:
+
+- `aif_chat_cost_saved_micro_usd` – gross chat-completion savings
+- `aif_embedding_cost_micro_usd` – embedding lookup cost
+- `aif_cost_saved_micro_usd` – net savings (gross − embedding cost)
+
+Exact cache hits have no embedding cost.
+
+If embedding_price is not configured, embedding cost is treated as 0 and savings may be overestimated.
 
 ---
 
