@@ -8,5 +8,6 @@ pub struct SemanticCacheRecord {
     pub model: String,
     pub normalized_prompt: String,
     pub response: ChatCompletionResponse,
-    pub created_at_unix: i64,
+    pub inserted_at: i64,
+    pub expires_at: i64,
 }

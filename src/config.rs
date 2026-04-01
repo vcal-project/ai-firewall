@@ -36,6 +36,8 @@ pub struct Config {
 
     pub cache_ttl_seconds: usize,
     pub request_timeout_seconds: u64,
+    pub graceful_shutdown_timeout_seconds: u64,
+    pub max_request_body_bytes: usize,
 
     pub semantic_cache_enabled: bool,
     pub semantic_similarity_threshold: f32,
@@ -149,7 +151,48 @@ impl Config {
             ));
         }
 
+        if self.graceful_shutdown_timeout_seconds == 0 {
+            return Err(anyhow!("graceful_shutdown_timeout_seconds must be > 0"));
+        }
+
+        if self.max_request_body_bytes == 0 {
+            return Err(anyhow!("max_request_body_bytes must be > 0"));
+        }
+
         Ok(())
+    }
+
+    fn parse_bytes(input: &str) -> Result<usize> {
+        let s = input.trim();
+        if s.is_empty() {
+            anyhow::bail!("byte size must not be empty");
+        }
+
+        let upper = s.to_ascii_uppercase();
+
+        let (number_part, multiplier) = if let Some(num) = upper.strip_suffix("KB") {
+            (num, 1024usize)
+        } else if let Some(num) = upper.strip_suffix('K') {
+            (num, 1024usize)
+        } else if let Some(num) = upper.strip_suffix("MB") {
+            (num, 1024usize * 1024)
+        } else if let Some(num) = upper.strip_suffix('M') {
+            (num, 1024usize * 1024)
+        } else if let Some(num) = upper.strip_suffix("GB") {
+            (num, 1024usize * 1024 * 1024)
+        } else if let Some(num) = upper.strip_suffix('G') {
+            (num, 1024usize * 1024 * 1024)
+        } else {
+            (upper.as_str(), 1usize)
+        };
+
+        let base: usize = number_part
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid byte size: {}", input))?;
+
+        base.checked_mul(multiplier)
+            .ok_or_else(|| anyhow::anyhow!("byte size is too large: {}", input))
     }
 
     pub fn from_env() -> Result<Self> {
@@ -212,6 +255,16 @@ impl Config {
                 .unwrap_or_else(|_| "false".into())
                 .parse()
                 .context("invalid AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH")?,
+
+            graceful_shutdown_timeout_seconds: env::var("AIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS")
+                .unwrap_or_else(|_| "10".into())
+                .parse()
+                .context("invalid AIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS")?,
+
+            max_request_body_bytes: Self::parse_bytes(
+                &env::var("AIF_MAX_REQUEST_BODY_BYTES").unwrap_or_else(|_| "1M".into()),
+            )
+            .context("invalid AIF_MAX_REQUEST_BODY_BYTES")?,
         })
     }
 
@@ -271,6 +324,18 @@ impl Config {
                 "allow_unknown_models_pass_through",
                 false,
             )?,
+
+            graceful_shutdown_timeout_seconds: parse_or_default(
+                &map,
+                "graceful_shutdown_timeout_seconds",
+                10u64,
+            )?,
+
+            max_request_body_bytes: map
+                .get("max_request_body_bytes")
+                .map(|v| Self::parse_bytes(v))
+                .transpose()?
+                .unwrap_or(1_048_576usize),
         })
     }
 
@@ -328,6 +393,11 @@ impl fmt::Debug for Config {
                 "allow_unknown_models_pass_through",
                 &self.allow_unknown_models_pass_through,
             )
+            .field(
+                "graceful_shutdown_timeout_seconds",
+                &self.graceful_shutdown_timeout_seconds,
+            )
+            .field("max_request_body_bytes", &self.max_request_body_bytes)
             .finish()
     }
 }
@@ -367,6 +437,8 @@ fn allowed_directives() -> HashSet<&'static str> {
         "semantic_similarity_threshold",
         "model_price",
         "allow_unknown_models_pass_through",
+        "graceful_shutdown_timeout_seconds",
+        "max_request_body_bytes",
     ])
 }
 
@@ -545,147 +617,4 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serial_test::serial;
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_config_path(name: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-
-        std::env::temp_dir().join(format!("{}_{}.conf", name, nanos))
-    }
-
-    #[test]
-    fn parses_embedding_price_from_file() {
-        let path = temp_config_path("aif_config_embedding_price");
-
-        let text = r#"
-listen_addr 127.0.0.1:8080;
-redis_url redis://127.0.0.1:6379;
-upstream_api_key test-upstream-key;
-embedding_api_key test-embedding-key;
-embedding_price 0.020;
-qdrant_vector_size 1536;
-cache_ttl_seconds 86400;
-request_timeout_seconds 120;
-semantic_cache_enabled false;
-semantic_similarity_threshold 0.92;
-
-model_price gpt-4o-mini-2024-07-18 0.15 0.60;
-"#;
-
-        fs::write(&path, text).unwrap();
-
-        let cfg = Config::from_file(&path).unwrap();
-        fs::remove_file(&path).ok();
-
-        let embedding_price = cfg
-            .embedding_price
-            .expect("embedding_price should be parsed");
-        assert!((embedding_price.usd_per_1m_tokens - 0.020).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    #[serial]
-    fn parses_embedding_price_from_env() {
-        unsafe {
-            std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
-            std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
-            std::env::set_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS", "0.020");
-        }
-
-        let cfg = Config::from_env().unwrap();
-
-        let embedding_price = cfg
-            .embedding_price
-            .expect("embedding_price should be parsed");
-        assert!((embedding_price.usd_per_1m_tokens - 0.020).abs() < f64::EPSILON);
-
-        unsafe {
-            std::env::remove_var("AIF_REDIS_URL");
-            std::env::remove_var("AIF_UPSTREAM_API_KEY");
-            std::env::remove_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS");
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn invalid_embedding_price_in_env_is_rejected() {
-        unsafe {
-            std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
-            std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
-            std::env::set_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS", "not-a-number");
-        }
-
-        let result = Config::from_env();
-
-        unsafe {
-            std::env::remove_var("AIF_REDIS_URL");
-            std::env::remove_var("AIF_UPSTREAM_API_KEY");
-            std::env::remove_var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS");
-        }
-
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS"));
-    }
-
-    #[test]
-    fn negative_embedding_price_fails_validation() {
-        let cfg = Config {
-            listen_addr: "127.0.0.1:8080".to_string(),
-            redis_url: "redis://127.0.0.1:6379".to_string(),
-            upstream_base_url: "https://api.openai.com".to_string(),
-            upstream_api_key: "test-upstream-key".to_string(),
-            embedding_base_url: "https://api.openai.com".to_string(),
-            embedding_api_key: "test-embedding-key".to_string(),
-            embedding_model: "text-embedding-3-small".to_string(),
-            qdrant_url: "http://127.0.0.1:6334".to_string(),
-            qdrant_api_key: None,
-            qdrant_collection: "aif_semantic_cache".to_string(),
-            qdrant_vector_size: 1536,
-            cache_ttl_seconds: 86400,
-            request_timeout_seconds: 120,
-            semantic_cache_enabled: false,
-            semantic_similarity_threshold: 0.92,
-            model_prices: HashMap::new(),
-            embedding_price: Some(EmbeddingPrice {
-                usd_per_1m_tokens: -0.020,
-            }),
-            allow_unknown_models_pass_through: false,
-        };
-
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("embedding_price must be >= 0"));
-    }
-    #[test]
-    fn strict_model_validation_requires_model_price_or_passthrough() {
-        let cfg = Config {
-            listen_addr: "127.0.0.1:8080".to_string(),
-            redis_url: "redis://127.0.0.1:6379".to_string(),
-            upstream_base_url: "https://api.openai.com".to_string(),
-            upstream_api_key: "test-upstream-key".to_string(),
-            embedding_base_url: "https://api.openai.com".to_string(),
-            embedding_api_key: "test-embedding-key".to_string(),
-            embedding_model: "text-embedding-3-small".to_string(),
-            embedding_price: None,
-            qdrant_url: "http://127.0.0.1:6334".to_string(),
-            qdrant_api_key: None,
-            qdrant_collection: "aif_semantic_cache".to_string(),
-            qdrant_vector_size: 1536,
-            cache_ttl_seconds: 86400,
-            request_timeout_seconds: 120,
-            semantic_cache_enabled: false,
-            semantic_similarity_threshold: 0.92,
-            model_prices: HashMap::new(),
-            allow_unknown_models_pass_through: false,
-        };
-
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("no models configured: either define at least one model_price or set allow_unknown_models_pass_through"));
-    }
-}
+mod tests;

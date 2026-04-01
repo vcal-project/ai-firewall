@@ -15,18 +15,65 @@ use crate::{
 
 use anyhow::Result;
 use axum::{
+    body::Body,
+    extract::{DefaultBodyLimit, State},
+    http::{Request, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use redis::aio::ConnectionManager;
-use std::{sync::Arc, time::Duration};
+use serde_json::json;
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
+
+#[derive(Clone, Debug)]
+pub struct ShutdownState {
+    pub ready: Arc<AtomicBool>,
+    pub shutting_down: Arc<AtomicBool>,
+    pub inflight_requests: Arc<AtomicU64>,
+}
+
+impl ShutdownState {
+    pub fn new() -> Self {
+        Self {
+            ready: Arc::new(AtomicBool::new(true)),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            inflight_requests: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn begin_shutdown(&self) {
+        self.ready.store(false, Ordering::SeqCst);
+        self.shutting_down.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Relaxed)
+    }
+
+    pub fn inflight(&self) -> u64 {
+        self.inflight_requests.load(Ordering::Relaxed)
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<RwLock<Config>>,
     pub chat_service: Arc<RwLock<Arc<ChatService>>>,
+    pub shutdown: ShutdownState,
 }
 
 impl AppState {
@@ -83,6 +130,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
                 cfg.qdrant_collection.clone(),
                 cfg.qdrant_vector_size,
                 cfg.semantic_similarity_threshold,
+                cfg.cache_ttl_seconds,
                 embedder,
             )
             .await?,
@@ -107,16 +155,72 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
     let chat_service = build_runtime(&config).await?;
 
     let state = Arc::new(AppState {
-        config: Arc::new(RwLock::new(config)),
+        config: Arc::new(RwLock::new(config.clone())),
         chat_service: Arc::new(RwLock::new(chat_service)),
+        shutdown: ShutdownState::new(),
     });
 
     let router = Router::new()
         .route("/healthz", get(api::health))
+        .route("/readyz", get(readyz))
         .route("/metrics", get(api::metrics))
         .route("/v1/chat/completions", post(api::chat::chat_completions))
-        .with_state(state.clone())
-        .layer(TraceLayer::new_for_http());
+        .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            shutdown_gate_middleware,
+        ))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state.clone());
 
     Ok(BuiltApp { router, state })
+}
+
+async fn readyz(State(state): State<Arc<AppState>>) -> StatusCode {
+    if state.shutdown.is_ready() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+async fn shutdown_gate_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = req.uri().path();
+    let is_probe = matches!(path, "/healthz" | "/readyz" | "/metrics");
+
+    if state.shutdown.is_shutting_down() && !is_probe {
+        metrics::SHUTDOWN_REJECTIONS_TOTAL.inc();
+
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "code": 503,
+                    "message": "server is shutting down",
+                    "type": "service_unavailable"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    state
+        .shutdown
+        .inflight_requests
+        .fetch_add(1, Ordering::SeqCst);
+    metrics::INFLIGHT_REQUESTS.inc();
+
+    let response = next.run(req).await;
+
+    state
+        .shutdown
+        .inflight_requests
+        .fetch_sub(1, Ordering::SeqCst);
+    metrics::INFLIGHT_REQUESTS.dec();
+
+    response
 }

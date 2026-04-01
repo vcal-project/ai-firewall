@@ -61,6 +61,8 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 -   Docker deployment
 -   nginx-style configuration
 -   Hot configuration reload (`SIGHUP`)
+-   Graceful shutdown with request draining (SIGTERM / SIGINT)
+-   Readiness and liveness endpoints (`/readyz`, `/healthz`)
 -   Lightweight Rust + Axum implementation
 
 ---
@@ -183,6 +185,9 @@ aif_cache_semantic_hits
 aif_cache_misses
 aif_tokens_saved
 aif_cost_saved_micro_usd
+aif_inflight_requests
+aif_shutdown_in_progress
+aif_shutdown_rejections_total
 ```
 
 ### Note
@@ -229,6 +234,8 @@ cargo run --release
 
 AI Cost Firewall uses a simple nginx-style configuration format.
 
+- Signal-driven operations (SIGHUP reload, SIGTERM graceful shutdown)
+
 Example configuration:
 
 ``` text
@@ -249,6 +256,8 @@ qdrant_vector_size 1536;
 
 cache_ttl_seconds 2592000;
 request_timeout_seconds 120;
+graceful_shutdown_timeout_seconds 10;  # default
+max_request_body_bytes 1048576;
 
 semantic_cache_enabled true;
 semantic_similarity_threshold 0.92;
@@ -290,6 +299,10 @@ Example:
 }
 ```
 
+`cache_ttl_seconds` defines how long cached responses are considered valid for both exact (Redis) and semantic (Qdrant) caching.
+
+Redis enforces TTL automatically, while semantic entries are filtered at query time based on expiration.
+
 ## Optional: allow pass-through
 
 If you want the gateway to behave like a transparent proxy:
@@ -329,6 +342,24 @@ Full configuration reference:
 
 ---
 
+## Testing
+
+AI Cost Firewall includes unit tests for configuration parsing, validation, and core request handling paths.
+
+Key areas covered:
+- Config validation (required fields, limits, semantic cache requirements)
+- Byte-size parsing (`1M`, `2M`, etc.) for request limits
+- Negative cases (invalid configs, malformed values)
+- Cost accounting correctness (chat vs embedding vs net)
+
+Run tests locally:
+
+```bash
+cargo test
+```
+
+---
+
 # Documentation
 
 | Document | Description |
@@ -338,6 +369,7 @@ Full configuration reference:
 | `docs/faq.md` | Frequently asked questions |
 | `docs/how-it-works.md` | Request flow and caching logic |
 | `docs/quickstart.md` | Full setup guide |
+| `docs/operation.md` | Runtime behavior (health checks, shutdown, reload) |
 
 ---
 

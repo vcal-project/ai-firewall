@@ -70,6 +70,22 @@ pub static INFLIGHT_REQUESTS: Lazy<IntGauge> = Lazy::new(|| {
         .expect("metric aif_inflight_requests must be valid")
 });
 
+pub static SHUTDOWN_IN_PROGRESS: Lazy<IntGauge> = Lazy::new(|| {
+    IntGauge::new(
+        "aif_shutdown_in_progress",
+        "Whether graceful shutdown is in progress (0 or 1)",
+    )
+    .expect("metric aif_shutdown_in_progress must be valid")
+});
+
+pub static SHUTDOWN_REJECTIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_shutdown_rejections_total",
+        "Requests rejected because the server was shutting down",
+    )
+    .expect("metric aif_shutdown_rejections_total must be valid")
+});
+
 pub fn init() {
     INIT.call_once(|| {
         let collectors: Vec<Box<dyn prometheus::core::Collector>> = vec![
@@ -83,6 +99,8 @@ pub fn init() {
             Box::new(EMBEDDING_COST_MICRO_USD.clone()),
             Box::new(COST_SAVED_MICRO_USD.clone()),
             Box::new(INFLIGHT_REQUESTS.clone()),
+            Box::new(SHUTDOWN_IN_PROGRESS.clone()),
+            Box::new(SHUTDOWN_REJECTIONS_TOTAL.clone()),
         ];
 
         for c in collectors {
@@ -97,8 +115,10 @@ pub fn render() -> Result<String, String> {
     let encoder = TextEncoder::new();
     let metric_families = REGISTRY.gather();
     let mut buffer = Vec::new();
+
     encoder
         .encode(&metric_families, &mut buffer)
         .map_err(|e| e.to_string())?;
+
     String::from_utf8(buffer).map_err(|e| e.to_string())
 }

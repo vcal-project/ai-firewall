@@ -25,6 +25,7 @@ pub struct QdrantSemanticCache {
     embedder: Arc<dyn EmbeddingProvider>,
     collection_name: String,
     similarity_threshold: f32,
+    cache_ttl_seconds: usize,
 }
 
 impl QdrantSemanticCache {
@@ -34,6 +35,7 @@ impl QdrantSemanticCache {
         collection_name: String,
         vector_size: u64,
         similarity_threshold: f32,
+        cache_ttl_seconds: usize,
         embedder: Arc<dyn EmbeddingProvider>,
     ) -> Result<Self> {
         let mut builder = Qdrant::from_url(&qdrant_url);
@@ -49,6 +51,7 @@ impl QdrantSemanticCache {
             embedder,
             collection_name,
             similarity_threshold,
+            cache_ttl_seconds,
         })
     }
 }
@@ -132,6 +135,18 @@ impl SemanticCache for QdrantSemanticCache {
             }
 
             let payload = point.payload;
+
+            let now = Utc::now().timestamp();
+
+            let expires_at = match payload.get("expires_at").and_then(proto_value_to_i64) {
+                Some(v) => v,
+                None => continue, // treat old entries without expires_at as expired
+            };
+
+            if expires_at <= now {
+                continue;
+            }
+
             let raw_response = payload
                 .get("response_json")
                 .and_then(proto_value_to_json_string)
@@ -161,12 +176,16 @@ impl SemanticCache for QdrantSemanticCache {
 
         let request_hash = sha256_hex(normalized_prompt);
 
+        let inserted_at = Utc::now().timestamp();
+        let expires_at = inserted_at + self.cache_ttl_seconds as i64;
+
         let record = SemanticCacheRecord {
             request_hash: request_hash.clone(),
             model: model.to_string(),
             normalized_prompt: normalized_prompt.to_string(),
             response: response.clone(),
-            created_at_unix: Utc::now().timestamp(),
+            inserted_at,
+            expires_at,
         };
 
         let response_json =
@@ -189,8 +208,12 @@ impl SemanticCache for QdrantSemanticCache {
                     json_to_proto_value(JsonValue::String(record.normalized_prompt)),
                 ),
                 (
-                    "created_at_unix",
-                    json_to_proto_value(JsonValue::Number(record.created_at_unix.into())),
+                    "inserted_at",
+                    json_to_proto_value(JsonValue::Number(record.inserted_at.into())),
+                ),
+                (
+                    "expires_at",
+                    json_to_proto_value(JsonValue::Number(record.expires_at.into())),
                 ),
                 (
                     "response_json",
@@ -250,6 +273,14 @@ fn json_to_proto_value(v: JsonValue) -> Value {
 fn proto_value_to_json_string(v: &Value) -> Option<String> {
     match &v.kind {
         Some(qdrant_client::qdrant::value::Kind::StringValue(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn proto_value_to_i64(v: &Value) -> Option<i64> {
+    match &v.kind {
+        Some(qdrant_client::qdrant::value::Kind::IntegerValue(i)) => Some(*i),
+        Some(qdrant_client::qdrant::value::Kind::DoubleValue(f)) => Some(*f as i64),
         _ => None,
     }
 }

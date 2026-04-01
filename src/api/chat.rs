@@ -4,30 +4,31 @@ use crate::{
     metrics,
     types::openai::{ChatCompletionRequest, ChatCompletionResponse},
 };
-use axum::{extract::State, Json};
+use axum::{
+    extract::{rejection::JsonRejection, State},
+    Json,
+};
 use std::sync::Arc;
 
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<ChatCompletionRequest>,
+    payload: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Json<ChatCompletionResponse>, AppError> {
-    metrics::INFLIGHT_REQUESTS.inc();
     metrics::REQUESTS_TOTAL
         .with_label_values(&["/v1/chat/completions"])
         .inc();
 
-    let result = async {
-        validate_chat_request(&state, &req).await?;
+    let Json(req) = match payload {
+        Ok(json) => json,
+        Err(rejection) => return Err(map_json_rejection(rejection)),
+    };
 
-        let service = state.chat_service().await;
-        let response = service.handle(req).await?;
+    validate_chat_request(&state, &req).await?;
 
-        Ok::<Json<ChatCompletionResponse>, AppError>(Json(response))
-    }
-    .await;
+    let service = state.chat_service().await;
+    let response = service.handle(req).await?;
 
-    metrics::INFLIGHT_REQUESTS.dec();
-    result
+    Ok(Json(response))
 }
 
 async fn validate_chat_request(
@@ -51,4 +52,29 @@ async fn validate_chat_request(
     }
 
     Ok(())
+}
+
+fn map_json_rejection(rejection: JsonRejection) -> AppError {
+    let msg = rejection.body_text();
+    let lower = msg.to_ascii_lowercase();
+
+    if lower.contains("body too large")
+        || lower.contains("length limit exceeded")
+        || lower.contains("request body too large")
+    {
+        return AppError::payload_too_large("request body exceeds max_request_body_bytes");
+    }
+
+    match rejection {
+        JsonRejection::MissingJsonContentType(_) => {
+            AppError::bad_request("content-type must be application/json")
+        }
+        JsonRejection::JsonSyntaxError(_) => {
+            AppError::bad_request(format!("failed to parse the request body as JSON: {msg}"))
+        }
+        JsonRejection::JsonDataError(_) => AppError::unprocessable(format!(
+            "failed to deserialize the JSON body into the target type: {msg}"
+        )),
+        _ => AppError::bad_request(msg),
+    }
 }

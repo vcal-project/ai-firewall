@@ -25,6 +25,20 @@ impl AppError {
         }
     }
 
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self::Validation {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: message.into(),
+        }
+    }
+
+    pub fn unprocessable(message: impl Into<String>) -> Self {
+        Self::Validation {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: message.into(),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn upstream_json(status: StatusCode, body: String) -> Response {
         match serde_json::from_str::<Value>(&body) {
@@ -45,7 +59,13 @@ impl AppError {
 
     fn error_type(&self) -> &'static str {
         match self {
-            AppError::Validation { .. } => "validation_error",
+            AppError::Validation { status, .. } => {
+                if *status == StatusCode::PAYLOAD_TOO_LARGE {
+                    "payload_too_large"
+                } else {
+                    "validation_error"
+                }
+            }
             AppError::Upstream(_) => "upstream_error",
             AppError::Internal(_) => "internal_error",
         }

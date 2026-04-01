@@ -12,8 +12,9 @@ mod services;
 mod types;
 mod upstream;
 
-use std::sync::Arc;
-use tokio::signal::unix::{signal, SignalKind};
+use std::{sync::Arc, time::Duration};
+
+use tokio::time::{sleep, Instant};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 fn parse_config_path() -> Option<String> {
@@ -59,9 +60,40 @@ async fn config_reload_loop(
     state: Arc<app::AppState>,
     config_path: Option<String>,
 ) -> anyhow::Result<()> {
-    let mut hup = signal(SignalKind::hangup())?;
+    #[cfg(unix)]
+    let mut hup = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::hangup())?
+    };
 
-    while hup.recv().await.is_some() {
+    loop {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = hup.recv() => {}
+                _ = async {
+                    while !state.shutdown.is_shutting_down() {
+                        sleep(Duration::from_millis(200)).await;
+                    }
+                } => {
+                    tracing::info!("stopping config reload loop due to shutdown");
+                    break;
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = &state;
+            let _ = &config_path;
+            break;
+        }
+
+        if state.shutdown.is_shutting_down() {
+            tracing::info!("shutdown in progress, skipping config reload");
+            break;
+        }
+
         tracing::info!("received SIGHUP, reloading config");
 
         let Some(path) = config_path.as_deref() else {
@@ -107,6 +139,67 @@ async fn config_reload_loop(
     Ok(())
 }
 
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM");
+            }
+            _ = sigint.recv() => {
+                tracing::info!("received SIGINT");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install CTRL+C handler");
+        tracing::info!("received CTRL+C");
+    }
+}
+
+async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
+    shutdown_signal().await;
+
+    tracing::info!("starting graceful shutdown");
+
+    state.shutdown.begin_shutdown();
+    crate::metrics::SHUTDOWN_IN_PROGRESS.set(1);
+
+    let deadline = Instant::now() + drain_timeout;
+
+    loop {
+        let inflight = state.shutdown.inflight();
+
+        if inflight == 0 {
+            tracing::info!("all in-flight requests completed");
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            tracing::warn!(
+                "graceful shutdown timeout reached with {} in-flight request(s) remaining",
+                inflight
+            );
+            break;
+        }
+
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    crate::metrics::SHUTDOWN_IN_PROGRESS.set(0);
+    tracing::info!("graceful shutdown complete");
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -118,8 +211,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-
-    metrics::init();
 
     let test_config = parse_test_config();
     let print_config = parse_print_config();
@@ -149,8 +240,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let listen_addr = cfg.listen_addr.clone();
-    let built = app::build_app(cfg).await?;
+    let shutdown_timeout = Duration::from_secs(cfg.graceful_shutdown_timeout_seconds);
 
+    let built = app::build_app(cfg).await?;
     let state = built.state.clone();
 
     tokio::spawn(async move {
@@ -162,6 +254,9 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!("listening on {}", listen_addr);
 
-    axum::serve(listener, built.router).await?;
+    axum::serve(listener, built.router)
+        .with_graceful_shutdown(graceful_shutdown(built.state.clone(), shutdown_timeout))
+        .await?;
+
     Ok(())
 }

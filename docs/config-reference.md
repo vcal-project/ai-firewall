@@ -33,7 +33,7 @@ The configuration file is divided into the following logical sections:
 
 ## Minimal Config Example
 
-```text
+```conf
 listen_addr 0.0.0.0:8080;
 
 redis_url redis://redis:6379;
@@ -51,6 +51,8 @@ qdrant_vector_size 1536;
 
 cache_ttl_seconds 86400;
 request_timeout_seconds 120;
+graceful_shutdown_timeout_seconds 10;  # default
+max_request_body_bytes 1048576;
 
 semantic_cache_enabled true;
 semantic_similarity_threshold 0.92;
@@ -89,11 +91,35 @@ Example:
 }
 ```
 
+## Cache TTL (Time-To-Live)
+
+`cache_ttl_seconds` defines how long cached responses are considered valid for both exact (Redis) and semantic (Qdrant) caching.
+
+Redis enforces TTL automatically, while semantic entries are filtered at query time based on expiration.
+
+## graceful_shutdown_timeout_seconds
+
+Controls how long the firewall waits for in-flight requests to complete during shutdown.
+
+Example:
+
+```text
+graceful_shutdown_timeout_seconds 10;
+```
+
+Default: 10 seconds
+
+Notes:
+
+- During shutdown, new requests are rejected
+- Existing requests are allowed to complete within this timeout
+- After the timeout, the process exits even if some requests are still in progress
+
 ## Optional: allow pass-through
 
 If you want the gateway to behave like a transparent proxy:
 
-```bash
+```conf
 allow_unknown_models_pass_through true;
 ```
 
@@ -107,9 +133,10 @@ In this mode:
 
 If:
 
-```text
-allow_unknown_models_pass_through = false
-AND no model_price entries are defined
+```conf
+allow_unknown_models_pass_through false
+AND
+no model_price entries are defined
 ```
 
 then all requests will be rejected.
@@ -141,6 +168,12 @@ gpt-4o-mini
 ```
 
 then no cost tracking
+
+AI Cost Firewall supports runtime config reload via SIGHUP in addition to static configuration at startup.
+
+Runtime behavior (graceful shutdown, readiness, and config reload) is described in:
+
+[docs/operation.md](docs/operation.md)
 
 ## Qdrant Notes
 
@@ -216,6 +249,7 @@ AIF_REDIS_URL=redis://127.0.0.1:6379
 AIF_UPSTREAM_API_KEY=sk-xxxx
 AIF_EMBEDDING_MODEL=text-embedding-3-small
 AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS=0.020
+AIF_MAX_REQUEST_BODY_BYTES=2M
 ```
 
 - Variables follow the AIF_ prefix convention
