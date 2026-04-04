@@ -5,6 +5,19 @@ use std::{
     path::Path,
 };
 
+fn cfg_err(msg: impl Into<String>) -> anyhow::Error {
+    anyhow!("configuration error: {}", msg.into())
+}
+
+fn warn_if_suspicious(cfg: &Config) {
+    if cfg.max_request_body_bytes < 1024 {
+        tracing::warn!(
+            "max_request_body_bytes={} is very small; requests larger than this will be rejected. Consider using at least 1K, for example 512K or 1M",
+            cfg.max_request_body_bytes
+        );
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ModelPrice {
     pub input_usd_per_1m_tokens: f64,
@@ -49,114 +62,138 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        if self.listen_addr.parse::<std::net::SocketAddr>().is_err() {
-            return Err(anyhow!("invalid listen_addr: {}", self.listen_addr));
+        let mut errors: Vec<String> = Vec::new();
+
+        // ---- listen_addr
+        if let Err(e) = self.listen_addr.parse::<std::net::SocketAddr>() {
+            errors.push(format!("invalid listen_addr '{}': {}", self.listen_addr, e));
         }
 
+        // ---- redis
         if self.redis_url.trim().is_empty() {
-            return Err(anyhow!("redis_url must not be empty"));
-        }
-
-        if !self.redis_url.starts_with("redis://") {
-            return Err(anyhow!("redis_url must start with redis://"));
-        }
-
-        if self.upstream_base_url.trim().is_empty() {
-            return Err(anyhow!("upstream_base_url must not be empty"));
-        }
-
-        if self.upstream_api_key.trim().is_empty() {
-            return Err(anyhow!("upstream_api_key must not be empty"));
-        }
-
-        if self.request_timeout_seconds == 0 {
-            return Err(anyhow!("request_timeout_seconds must be > 0"));
-        }
-
-        if self.cache_ttl_seconds == 0 {
-            return Err(anyhow!("cache_ttl_seconds must be > 0"));
-        }
-
-        if !(0.0..=1.0).contains(&self.semantic_similarity_threshold) {
-            return Err(anyhow!(
-                "semantic_similarity_threshold must be between 0.0 and 1.0"
+            errors.push("redis_url must not be empty".into());
+        } else if !self.redis_url.starts_with("redis://") {
+            errors.push(format!(
+                "invalid redis_url '{}': must start with redis://",
+                self.redis_url
             ));
         }
 
+        // ---- upstream
+        if self.upstream_base_url.trim().is_empty() {
+            errors.push("upstream_base_url must not be empty".into());
+        }
+
+        if self.upstream_api_key.trim().is_empty() {
+            errors.push("upstream_api_key must not be empty".into());
+        }
+
+        // ---- timeouts
+        if self.request_timeout_seconds == 0 {
+            errors.push("request_timeout_seconds must be > 0".into());
+        }
+
+        if self.cache_ttl_seconds == 0 {
+            errors.push("cache_ttl_seconds must be > 0".into());
+        }
+
+        if self.graceful_shutdown_timeout_seconds == 0 {
+            errors.push("graceful_shutdown_timeout_seconds must be > 0".into());
+        }
+
+        // ---- request size
+        if self.max_request_body_bytes == 0 {
+            errors.push("max_request_body_bytes must be > 0 (example: 1M, 512K, 1048576)".into());
+        }
+
+        // ---- semantic threshold
+        if !(0.0..=1.0).contains(&self.semantic_similarity_threshold) {
+            errors.push(format!(
+                "semantic_similarity_threshold must be between 0.0 and 1.0, got {}",
+                self.semantic_similarity_threshold
+            ));
+        }
+
+        // ---- qdrant
         if self.qdrant_vector_size == 0 {
-            return Err(anyhow!("qdrant_vector_size must be > 0"));
+            errors.push("qdrant_vector_size must be > 0".into());
         }
 
+        // ---- semantic cache block (aggregated)
         if self.semantic_cache_enabled {
+            let mut missing = Vec::new();
+
             if self.embedding_base_url.trim().is_empty() {
-                return Err(anyhow!(
-                    "embedding_base_url required when semantic_cache_enabled=true"
-                ));
+                missing.push("embedding_base_url");
             }
-
-            if self.embedding_model.trim().is_empty() {
-                return Err(anyhow!(
-                    "embedding_model required when semantic_cache_enabled=true"
-                ));
-            }
-
             if self.embedding_api_key.trim().is_empty() {
-                return Err(anyhow!(
-                    "embedding_api_key required when semantic_cache_enabled=true"
-                ));
+                missing.push("embedding_api_key");
+            }
+            if self.embedding_model.trim().is_empty() {
+                missing.push("embedding_model");
+            }
+            if self.qdrant_url.trim().is_empty() {
+                missing.push("qdrant_url");
+            }
+            if self.qdrant_collection.trim().is_empty() {
+                missing.push("qdrant_collection");
             }
 
-            if self.qdrant_url.trim().is_empty() {
-                return Err(anyhow!(
-                    "qdrant_url required when semantic_cache_enabled=true"
+            if !missing.is_empty() {
+                errors.push(format!(
+                    "semantic_cache_enabled=true requires: {}",
+                    missing.join(", ")
                 ));
             }
         }
 
+        // ---- model pricing
         for (model, price) in &self.model_prices {
             if model.trim().is_empty() {
-                return Err(anyhow!("model_prices contains an empty model name"));
+                errors.push("model_prices contains an empty model name".into());
+                continue;
             }
 
             if !price.input_usd_per_1m_tokens.is_finite()
                 || !price.output_usd_per_1m_tokens.is_finite()
             {
-                return Err(anyhow!(
-                    "model_price for '{}' must be finite for both input and output",
+                errors.push(format!(
+                    "model_price '{}' must have finite input/output values",
                     model
                 ));
             }
 
             if price.input_usd_per_1m_tokens < 0.0 || price.output_usd_per_1m_tokens < 0.0 {
-                return Err(anyhow!(
-                    "model_price for '{}' must be >= 0 for both input and output",
+                errors.push(format!(
+                    "model_price '{}' must be >= 0 for both input and output",
                     model
                 ));
             }
         }
 
+        // ---- embedding price
         if let Some(price) = &self.embedding_price {
             if !price.usd_per_1m_tokens.is_finite() {
-                return Err(anyhow!("embedding_price must be finite"));
+                errors.push("embedding_price must be finite".into());
             }
 
             if price.usd_per_1m_tokens < 0.0 {
-                return Err(anyhow!("embedding_price must be >= 0"));
+                errors.push("embedding_price must be >= 0".into());
             }
         }
 
+        // ---- model allowlist logic (important improvement)
         if !self.allow_unknown_models_pass_through && self.model_prices.is_empty() {
-            return Err(anyhow!(
-                "no models configured: either define at least one model_price or set allow_unknown_models_pass_through"
-            ));
+            errors.push(
+                "no allowed models configured: add at least one `model_price <model> <input> <output>` \
+                 or set allow_unknown_models_pass_through=true"
+                    .into(),
+            );
         }
 
-        if self.graceful_shutdown_timeout_seconds == 0 {
-            return Err(anyhow!("graceful_shutdown_timeout_seconds must be > 0"));
-        }
-
-        if self.max_request_body_bytes == 0 {
-            return Err(anyhow!("max_request_body_bytes must be > 0"));
+        // ---- FINAL
+        if !errors.is_empty() {
+            return Err(cfg_err(errors.join("; ")));
         }
 
         Ok(())
@@ -165,7 +202,9 @@ impl Config {
     fn parse_bytes(input: &str) -> Result<usize> {
         let s = input.trim();
         if s.is_empty() {
-            anyhow::bail!("byte size must not be empty");
+            return Err(cfg_err(
+                "byte size must not be empty; use formats like 1024, 512K, 1M, 2M",
+            ));
         }
 
         let upper = s.to_ascii_uppercase();
@@ -186,86 +225,15 @@ impl Config {
             (upper.as_str(), 1usize)
         };
 
-        let base: usize = number_part
-            .trim()
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid byte size: {}", input))?;
+        let base: usize = number_part.trim().parse().map_err(|_| {
+            cfg_err(format!(
+                "invalid byte size '{}'. Use formats like 1024, 512K, 1M, 2M",
+                input
+            ))
+        })?;
 
         base.checked_mul(multiplier)
-            .ok_or_else(|| anyhow::anyhow!("byte size is too large: {}", input))
-    }
-
-    pub fn from_env() -> Result<Self> {
-        Ok(Self {
-            listen_addr: env::var("AIF_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into()),
-            redis_url: env::var("AIF_REDIS_URL").context("AIF_REDIS_URL is required")?,
-
-            upstream_base_url: env::var("AIF_UPSTREAM_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".into()),
-            upstream_api_key: env::var("AIF_UPSTREAM_API_KEY")
-                .context("AIF_UPSTREAM_API_KEY is required")?,
-
-            embedding_base_url: env::var("AIF_EMBEDDING_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".into()),
-            embedding_api_key: env::var("AIF_EMBEDDING_API_KEY")
-                .unwrap_or_else(|_| env::var("AIF_UPSTREAM_API_KEY").unwrap_or_default()),
-            embedding_model: env::var("AIF_EMBEDDING_MODEL")
-                .unwrap_or_else(|_| "text-embedding-3-small".into()),
-
-            embedding_price: env::var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS")
-                .ok()
-                .map(|v| v.parse::<f64>())
-                .transpose()
-                .context("invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS")?
-                .map(|usd_per_1m_tokens| EmbeddingPrice { usd_per_1m_tokens }),
-
-            qdrant_url: env::var("AIF_QDRANT_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:6334".into()),
-            qdrant_api_key: env::var("AIF_QDRANT_API_KEY").ok(),
-            qdrant_collection: env::var("AIF_QDRANT_COLLECTION")
-                .unwrap_or_else(|_| "aif_semantic_cache".into()),
-            qdrant_vector_size: env::var("AIF_QDRANT_VECTOR_SIZE")
-                .unwrap_or_else(|_| "1536".into())
-                .parse()
-                .context("invalid AIF_QDRANT_VECTOR_SIZE")?,
-
-            cache_ttl_seconds: env::var("AIF_CACHE_TTL_SECONDS")
-                .unwrap_or_else(|_| "86400".into())
-                .parse()
-                .context("invalid AIF_CACHE_TTL_SECONDS")?,
-
-            request_timeout_seconds: env::var("AIF_REQUEST_TIMEOUT_SECONDS")
-                .unwrap_or_else(|_| "120".into())
-                .parse()
-                .context("invalid AIF_REQUEST_TIMEOUT_SECONDS")?,
-
-            semantic_cache_enabled: env::var("AIF_SEMANTIC_CACHE_ENABLED")
-                .unwrap_or_else(|_| "false".into())
-                .parse()
-                .context("invalid AIF_SEMANTIC_CACHE_ENABLED")?,
-
-            semantic_similarity_threshold: env::var("AIF_SEMANTIC_SIMILARITY_THRESHOLD")
-                .unwrap_or_else(|_| "0.92".into())
-                .parse()
-                .context("invalid AIF_SEMANTIC_SIMILARITY_THRESHOLD")?,
-
-            model_prices: HashMap::new(),
-
-            allow_unknown_models_pass_through: env::var("AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH")
-                .unwrap_or_else(|_| "false".into())
-                .parse()
-                .context("invalid AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH")?,
-
-            graceful_shutdown_timeout_seconds: env::var("AIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS")
-                .unwrap_or_else(|_| "10".into())
-                .parse()
-                .context("invalid AIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS")?,
-
-            max_request_body_bytes: Self::parse_bytes(
-                &env::var("AIF_MAX_REQUEST_BODY_BYTES").unwrap_or_else(|_| "1M".into()),
-            )
-            .context("invalid AIF_MAX_REQUEST_BODY_BYTES")?,
-        })
+            .ok_or_else(|| cfg_err(format!("byte size is too large: '{}'", input)))
     }
 
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
@@ -275,7 +243,7 @@ impl Config {
         let map = parse_nginx_style_config(&text)?;
         let model_prices = parse_model_prices(&text)?;
 
-        Ok(Self {
+        let cfg = Self {
             listen_addr: get_or_default(&map, "listen_addr", "0.0.0.0:8080"),
             redis_url: get_required(&map, "redis_url")?,
 
@@ -298,7 +266,9 @@ impl Config {
                 .map(|v| {
                     v.parse::<f64>()
                         .map(|usd_per_1m_tokens| EmbeddingPrice { usd_per_1m_tokens })
-                        .map_err(|e| anyhow!("invalid value for embedding_price: {e}"))
+                        .map_err(|e| {
+                            cfg_err(format!("invalid embedding_price value '{}': {}", v, e))
+                        })
                 })
                 .transpose()?,
 
@@ -336,7 +306,139 @@ impl Config {
                 .map(|v| Self::parse_bytes(v))
                 .transpose()?
                 .unwrap_or(1_048_576usize),
-        })
+        };
+
+        warn_if_suspicious(&cfg);
+
+        Ok(cfg)
+    }
+
+    pub fn from_env() -> Result<Self> {
+        let cfg = Self {
+            listen_addr: env::var("AIF_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            redis_url: env::var("AIF_REDIS_URL")
+                .map_err(|_| cfg_err("AIF_REDIS_URL is required when no config file is used"))?,
+
+            upstream_base_url: env::var("AIF_UPSTREAM_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com".into()),
+            upstream_api_key: env::var("AIF_UPSTREAM_API_KEY").map_err(|_| {
+                cfg_err("AIF_UPSTREAM_API_KEY is required when no config file is used")
+            })?,
+
+            embedding_base_url: env::var("AIF_EMBEDDING_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com".into()),
+            embedding_api_key: env::var("AIF_EMBEDDING_API_KEY")
+                .unwrap_or_else(|_| env::var("AIF_UPSTREAM_API_KEY").unwrap_or_default()),
+            embedding_model: env::var("AIF_EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "text-embedding-3-small".into()),
+
+            embedding_price: env::var("AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS")
+                .ok()
+                .map(|v| {
+                    v.parse::<f64>().map_err(|e| {
+                        cfg_err(format!(
+                            "invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS value '{}': {}",
+                            v, e
+                        ))
+                    })
+                })
+                .transpose()?
+                .map(|usd_per_1m_tokens| EmbeddingPrice { usd_per_1m_tokens }),
+
+            qdrant_url: env::var("AIF_QDRANT_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:6334".into()),
+            qdrant_api_key: env::var("AIF_QDRANT_API_KEY").ok(),
+            qdrant_collection: env::var("AIF_QDRANT_COLLECTION")
+                .unwrap_or_else(|_| "aif_semantic_cache".into()),
+            qdrant_vector_size: {
+                let raw = env::var("AIF_QDRANT_VECTOR_SIZE").unwrap_or_else(|_| "1536".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_QDRANT_VECTOR_SIZE value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            cache_ttl_seconds: {
+                let raw = env::var("AIF_CACHE_TTL_SECONDS").unwrap_or_else(|_| "86400".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_CACHE_TTL_SECONDS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            request_timeout_seconds: {
+                let raw = env::var("AIF_REQUEST_TIMEOUT_SECONDS").unwrap_or_else(|_| "120".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_REQUEST_TIMEOUT_SECONDS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            semantic_cache_enabled: {
+                let raw = env::var("AIF_SEMANTIC_CACHE_ENABLED").unwrap_or_else(|_| "false".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_SEMANTIC_CACHE_ENABLED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            semantic_similarity_threshold: {
+                let raw =
+                    env::var("AIF_SEMANTIC_SIMILARITY_THRESHOLD").unwrap_or_else(|_| "0.92".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_SEMANTIC_SIMILARITY_THRESHOLD value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            model_prices: HashMap::new(),
+
+            allow_unknown_models_pass_through: {
+                let raw = env::var("AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH")
+                    .unwrap_or_else(|_| "false".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            graceful_shutdown_timeout_seconds: {
+                let raw = env::var("AIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS")
+                    .unwrap_or_else(|_| "10".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            max_request_body_bytes: {
+                let raw = env::var("AIF_MAX_REQUEST_BODY_BYTES").unwrap_or_else(|_| "1M".into());
+                Self::parse_bytes(&raw).map_err(|_| {
+                    cfg_err(format!(
+                        "invalid AIF_MAX_REQUEST_BODY_BYTES value '{}'. Use formats like 1024, 512K, 1M, 2M",
+                        raw
+                    ))
+                })?
+            },
+        };
+
+        warn_if_suspicious(&cfg);
+
+        Ok(cfg)
     }
 
     pub fn from_env_or_file(path: Option<&str>) -> Result<Self> {
@@ -358,7 +460,6 @@ impl Config {
         }
 
         tracing::info!("no config file found, falling back to environment variables");
-
         Self::from_env()
     }
 }
@@ -596,7 +697,7 @@ fn strip_quotes(s: &str) -> String {
 fn get_required(map: &HashMap<String, String>, key: &str) -> Result<String> {
     map.get(key)
         .cloned()
-        .ok_or_else(|| anyhow!("missing required config key: {key}"))
+        .ok_or_else(|| cfg_err(format!("missing required config key: {}", key)))
 }
 
 fn get_or_default(map: &HashMap<String, String>, key: &str, default: &str) -> String {
@@ -611,7 +712,7 @@ where
     match map.get(key) {
         Some(v) => v
             .parse::<T>()
-            .map_err(|e| anyhow!("invalid value for {key}: {e}")),
+            .map_err(|e| cfg_err(format!("invalid value for {}: {}", key, e))),
         None => Ok(default),
     }
 }

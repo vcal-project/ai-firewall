@@ -2,8 +2,7 @@
 
 This guide explains how to prepare the configuration file and run the **AI Cost Firewall** locally.
 
-The firewall acts as an **OpenAI-compatible API gateway*** that sits between applications and LLM providers to reduce cost and latency through
-caching.
+The firewall acts as an **OpenAI-compatible API gateway*** that sits between applications and LLM providers to reduce cost and latency through caching.
 
 ```text
 Client
@@ -44,23 +43,27 @@ gpt-4o-mini-2024-07-18
 
 > The repository already includes all required Prometheus and Grafana configuration 
 
-After starting the stack:
-
-Firewall API:
+## Start the stack
 
 ```bash
-http://localhost:8080
+docker compose pull
+docker compose up -d
 ```
 
-Prometheus:
-```bash
-http://localhost:9090
-```
+## Expected outcome
 
-Grafana:
+After startup:
+
+- Firewall API is available at http://localhost:8080
+- Prometheus is available at http://localhost:9090
+- Grafana is available at http://localhost:3000
+- No startup errors in logs
+- Configuration validated successfully
+
+Check logs:
 
 ```bash
-http://localhost:3000
+docker compose logs -f firewall
 ```
 
 ### Verifying the Container Image (Optional)
@@ -77,14 +80,56 @@ https://raw.githubusercontent.com/vcal-project/ai-firewall/main/security/cosign.
 Example:
 
 ```bash
-docker pull vcalproject/ai-firewall:v0.1.0
+docker pull vcalproject/ai-firewall:v0.1.3
 
 cosign verify \
   --key cosign.pub \
-  vcalproject/ai-firewall:v0.1.0
+  vcalproject/ai-firewall:v0.1.3
 ```
 
 If the verification succeeds, the image was produced and signed by the project maintainers and has not been tampered with.
+
+## Common Startup Errors
+
+### Missing model_price
+
+```text
+configuration error: no allowed models configured
+```
+
+Fix: define at least one `model_price` or enable pass-through.
+
+### Semantic cache misconfigured
+
+```text
+configuration error: semantic_cache_enabled=true requires: embedding_api_key, embedding_model, qdrant_url
+```
+
+Fix: add required fields or disable semantic cache.
+
+### Invalid request size
+
+```text
+configuration error: invalid AIF_MAX_REQUEST_BODY_BYTES value 'abc'
+```
+
+Fix: use values like `1M`, `512K`, `1048576`.
+
+## Example Request
+
+Before sending requests, ensure model name matches provider exactly.
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer <your-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini-2024-07-18",
+    "messages": [
+      {"role": "user", "content": "Say hello."}
+    ]
+  }'
+```
 
 ---
 
@@ -459,12 +504,10 @@ or
 
 ## Summary
 
-Running the firewall locally requires:
+To run locally:
 
-1. Redis
-2. Qdrant (optional for semantic cache)
-3. OpenAI API key
-4. Configuration file
-5. cargo run --release
+1. Configure API key and models
+2. Start Docker stack
+3. Send requests to http://localhost:8080
 
-The firewall then acts as a **drop-in OpenAI-compatible API gateway** that reduces cost and latency through exact and semantic caching.
+The firewall then acts as a drop-in OpenAI-compatible API gateway that reduces cost and latency through exact and semantic caching.

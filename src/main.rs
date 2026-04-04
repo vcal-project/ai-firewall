@@ -218,10 +218,19 @@ async fn main() -> anyhow::Result<()> {
     let explicit_config_path = parse_config_path();
     let reload_config_path = resolve_config_path(explicit_config_path.clone());
 
-    let cfg = config::Config::from_env_or_file(explicit_config_path.as_deref())?;
+    let cfg = match config::Config::from_env_or_file(explicit_config_path.as_deref()) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::error!("startup aborted due to configuration error: {}", e);
+            return Err(e);
+        }
+    };
 
     if let Err(e) = cfg.validate() {
-        tracing::error!("configuration validation failed: {}", e);
+        tracing::error!(
+            "startup aborted due to configuration validation failure: {}",
+            e
+        );
         return Err(e);
     }
 
@@ -233,7 +242,10 @@ async fn main() -> anyhow::Result<()> {
     if test_config {
         tracing::info!("configuration OK");
 
-        app::build_runtime(&cfg).await?;
+        if let Err(e) = app::build_runtime(&cfg).await {
+            tracing::error!("runtime dependency check failed: {}", e);
+            return Err(e);
+        }
 
         tracing::info!("runtime dependencies initialized successfully");
         return Ok(());
@@ -242,7 +254,13 @@ async fn main() -> anyhow::Result<()> {
     let listen_addr = cfg.listen_addr.clone();
     let shutdown_timeout = Duration::from_secs(cfg.graceful_shutdown_timeout_seconds);
 
-    let built = app::build_app(cfg).await?;
+    let built = match app::build_app(cfg).await {
+        Ok(built) => built,
+        Err(e) => {
+            tracing::error!("startup aborted during runtime initialization: {}", e);
+            return Err(e);
+        }
+    };
     let state = built.state.clone();
 
     tokio::spawn(async move {
@@ -251,7 +269,9 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to bind {}: {}", listen_addr, e))?;
     tracing::info!("listening on {}", listen_addr);
 
     axum::serve(listener, built.router)

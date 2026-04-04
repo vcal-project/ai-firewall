@@ -118,34 +118,15 @@ fn invalid_embedding_price_in_env_is_rejected() {
 
     let err = result.unwrap_err().to_string();
     assert!(err.contains("invalid AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS"));
+    assert!(err.contains("not-a-number"));
 }
 
 #[test]
 fn negative_embedding_price_fails_validation() {
-    let cfg = Config {
-        listen_addr: "127.0.0.1:8080".to_string(),
-        redis_url: "redis://127.0.0.1:6379".to_string(),
-        upstream_base_url: "https://api.openai.com".to_string(),
-        upstream_api_key: "test-upstream-key".to_string(),
-        embedding_base_url: "https://api.openai.com".to_string(),
-        embedding_api_key: "test-embedding-key".to_string(),
-        embedding_model: "text-embedding-3-small".to_string(),
-        qdrant_url: "http://127.0.0.1:6334".to_string(),
-        qdrant_api_key: None,
-        qdrant_collection: "aif_semantic_cache".to_string(),
-        qdrant_vector_size: 1536,
-        cache_ttl_seconds: 86400,
-        request_timeout_seconds: 120,
-        graceful_shutdown_timeout_seconds: 10,
-        max_request_body_bytes: 1_048_576,
-        semantic_cache_enabled: false,
-        semantic_similarity_threshold: 0.92,
-        model_prices: HashMap::new(),
-        embedding_price: Some(EmbeddingPrice {
-            usd_per_1m_tokens: -0.020,
-        }),
-        allow_unknown_models_pass_through: false,
-    };
+    let mut cfg = minimal_valid_config();
+    cfg.embedding_price = Some(EmbeddingPrice {
+        usd_per_1m_tokens: -0.020,
+    });
 
     let err = cfg.validate().unwrap_err().to_string();
     assert!(err.contains("embedding_price must be >= 0"));
@@ -153,31 +134,14 @@ fn negative_embedding_price_fails_validation() {
 
 #[test]
 fn strict_model_validation_requires_model_price_or_passthrough() {
-    let cfg = Config {
-        listen_addr: "127.0.0.1:8080".to_string(),
-        redis_url: "redis://127.0.0.1:6379".to_string(),
-        upstream_base_url: "https://api.openai.com".to_string(),
-        upstream_api_key: "test-upstream-key".to_string(),
-        embedding_base_url: "https://api.openai.com".to_string(),
-        embedding_api_key: "test-embedding-key".to_string(),
-        embedding_model: "text-embedding-3-small".to_string(),
-        embedding_price: None,
-        qdrant_url: "http://127.0.0.1:6334".to_string(),
-        qdrant_api_key: None,
-        qdrant_collection: "aif_semantic_cache".to_string(),
-        qdrant_vector_size: 1536,
-        cache_ttl_seconds: 86400,
-        request_timeout_seconds: 120,
-        graceful_shutdown_timeout_seconds: 10,
-        max_request_body_bytes: 1_048_576,
-        semantic_cache_enabled: false,
-        semantic_similarity_threshold: 0.92,
-        model_prices: HashMap::new(),
-        allow_unknown_models_pass_through: false,
-    };
+    let mut cfg = minimal_valid_config();
+    cfg.model_prices = HashMap::new();
+    cfg.allow_unknown_models_pass_through = false;
 
     let err = cfg.validate().unwrap_err().to_string();
-    assert!(err.contains("no models configured: either define at least one model_price or set allow_unknown_models_pass_through"));
+    assert!(err.contains("no allowed models configured"));
+    assert!(err.contains("model_price"));
+    assert!(err.contains("allow_unknown_models_pass_through=true"));
 }
 
 #[test]
@@ -223,6 +187,21 @@ fn invalid_max_request_body_bytes_in_env_is_rejected() {
 
     let err = result.unwrap_err().to_string();
     assert!(err.contains("invalid AIF_MAX_REQUEST_BODY_BYTES"));
+    assert!(err.contains("not-a-size"));
+}
+
+#[test]
+#[serial]
+fn missing_required_env_vars_are_reported_clearly() {
+    unsafe {
+        std::env::remove_var("AIF_REDIS_URL");
+        std::env::remove_var("AIF_UPSTREAM_API_KEY");
+    }
+
+    let result = Config::from_env();
+    let err = result.unwrap_err().to_string();
+
+    assert!(err.contains("AIF_REDIS_URL is required when no config file is used"));
 }
 
 #[test]
@@ -253,6 +232,15 @@ fn zero_request_timeout_seconds_fails_validation() {
 }
 
 #[test]
+fn zero_graceful_shutdown_timeout_seconds_fails_validation() {
+    let mut cfg = minimal_valid_config();
+    cfg.graceful_shutdown_timeout_seconds = 0;
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("graceful_shutdown_timeout_seconds must be > 0"));
+}
+
+#[test]
 fn similarity_threshold_above_one_fails_validation() {
     let mut cfg = minimal_valid_config();
     cfg.semantic_similarity_threshold = 1.1;
@@ -277,7 +265,8 @@ fn semantic_cache_requires_embedding_api_key() {
     cfg.embedding_api_key = "".to_string();
 
     let err = cfg.validate().unwrap_err().to_string();
-    assert!(err.contains("embedding_api_key required"));
+    assert!(err.contains("semantic_cache_enabled=true requires:"));
+    assert!(err.contains("embedding_api_key"));
 }
 
 #[test]
@@ -287,7 +276,25 @@ fn semantic_cache_requires_qdrant_url() {
     cfg.qdrant_url = "".to_string();
 
     let err = cfg.validate().unwrap_err().to_string();
-    assert!(err.contains("qdrant_url required"));
+    assert!(err.contains("semantic_cache_enabled=true requires:"));
+    assert!(err.contains("qdrant_url"));
+}
+
+#[test]
+fn semantic_cache_reports_multiple_missing_fields_together() {
+    let mut cfg = minimal_valid_config();
+    cfg.semantic_cache_enabled = true;
+    cfg.embedding_api_key = "".to_string();
+    cfg.embedding_model = "".to_string();
+    cfg.qdrant_url = "".to_string();
+    cfg.qdrant_collection = "".to_string();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("semantic_cache_enabled=true requires:"));
+    assert!(err.contains("embedding_api_key"));
+    assert!(err.contains("embedding_model"));
+    assert!(err.contains("qdrant_url"));
+    assert!(err.contains("qdrant_collection"));
 }
 
 #[test]
@@ -297,6 +304,34 @@ fn invalid_listen_addr_fails_validation() {
 
     let err = cfg.validate().unwrap_err().to_string();
     assert!(err.contains("invalid listen_addr"));
+}
+
+#[test]
+fn invalid_redis_url_prefix_fails_validation() {
+    let mut cfg = minimal_valid_config();
+    cfg.redis_url = "http://127.0.0.1:6379".to_string();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("invalid redis_url"));
+    assert!(err.contains("must start with redis://"));
+}
+
+#[test]
+fn empty_upstream_api_key_fails_validation() {
+    let mut cfg = minimal_valid_config();
+    cfg.upstream_api_key = "".to_string();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("upstream_api_key must not be empty"));
+}
+
+#[test]
+fn zero_qdrant_vector_size_fails_validation() {
+    let mut cfg = minimal_valid_config();
+    cfg.qdrant_vector_size = 0;
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("qdrant_vector_size must be > 0"));
 }
 
 #[test]
@@ -336,4 +371,66 @@ unknown_key value;
 
     let err = result.unwrap_err().to_string();
     assert!(err.contains("unknown directive"));
+}
+
+#[test]
+fn duplicate_directive_is_rejected() {
+    let path = temp_config_path("duplicate_directive");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+listen_addr 127.0.0.1:8081;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let result = Config::from_file(&path);
+    fs::remove_file(&path).ok();
+
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("duplicate directive"));
+}
+
+#[test]
+fn duplicate_model_price_is_rejected() {
+    let path = temp_config_path("duplicate_model_price");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+model_price gpt-4o-mini-2024-07-18 0.20 0.70;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let result = Config::from_file(&path);
+    fs::remove_file(&path).ok();
+
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("duplicate model_price"));
+}
+
+#[test]
+fn invalid_model_price_input_is_rejected() {
+    let path = temp_config_path("invalid_model_price_input");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+model_price gpt-4o-mini-2024-07-18 nope 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let result = Config::from_file(&path);
+    fs::remove_file(&path).ok();
+
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("invalid model_price input price"));
 }

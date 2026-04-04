@@ -53,17 +53,21 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 
 # Key Features
 
--   OpenAI-compatible `/v1/chat/completions` endpoint
--   Exact request caching (Redis)
--   Semantic cache (Qdrant)
--   Token and cost savings metrics
--   Prometheus observability
--   Docker deployment
--   nginx-style configuration
--   Hot configuration reload (`SIGHUP`)
--   Graceful shutdown with request draining (SIGTERM / SIGINT)
--   Readiness and liveness endpoints (`/readyz`, `/healthz`)
--   Lightweight Rust + Axum implementation
+- OpenAI-compatible `/v1/chat/completions` endpoint
+- Exact request caching (Redis)
+- Semantic cache (Qdrant)
+- Token and cost savings metrics
+- Prometheus observability
+- Docker deployment
+- nginx-style configuration
+- Strict startup validation with clear error messages
+- Hot configuration reload (`SIGHUP`)
+- Graceful shutdown with request draining (SIGTERM / SIGINT)
+- Readiness and liveness endpoints (`/readyz`, `/healthz`)
+- Request size protection (`max_request_body_bytes`)
+- Lightweight Rust + Axum implementation
+
+AI Cost Firewall is designed to be afe by default preventing accidental misconfiguration and unintended upstream costs.
 
 ---
 
@@ -71,7 +75,7 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 
 Client applications send requests to the firewall instead of directly to the LLM provider.
 
-[![AI Cost Firewall Architecture Diasgram](assets/architecture/ai-cost-firewall-diagram.png)](assets/architecture/ai-cost-firewall-diagram.png)
+[![AI Cost Firewall Architecture Diagram](assets/architecture/ai-cost-firewall-diagram.png)](assets/architecture/ai-cost-firewall-diagram.png)
 
 Full architecture documentation:
 
@@ -170,6 +174,202 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
+# Configuration
+
+AI Cost Firewall uses a simple nginx-style configuration format.
+
+- Signal-driven operations (SIGHUP reload, SIGTERM graceful shutdown)
+
+Example configuration:
+
+``` text
+listen_addr 0.0.0.0:8080;
+
+redis_url redis://redis:6379;
+
+upstream_base_url https://api.openai.com;
+upstream_api_key sk-your-api-key;
+
+embedding_base_url https://api.openai.com;
+embedding_api_key sk-your-api-key;
+embedding_model text-embedding-3-small;
+
+qdrant_url http://qdrant:6334;
+qdrant_collection aif_semantic_cache;
+qdrant_vector_size 1536;
+
+cache_ttl_seconds 2592000;
+request_timeout_seconds 120;
+graceful_shutdown_timeout_seconds 10;  # default
+max_request_body_bytes 1M;
+
+semantic_cache_enabled true;
+semantic_similarity_threshold 0.92;
+
+# Model validation behavior
+# By default, only models defined via `model_price` are allowed.
+# Unknown models will be rejected with 400.
+allow_unknown_models_pass_through false;
+
+# Chat-completion pricing (USD per 1M tokens)
+# model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
+
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
+
+# Embedding pricing (optional, used for net cost estimation only)
+embedding_price 0.020;
+```
+
+> If the API returns `gpt-4o-mini-2024-07-18`, the same name must appear in the configuration.
+
+Misconfiguration is one of the most common causes of unexpected LLM costs. AI Cost Firewall prevents this at startup.
+
+## Startup Validation & Error Handling
+
+AI Cost Firewall performs strict validation at startup.
+
+### Example errors
+
+```text
+configuration error: semantic_cache_enabled=true requires: embedding_api_key, embedding_model, qdrant_url
+```
+
+```text
+configuration error: no allowed models configured: add at least one model_price or set allow_unknown_models_pass_through=true
+```
+
+```text
+configuration error: invalid AIF_MAX_REQUEST_BODY_BYTES value 'abc'. Use formats like 1024, 512K, 1M, 2M
+```
+
+### Behavior
+
+- Multiple issues reported in a single error
+- Invalid configs fail fast
+- Prevents unintended upstream usage
+
+## Model validation
+
+AI Cost Firewall validates the `model` field before forwarding requests upstream.
+
+- Only models defined via `model_price` are considered supported
+- Requests with unknown models are rejected with 400 Bad Request
+- This prevents accidental or unauthorized upstream usage
+
+Example:
+
+```bash
+{
+  "error": {
+    "code": 400,
+    "message": "Unsupported model: gpt-unknown",
+    "type": "validation_error"
+  }
+}
+```
+
+`cache_ttl_seconds` defines how long cached responses are considered valid for both exact (Redis) and semantic (Qdrant) caching.
+
+Redis enforces TTL automatically, while semantic entries are filtered at query time based on expiration.
+
+## Optional: allow pass-through
+
+If you want the gateway to behave like a transparent proxy:
+
+```bash
+allow_unknown_models_pass_through true;
+```
+
+In this mode:
+
+- Unknown models are forwarded upstream
+- Cost tracking will not be applied for unknown models
+- Validation is relaxed
+
+---
+
+## Request size limits
+
+`max_request_body_bytes` defines the maximum request size.
+
+Supported formats:
+
+```text
+1024
+512K
+1M
+2M
+```
+
+Requests exceeding the limit are rejected early:
+
+```json
+{
+  "error": {
+    "code": 413,
+    "type": "validation_error",
+    "message": "request body exceeds max_request_body_bytes limit"
+  }
+}
+```
+
+Very small values (<1K) trigger a startup warning.
+
+## Semantic cache requirements
+
+When enabled:
+
+```conf
+semantic_cache_enabled true;
+```
+
+Required fields:
+
+- embedding_base_url
+- embedding_api_key
+- embedding_model
+- qdrant_url
+- qdrant_collection
+- qdrant_vector_size
+
+---
+
+## Environment Variables
+
+If no configuration file is provided, AI Cost Firewall falls back to environment variables.
+
+For convenience, you can use a `.env` file in development:
+
+```conf
+AIF_REDIS_URL=redis://127.0.0.1:6379
+AIF_UPSTREAM_API_KEY=sk-xxxx
+AIF_EMBEDDING_MODEL=text-embedding-3-small
+AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS=0.020
+```
+
+- Variables follow the AIF_ prefix convention
+- `.env` is loaded automatically if present
+- Intended for development and simple deployments
+
+If neither a config file nor required environment variables are provided, the application will fail to start with a clear configuration error.
+
+Example errors:
+
+```text
+configuration error: AIF_REDIS_URL is required when no config file is used
+```
+
+```text
+configuration error: invalid AIF_QDRANT_VECTOR_SIZE value 'abc'
+```
+
+Full configuration reference:
+
+[docs/config-reference.md](docs/config-reference.md)
+
+---
+
 ## Metrics
 
 Prometheus metrics are available at:
@@ -244,118 +444,6 @@ cargo run --release
 
 ---
 
-# Configuration
-
-AI Cost Firewall uses a simple nginx-style configuration format.
-
-- Signal-driven operations (SIGHUP reload, SIGTERM graceful shutdown)
-
-Example configuration:
-
-``` text
-listen_addr 0.0.0.0:8080;
-
-redis_url redis://redis:6379;
-
-upstream_base_url https://api.openai.com;
-upstream_api_key sk-your-api-key;
-
-embedding_base_url https://api.openai.com;
-embedding_api_key sk-your-api-key;
-embedding_model text-embedding-3-small;
-
-qdrant_url http://qdrant:6334;
-qdrant_collection aif_semantic_cache;
-qdrant_vector_size 1536;
-
-cache_ttl_seconds 2592000;
-request_timeout_seconds 120;
-graceful_shutdown_timeout_seconds 10;  # default
-max_request_body_bytes 1048576;
-
-semantic_cache_enabled true;
-semantic_similarity_threshold 0.92;
-
-# Model validation behavior
-# By default, only models defined via `model_price` are allowed.
-# Unknown models will be rejected with 400.
-allow_unknown_models_pass_through false;
-
-# Chat-completion pricing (USD per 1M tokens)
-# model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
-
-model_price gpt-4o-mini-2024-07-18 0.15 0.60;
-model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
-
-# Embedding pricing (optional, used for net cost estimation only)
-embedding_price 0.020;
-```
-
-> If the API returns `gpt-4o-mini-2024-07-18`, the same name must appear in the configuration.
-
-## Model validation
-
-AI Cost Firewall validates the `model` field before forwarding requests upstream.
-
-- Only models defined via `model_price` are considered supported
-- Requests with unknown models are rejected with 400 Bad Request
-- This prevents accidental or unauthorized upstream usage
-
-Example:
-
-```bash
-{
-  "error": {
-    "code": 400,
-    "message": "Unsupported model: gpt-unknown",
-    "type": "validation_error"
-  }
-}
-```
-
-`cache_ttl_seconds` defines how long cached responses are considered valid for both exact (Redis) and semantic (Qdrant) caching.
-
-Redis enforces TTL automatically, while semantic entries are filtered at query time based on expiration.
-
-## Optional: allow pass-through
-
-If you want the gateway to behave like a transparent proxy:
-
-```bash
-allow_unknown_models_pass_through true;
-```
-
-In this mode:
-
-- Unknown models are forwarded upstream
-- Cost tracking will not be applied for unknown models
-- Validation is relaxed
-
-## Environment Variables (Optional)
-
-If no configuration file is provided, AI Cost Firewall falls back to environment variables.
-
-For convenience, you can use a `.env` file in development:
-
-```conf
-AIF_REDIS_URL=redis://127.0.0.1:6379
-AIF_UPSTREAM_API_KEY=sk-xxxx
-AIF_EMBEDDING_MODEL=text-embedding-3-small
-AIF_EMBEDDING_PRICE_USD_PER_1M_TOKENS=0.020
-```
-
-- Variables follow the AIF_ prefix convention
-- `.env` is loaded automatically if present
-- Intended for development and simple deployments
-
-If neither a config file nor required environment variables are provided, the application will fail to start.
-
-Full configuration reference:
-
-[docs/config-reference.md](docs/config-reference.md)
-
----
-
 ## Testing
 
 AI Cost Firewall includes unit tests for configuration parsing, validation, and core request handling paths.
@@ -363,7 +451,9 @@ AI Cost Firewall includes unit tests for configuration parsing, validation, and 
 Key areas covered:
 - Config validation (required fields, limits, semantic cache requirements)
 - Byte-size parsing (`1M`, `2M`, etc.) for request limits
-- Negative cases (invalid configs, malformed values)
+- Negative configuration tests (invalid values, missing fields, invalid sizes)
+- Aggregated validation error tests (multiple misconfigurations reported together)
+- Environment variable validation (invalid formats, missing required variables)
 - Cost accounting correctness (chat vs embedding vs net)
 
 Run tests locally:
