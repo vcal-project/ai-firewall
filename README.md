@@ -287,6 +287,17 @@ In this mode:
 - Cost tracking will not be applied for unknown models
 - Validation is relaxed
 
+### Cache behavior and TTL
+
+`cache_ttl_seconds` defines how long cached responses remain valid.
+
+- Exact cache (Redis): TTL is enforced automatically by Redis
+- Semantic cache (Qdrant): entries are not physically deleted, but filtered at query time based on expiration
+
+This ensures consistent behavior across both caching layers.
+
+> Semantic cache entries are not automatically deleted from Qdrant. Expired entries are ignored during lookup, but remain stored in the collection. To reclaim disk space, old entries can be removed manually (for example, with a periodic cleanup script or scheduled job). Automatic cleanup support may be added in future versions.
+
 ---
 
 ## Request size limits
