@@ -269,10 +269,6 @@ Example:
 }
 ```
 
-`cache_ttl_seconds` defines how long cached responses are considered valid for both exact (Redis) and semantic (Qdrant) caching.
-
-Redis enforces TTL automatically, while semantic entries are filtered at query time based on expiration.
-
 ## Optional: allow pass-through
 
 If you want the gateway to behave like a transparent proxy:
