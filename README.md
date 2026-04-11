@@ -40,7 +40,7 @@ The firewall behaves similarly to "nginx for LLM APIs".
 
 ---
 
-## Example: Cost Savings with Exact + Semantic Caching
+## Example 1: Cost Savings with Exact + Semantic Caching
 
 **cache hit rate • net savings after embedding overhead • real-time cost reduction**
 
@@ -48,6 +48,16 @@ The firewall behaves similarly to "nginx for LLM APIs".
 
 *Local synthetic workload simulating enterprise support queries (VPN, onboarding, access requests).  
 Demonstrates real-time cost reduction using exact and semantic caching, with full cost breakdown (gross savings, embedding cost, and net savings).*
+
+## Example 2: Semantic Decision Quality & Runtime Behavior
+
+**semantic threshold decisions • pass/fail boundary • real-time request classification**
+
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics.png)](assets/grafana/ai-firewall-diagnostics.png)
+
+*Mixed synthetic workload simulating enterprise support traffic with both similar and divergent queries.
+Demonstrates semantic cache behavior under realistic conditions: high pass rate (~99%), non-zero threshold failures (boundary cases), and continuous candidate evaluation.
+Shows how the system balances reuse and precision while maintaining near-zero upstream calls and stable latency.*
 
 ---
 
