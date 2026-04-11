@@ -59,6 +59,8 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 Demonstrates semantic cache behavior under realistic conditions: high pass rate (~99%), non-zero threshold failures (boundary cases), and continuous candidate evaluation.
 Shows how the system balances reuse and precision while maintaining near-zero upstream calls and stable latency.*
 
+> Both dashboards are pre-configured and included in the default `docker-compose.yml`. See **Quick Start (Docker)** to run the stack locally.
+
 ---
 
 # Key Features
