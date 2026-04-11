@@ -50,6 +50,7 @@ impl ChatService {
         self.validate(&req)?;
 
         if req.stream.unwrap_or(false) {
+            tracing::debug!(model = %req.normalized_model(), "stream request bypasses cache layers");
             return self.forward_only(req).await;
         }
 
@@ -63,13 +64,20 @@ impl ChatService {
             .exact_cache
             .get(&exact_key)
             .await
-            .map_err(|e| AppError::Internal(format!("exact cache get failed: {e}")))?
+            .map_err(|e| AppError::internal(format!("exact cache get failed: {e}")))?
         {
             let hit: ChatCompletionResponse = serde_json::from_str(&raw)
-                .map_err(|e| AppError::Internal(format!("cached response decode failed: {e}")))?;
+                .map_err(|e| AppError::internal(format!("cached response decode failed: {e}")))?;
 
             metrics::CACHE_EXACT_HITS.inc();
             self.record_exact_hit_savings(&hit);
+
+            tracing::debug!(
+                model = %req.normalized_model(),
+                cache_key = %exact_key,
+                "exact cache hit"
+            );
+
             return Ok(hit);
         }
 
@@ -78,7 +86,7 @@ impl ChatService {
                 .semantic_cache
                 .lookup(req.normalized_model(), &semantic_text)
                 .await
-                .map_err(|e| AppError::Internal(format!("semantic lookup failed: {e}")))?
+                .map_err(|e| AppError::internal(format!("semantic lookup failed: {e}")))?
             {
                 metrics::CACHE_SEMANTIC_HITS.inc();
 
@@ -88,6 +96,11 @@ impl ChatService {
                         .as_ref()
                         .map(|u| u.prompt_tokens)
                         .unwrap_or(0),
+                );
+
+                tracing::debug!(
+                    model = %req.normalized_model(),
+                    "semantic cache hit"
                 );
 
                 if let Ok(raw) = serde_json::to_string(&hit.response) {
@@ -102,24 +115,29 @@ impl ChatService {
 
                 return Ok(hit.response);
             }
+        } else if self.semantic_cache_enabled {
+            tracing::debug!(
+                model = %req.normalized_model(),
+                "semantic cache skipped because request is ineligible"
+            );
         }
 
         metrics::CACHE_MISSES.inc();
-        metrics::UPSTREAM_CALLS.inc();
 
-        let response = self
-            .upstream
-            .chat_completion(&req)
-            .await
-            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        tracing::debug!(
+            model = %req.normalized_model(),
+            "cache miss; forwarding request upstream"
+        );
+
+        let response = self.upstream.chat_completion(&req).await?;
 
         let raw = serde_json::to_string(&response)
-            .map_err(|e| AppError::Internal(format!("response encode failed: {e}")))?;
+            .map_err(|e| AppError::internal(format!("response encode failed: {e}")))?;
 
         self.exact_cache
             .set(&exact_key, raw)
             .await
-            .map_err(|e| AppError::Internal(format!("exact cache set failed: {e}")))?;
+            .map_err(|e| AppError::internal(format!("exact cache set failed: {e}")))?;
 
         if self.semantic_cache_enabled && self.semantic_eligible(&req) {
             if let Err(e) = self
@@ -166,12 +184,7 @@ impl ChatService {
         &self,
         req: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, AppError> {
-        metrics::UPSTREAM_CALLS.inc();
-
-        self.upstream
-            .chat_completion(&req)
-            .await
-            .map_err(|e| AppError::Upstream(e.to_string()))
+        self.upstream.chat_completion(&req).await
     }
 
     fn exact_cache_key(&self, normalized: &str) -> String {
@@ -399,7 +412,7 @@ mod tests {
         async fn chat_completion(
             &self,
             req: &ChatCompletionRequest,
-        ) -> anyhow::Result<ChatCompletionResponse> {
+        ) -> Result<ChatCompletionResponse, AppError> {
             let mut state = self.state.lock().unwrap();
             state.call_count += 1;
             state.last_request = Some(req.clone());

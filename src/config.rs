@@ -9,15 +9,6 @@ fn cfg_err(msg: impl Into<String>) -> anyhow::Error {
     anyhow!("configuration error: {}", msg.into())
 }
 
-fn warn_if_suspicious(cfg: &Config) {
-    if cfg.max_request_body_bytes < 1024 {
-        tracing::warn!(
-            "max_request_body_bytes={} is very small; requests larger than this will be rejected. Consider using at least 1K, for example 512K or 1M",
-            cfg.max_request_body_bytes
-        );
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct ModelPrice {
     pub input_usd_per_1m_tokens: f64,
@@ -82,6 +73,11 @@ impl Config {
         // ---- upstream
         if self.upstream_base_url.trim().is_empty() {
             errors.push("upstream_base_url must not be empty".into());
+        } else if !looks_like_http_url(&self.upstream_base_url) {
+            errors.push(format!(
+                "invalid upstream_base_url '{}': must start with http:// or https://",
+                self.upstream_base_url
+            ));
         }
 
         if self.upstream_api_key.trim().is_empty() {
@@ -143,6 +139,22 @@ impl Config {
                 errors.push(format!(
                     "semantic_cache_enabled=true requires: {}",
                     missing.join(", ")
+                ));
+            }
+
+            if !self.embedding_base_url.trim().is_empty()
+                && !looks_like_http_url(&self.embedding_base_url)
+            {
+                errors.push(format!(
+                    "invalid embedding_base_url '{}': must start with http:// or https://",
+                    self.embedding_base_url
+                ));
+            }
+
+            if !self.qdrant_url.trim().is_empty() && !looks_like_http_url(&self.qdrant_url) {
+                errors.push(format!(
+                    "invalid qdrant_url '{}': must start with http:// or https://",
+                    self.qdrant_url
                 ));
             }
         }
@@ -714,6 +726,33 @@ where
             .parse::<T>()
             .map_err(|e| cfg_err(format!("invalid value for {}: {}", key, e))),
         None => Ok(default),
+    }
+}
+
+fn looks_like_http_url(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
+fn warn_if_suspicious(cfg: &Config) {
+    if cfg.max_request_body_bytes < 1024 {
+        tracing::warn!(
+            "max_request_body_bytes={} is very small; requests larger than this will be rejected. Consider using at least 1K, for example 512K or 1M",
+            cfg.max_request_body_bytes
+        );
+    }
+
+    if cfg.graceful_shutdown_timeout_seconds <= 1 {
+        tracing::warn!(
+            "graceful_shutdown_timeout_seconds={} is very small; in-flight requests may not have enough time to drain cleanly",
+            cfg.graceful_shutdown_timeout_seconds
+        );
+    }
+
+    if cfg.semantic_cache_enabled && cfg.embedding_price.is_none() {
+        tracing::warn!(
+            "semantic_cache_enabled=true but embedding_price is not configured; net savings metrics may be incomplete"
+        );
     }
 }
 

@@ -20,9 +20,14 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/collections"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   firewall:
-    image: vcalproject/ai-firewall:v0.1.3
+    image: vcalproject/ai-firewall:v0.1.4
     container_name: ai-firewall
     depends_on:
       redis:
@@ -35,6 +40,11 @@ services:
       - ./configs:/configs:ro
     command: ["--config", "/configs/ai-firewall.conf"]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   prometheus:
     image: prom/prometheus:v3.10.0
@@ -56,7 +66,7 @@ services:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./deploy/grafana/dashboards/ai-cost-firewall-dashboard.json:/etc/grafana/provisioning/dashboards-json/ai-cost-firewall-dashboard.json:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
       - ./deploy/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
       - ./deploy/grafana/provisioning/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
     restart: unless-stopped

@@ -10,11 +10,17 @@ pub enum AppError {
     #[error("validation error: {message}")]
     Validation { status: StatusCode, message: String },
 
-    #[error("upstream error: {0}")]
-    Upstream(String),
+    #[error("upstream timeout: {message}")]
+    UpstreamTimeout { message: String },
 
-    #[error("internal error: {0}")]
-    Internal(String),
+    #[error("upstream error: {message}")]
+    Upstream {
+        status: Option<StatusCode>,
+        message: String,
+    },
+
+    #[error("internal error: {message}")]
+    Internal { message: String },
 }
 
 impl AppError {
@@ -39,6 +45,32 @@ impl AppError {
         }
     }
 
+    pub fn upstream_timeout(message: impl Into<String>) -> Self {
+        Self::UpstreamTimeout {
+            message: message.into(),
+        }
+    }
+
+    pub fn upstream(message: impl Into<String>) -> Self {
+        Self::Upstream {
+            status: None,
+            message: message.into(),
+        }
+    }
+
+    pub fn upstream_with_status(status: StatusCode, message: impl Into<String>) -> Self {
+        Self::Upstream {
+            status: Some(status),
+            message: message.into(),
+        }
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal {
+            message: message.into(),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn upstream_json(status: StatusCode, body: String) -> Response {
         match serde_json::from_str::<Value>(&body) {
@@ -57,6 +89,16 @@ impl AppError {
         }
     }
 
+    /// Stable classification for Prometheus labels and Grafana panels.
+    pub fn metrics_class(&self) -> &'static str {
+        match self {
+            AppError::Validation { .. } => "validation",
+            AppError::UpstreamTimeout { .. } => "upstream_timeout",
+            AppError::Upstream { .. } => "upstream",
+            AppError::Internal { .. } => "internal",
+        }
+    }
+
     fn error_type(&self) -> &'static str {
         match self {
             AppError::Validation { status, .. } => {
@@ -66,24 +108,27 @@ impl AppError {
                     "validation_error"
                 }
             }
-            AppError::Upstream(_) => "upstream_error",
-            AppError::Internal(_) => "internal_error",
+            AppError::UpstreamTimeout { .. } => "upstream_timeout",
+            AppError::Upstream { .. } => "upstream_error",
+            AppError::Internal { .. } => "internal_error",
         }
     }
 
-    fn status_code(&self) -> StatusCode {
+    pub fn status_code(&self) -> StatusCode {
         match self {
             AppError::Validation { status, .. } => *status,
-            AppError::Upstream(_) => StatusCode::BAD_GATEWAY,
-            AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::UpstreamTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+            AppError::Upstream { status, .. } => status.unwrap_or(StatusCode::BAD_GATEWAY),
+            AppError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
-    fn message(&self) -> &str {
+    pub fn message(&self) -> &str {
         match self {
             AppError::Validation { message, .. } => message,
-            AppError::Upstream(message) => message,
-            AppError::Internal(message) => message,
+            AppError::UpstreamTimeout { message } => message,
+            AppError::Upstream { message, .. } => message,
+            AppError::Internal { message } => message,
         }
     }
 }

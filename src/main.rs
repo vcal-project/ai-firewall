@@ -173,7 +173,6 @@ async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
     tracing::info!("starting graceful shutdown");
 
     state.shutdown.begin_shutdown();
-    crate::metrics::SHUTDOWN_IN_PROGRESS.set(1);
 
     let deadline = Instant::now() + drain_timeout;
 
@@ -193,10 +192,14 @@ async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
             break;
         }
 
+        tracing::debug!(
+            inflight_requests = inflight,
+            "waiting for in-flight requests to drain"
+        );
+
         sleep(Duration::from_millis(100)).await;
     }
 
-    crate::metrics::SHUTDOWN_IN_PROGRESS.set(0);
     tracing::info!("graceful shutdown complete");
 }
 

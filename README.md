@@ -57,7 +57,10 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 - Exact request caching (Redis)
 - Semantic cache (Qdrant)
 - Token and cost savings metrics
-- Prometheus observability
+- Prometheus observability (cost, cache, errors, runtime behavior)
+- Error classification (validation / upstream / timeout / internal)
+- Upstream latency and timeout tracking
+- Semantic cache diagnostics (threshold, candidates, expiration behavior)
 - Docker deployment
 - nginx-style configuration
 - Strict startup validation with clear error messages
@@ -67,7 +70,29 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 - Request size protection (`max_request_body_bytes`)
 - Lightweight Rust + Axum implementation
 
-AI Cost Firewall is designed to be afe by default preventing accidental misconfiguration and unintended upstream costs.
+AI Cost Firewall is designed to be safe by default preventing accidental misconfiguration and unintended upstream costs.
+
+---
+
+# What’s new in v0.1.4
+
+v0.1.4 focuses on **operational predictability and observability** in real deployments.
+
+### Key improvements
+
+- Clear error classification (validation / upstream / timeout / internal)
+- Upstream timeout visibility and latency tracking
+- Graceful shutdown with request draining and rejection tracking
+- Readiness vs liveness separation (`/readyz`, `/healthz`)
+- Semantic cache diagnostics:
+  - candidates checked
+  - threshold pass/fail
+  - expired entries skipped
+  - lookup latency
+- Improved logging for cache decisions (hit / miss / semantic reuse)
+- Safer configuration with better validation and warnings
+
+The system now behaves predictably under load and is easier to debug in production.
 
 ---
 
@@ -292,6 +317,14 @@ In this mode:
 
 This ensures consistent behavior across both caching layers.
 
+v0.1.4 adds visibility into semantic cache lifecycle:
+
+- how many candidates are evaluated
+- how many fail similarity threshold
+- how many are skipped due to expiration
+
+This helps diagnose low semantic hit rates and tune thresholds effectively.
+
 > Semantic cache entries are not automatically deleted from Qdrant. Expired entries are ignored during lookup, but remain stored in the collection. To reclaim disk space, old entries can be removed manually (for example, with a periodic cleanup script or scheduled job). Automatic cleanup support may be added in future versions.
 
 ---
@@ -377,6 +410,34 @@ Full configuration reference:
 
 ---
 
+## Operational Behavior
+
+AI Cost Firewall is designed to behave predictably in production environments.
+
+### Graceful shutdown
+
+- Stops accepting new requests
+- Allows in-flight requests to complete
+- Rejects new requests with 503 during shutdown
+- Tracks shutdown state and rejection count
+
+### Readiness vs liveness
+
+- `/healthz` — process is alive
+- `/readyz` — ready to serve traffic
+
+During shutdown:
+
+- `/healthz` → OK
+- `/readyz` → 503
+
+### Timeout handling
+
+- Upstream requests are bounded by `request_timeout_seconds`
+- Timeouts are explicitly tracked and classified
+
+---
+
 ## Metrics
 
 Prometheus metrics are available at:
@@ -416,6 +477,15 @@ Metrics:
 - `aif_chat_cost_saved_micro_usd` – gross chat-completion savings
 - `aif_embedding_cost_micro_usd` – embedding lookup cost
 - `aif_cost_saved_micro_usd` – net savings (gross − embedding cost)
+- `aif_errors_total{class=...}` – classified errors
+- `aif_upstream_timeouts_total` – upstream timeout count
+- `aif_upstream_request_duration_seconds` – upstream latency
+- `aif_readiness_state` – readiness (1/0)
+- `aif_shutdown_in_progress` – shutdown state
+- `aif_semantic_candidates_checked_total`
+- `aif_semantic_threshold_results_total{result="pass|fail"}`
+- `aif_semantic_expired_entries_skipped_total`
+- `aif_semantic_lookup_duration_seconds`
 
 Exact cache hits have no embedding cost.
 
@@ -468,6 +538,27 @@ Run tests locally:
 ```bash
 cargo test
 ```
+
+---
+
+## Troubleshooting & Debugging
+
+If cache performance is lower than expected:
+
+1. Check semantic threshold:
+   - High threshold → fewer semantic hits
+
+2. Inspect diagnostics dashboard:
+   - High `threshold_fail` → threshold too strict
+   - High `expired_entries_skipped` → TTL too short
+
+3. Check upstream latency:
+   - Increasing latency may indicate provider issues
+
+4. Check error classification:
+   - `validation_error` → request issues
+   - `upstream_timeout` → provider slow
+   - `internal_error` → system issue
 
 ---
 

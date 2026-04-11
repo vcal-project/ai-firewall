@@ -31,6 +31,22 @@ The configuration file is divided into the following logical sections:
 
 ---
 
+## v0.1.4 Notes
+
+v0.1.4 introduces improvements focused on **operational predictability and observability**.
+
+Key additions relevant to configuration:
+
+- clearer timeout behavior (`request_timeout_seconds`)
+- improved shutdown handling (`graceful_shutdown_timeout_seconds`)
+- request size protection (`max_request_body_bytes`)
+- semantic cache lifecycle visibility (TTL-based filtering)
+- stronger validation and safer defaults
+
+These changes do not introduce breaking configuration changes, but improve runtime behavior and diagnostics.
+
+---
+
 ## Minimal Config Example
 
 ```conf
@@ -97,6 +113,36 @@ Example:
 
 Redis enforces TTL automatically, while semantic entries are filtered at query time based on expiration.
 
+### Semantic TTL behavior (v0.1.4)
+
+Semantic cache entries are not physically deleted when expired.
+
+Instead:
+
+- each entry includes `inserted_at` and `expires_at`
+- expired entries are skipped during lookup
+- valid entries are reused if similarity threshold is met
+
+This ensures:
+
+- consistent behavior across cache layers
+- predictable reuse window
+- no accidental reuse of stale responses
+
+### Observability
+
+v0.1.4 introduces visibility into semantic cache lifecycle:
+
+- number of candidates evaluated
+- threshold pass / fail decisions
+- expired entries skipped during lookup
+
+This helps diagnose:
+
+- low semantic hit rates
+- overly strict similarity thresholds
+- short TTL configurations
+
 ## graceful_shutdown_timeout_seconds
 
 Controls how long the firewall waits for in-flight requests to complete during shutdown.
@@ -109,11 +155,12 @@ graceful_shutdown_timeout_seconds 10;
 
 Default: 10 seconds
 
-Notes:
+v0.1.4 behavior:
 
-- During shutdown, new requests are rejected
-- Existing requests are allowed to complete within this timeout
-- After the timeout, the process exits even if some requests are still in progress
+- `/readyz` returns 503 once shutdown begins
+- New requests are rejected immediately
+- Existing requests are allowed to complete within the timeout
+- Rejected requests are tracked (`aif_shutdown_rejections_total`)
 
 ## Optional: allow pass-through
 
@@ -189,6 +236,59 @@ Alternatively, the configuration file can be specified explicitly:
 ai-firewall --config /path/to/ai-firewall.conf
 ```
 
+## Qdrant Notes
+
+AI Cost Firewall uses the Qdrant gRPC interface by default, which runs on port `6334`.  
+
+The firewall uses the Qdrant gRPC interface (`6334`) by default.
+
+The REST API port (`6333`) is not used for semantic caching.
+
+---
+
+## Observability and Diagnostics
+
+AI Cost Firewall exposes Prometheus metrics that reflect configuration behavior and runtime state.
+
+### Key operational metrics
+
+- `aif_readiness_state` — readiness (1 = ready, 0 = not ready)
+- `aif_shutdown_in_progress` — shutdown state
+- `aif_inflight_requests` — active request count
+
+### Error classification
+
+Errors are categorized into:
+
+- `validation_error`
+- `upstream_error`
+- `upstream_timeout`
+- `internal_error`
+
+Metric:
+
+```text
+aif_errors_total{class=...}
+```
+
+**Upstream behavior**
+
+- `aif_upstream_request_duration_seconds`
+- `aif_upstream_timeouts_total`
+
+
+**Semantic cache diagnostics**
+
+- `aif_semantic_candidates_checked_total`
+- `aif_semantic_threshold_results_total{result="pass|fail"}`
+- `aif_semantic_expired_entries_skipped_total`
+- `aif_semantic_lookup_duration_seconds`
+
+**Running with explicit config**
+
+- config definitions together
+- runtime behavior grouped logically
+
 ---
 
 ## model_price
@@ -206,6 +306,10 @@ Example:
 ```text
 model_price gpt-4o-mini 0.15 0.60;
 ```
+
+## embedding_price
+
+Defines embedding cost used for net savings estimation.
 
 Example:
 
@@ -423,6 +527,14 @@ request_timeout_seconds 120;
 ```
 Default: 120 seconds
 
+*v0.1.4 behavior:*
+
+- Requests exceeding this timeout are classified as upstream timeouts
+- Timeouts are tracked in metrics (`aif_upstream_timeouts_total`)
+- Timeout errors are returned with clear classification
+
+This prevents indefinite blocking on slow or unresponsive upstream providers.
+
 ---
 
 ## Semantic Cache
@@ -460,6 +572,36 @@ Typical values:
 0.92  balanced (recommended)
 0.97  strict (only very similar prompts reused)
 ```
+
+### max_request_body_bytes
+
+Maximum allowed size of incoming request body.
+
+Example:
+
+```text
+max_request_body_bytes 1M;
+```
+
+Supported formats:
+
+```text
+1024
+512K
+1M
+2M
+```
+
+v0.1.4 behavior:
+
+Requests exceeding the limit are rejected early (HTTP 413)
+Large payloads do not reach upstream providers
+Protects against accidental or malicious oversized prompts
+
+Notes:
+
+Values below 1K trigger a startup warning
+Applies to `/v1/chat/completions` endpoint
 
 ---
 

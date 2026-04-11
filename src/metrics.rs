@@ -1,12 +1,19 @@
 #![allow(clippy::expect_used)]
 
 use once_cell::sync::Lazy;
-use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder};
+use prometheus::{
+    core::Collector, Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge,
+    Registry, TextEncoder,
+};
 use std::sync::Once;
 
 static INIT: Once = Once::new();
 
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
+
+// -----------------------------
+// Overview metrics
+// -----------------------------
 
 pub static REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
@@ -70,6 +77,26 @@ pub static INFLIGHT_REQUESTS: Lazy<IntGauge> = Lazy::new(|| {
         .expect("metric aif_inflight_requests must be valid")
 });
 
+// -----------------------------
+// Operational hardening metrics
+// -----------------------------
+
+pub static ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new("aif_errors_total", "Total errors by classification"),
+        &["class"],
+    )
+    .expect("metric aif_errors_total must be valid")
+});
+
+pub static READINESS_STATE: Lazy<IntGauge> = Lazy::new(|| {
+    IntGauge::new(
+        "aif_readiness_state",
+        "Whether the service is ready to accept requests (0 or 1)",
+    )
+    .expect("metric aif_readiness_state must be valid")
+});
+
 pub static SHUTDOWN_IN_PROGRESS: Lazy<IntGauge> = Lazy::new(|| {
     IntGauge::new(
         "aif_shutdown_in_progress",
@@ -86,9 +113,64 @@ pub static SHUTDOWN_REJECTIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     .expect("metric aif_shutdown_rejections_total must be valid")
 });
 
+pub static UPSTREAM_TIMEOUTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_upstream_timeouts_total",
+        "Upstream requests that timed out",
+    )
+    .expect("metric aif_upstream_timeouts_total must be valid")
+});
+
+pub static UPSTREAM_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_upstream_request_duration_seconds",
+        "Duration of upstream requests in seconds",
+    ))
+    .expect("metric aif_upstream_request_duration_seconds must be valid")
+});
+
+// -----------------------------
+// Semantic diagnostics metrics
+// -----------------------------
+
+pub static SEMANTIC_CANDIDATES_CHECKED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_semantic_candidates_checked_total",
+        "Semantic cache candidates checked",
+    )
+    .expect("metric aif_semantic_candidates_checked_total must be valid")
+});
+
+pub static SEMANTIC_THRESHOLD_RESULTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_semantic_threshold_results_total",
+            "Semantic threshold decisions",
+        ),
+        &["result"],
+    )
+    .expect("metric aif_semantic_threshold_results_total must be valid")
+});
+
+pub static SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_semantic_expired_entries_skipped_total",
+        "Expired semantic cache entries skipped during lookup",
+    )
+    .expect("metric aif_semantic_expired_entries_skipped_total must be valid")
+});
+
+pub static SEMANTIC_LOOKUP_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_semantic_lookup_duration_seconds",
+        "Duration of semantic cache lookups in seconds",
+    ))
+    .expect("metric aif_semantic_lookup_duration_seconds must be valid")
+});
+
 pub fn init() {
     INIT.call_once(|| {
-        let collectors: Vec<Box<dyn prometheus::core::Collector>> = vec![
+        let collectors: Vec<Box<dyn Collector>> = vec![
             Box::new(REQUESTS_TOTAL.clone()),
             Box::new(CACHE_EXACT_HITS.clone()),
             Box::new(CACHE_SEMANTIC_HITS.clone()),
@@ -99,8 +181,16 @@ pub fn init() {
             Box::new(EMBEDDING_COST_MICRO_USD.clone()),
             Box::new(COST_SAVED_MICRO_USD.clone()),
             Box::new(INFLIGHT_REQUESTS.clone()),
+            Box::new(ERRORS_TOTAL.clone()),
+            Box::new(READINESS_STATE.clone()),
             Box::new(SHUTDOWN_IN_PROGRESS.clone()),
             Box::new(SHUTDOWN_REJECTIONS_TOTAL.clone()),
+            Box::new(UPSTREAM_TIMEOUTS_TOTAL.clone()),
+            Box::new(UPSTREAM_REQUEST_DURATION_SECONDS.clone()),
+            Box::new(SEMANTIC_CANDIDATES_CHECKED_TOTAL.clone()),
+            Box::new(SEMANTIC_THRESHOLD_RESULTS_TOTAL.clone()),
+            Box::new(SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL.clone()),
+            Box::new(SEMANTIC_LOOKUP_DURATION_SECONDS.clone()),
         ];
 
         for c in collectors {

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::{
     core::hashing::sha256_hex,
     embeddings::provider::EmbeddingProvider,
+    metrics,
     semantic::semantic_cache::{SemanticCache, SemanticLookupHit},
     types::{openai::ChatCompletionResponse, semantic::SemanticCacheRecord},
 };
@@ -92,77 +93,123 @@ impl SemanticCache for QdrantSemanticCache {
         model: &str,
         normalized_prompt: &str,
     ) -> Result<Option<SemanticLookupHit>> {
-        let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
-        let vector = embedding_result.embedding.clone();
-        let embedding_usage = embedding_result.usage.clone();
+        let started = Instant::now();
 
-        let search_result = self
-            .client
-            .search_points(SearchPoints {
-                collection_name: self.collection_name.clone(),
-                vector,
-                limit: 3,
-                with_payload: Some(true.into()),
-                filter: Some(Filter {
-                    must: vec![Condition {
-                        condition_one_of: Some(
-                            qdrant_client::qdrant::condition::ConditionOneOf::Field(
-                                FieldCondition {
-                                    key: "model".to_string(),
-                                    r#match: Some(Match {
-                                        match_value: Some(
-                                            qdrant_client::qdrant::r#match::MatchValue::Keyword(
-                                                model.to_string(),
+        let result = async {
+            let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
+            let vector = embedding_result.embedding.clone();
+            let embedding_usage = embedding_result.usage.clone();
+
+            let search_result = self
+                .client
+                .search_points(SearchPoints {
+                    collection_name: self.collection_name.clone(),
+                    vector,
+                    limit: 3,
+                    with_payload: Some(true.into()),
+                    filter: Some(Filter {
+                        must: vec![Condition {
+                            condition_one_of: Some(
+                                qdrant_client::qdrant::condition::ConditionOneOf::Field(
+                                    FieldCondition {
+                                        key: "model".to_string(),
+                                        r#match: Some(Match {
+                                            match_value: Some(
+                                                qdrant_client::qdrant::r#match::MatchValue::Keyword(
+                                                    model.to_string(),
+                                                ),
                                             ),
-                                        ),
-                                    }),
-                                    ..Default::default()
-                                },
+                                        }),
+                                        ..Default::default()
+                                    },
+                                ),
                             ),
-                        ),
-                    }],
+                        }],
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            })
-            .await
-            .context("Qdrant semantic search failed")?;
-
-        for point in search_result.result {
-            let score = point.score;
-            if score < self.similarity_threshold {
-                continue;
-            }
-
-            let payload = point.payload;
+                })
+                .await
+                .context("Qdrant semantic search failed")?;
 
             let now = Utc::now().timestamp();
 
-            let expires_at = match payload.get("expires_at").and_then(proto_value_to_i64) {
-                Some(v) => v,
-                None => continue, // treat old entries without expires_at as expired
-            };
+            for point in search_result.result {
+                metrics::SEMANTIC_CANDIDATES_CHECKED_TOTAL.inc();
 
-            if expires_at <= now {
-                continue;
+                let score = point.score;
+                if score < self.similarity_threshold {
+                    metrics::SEMANTIC_THRESHOLD_RESULTS_TOTAL
+                        .with_label_values(&["fail"])
+                        .inc();
+
+                    tracing::debug!(
+                        model = %model,
+                        score = score,
+                        threshold = self.similarity_threshold,
+                        "semantic candidate rejected below threshold"
+                    );
+
+                    continue;
+                }
+
+                metrics::SEMANTIC_THRESHOLD_RESULTS_TOTAL
+                    .with_label_values(&["pass"])
+                    .inc();
+
+                let payload = point.payload;
+
+                let expires_at = match payload.get("expires_at").and_then(proto_value_to_i64) {
+                    Some(v) => v,
+                    None => {
+                        metrics::SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL.inc();
+                        tracing::debug!(
+                            model = %model,
+                            "semantic candidate skipped because expires_at is missing"
+                        );
+                        continue;
+                    }
+                };
+
+                if expires_at <= now {
+                    metrics::SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL.inc();
+                    tracing::debug!(
+                        model = %model,
+                        expires_at = expires_at,
+                        now = now,
+                        "semantic candidate skipped because it is expired"
+                    );
+                    continue;
+                }
+
+                let raw_response = payload
+                    .get("response_json")
+                    .and_then(proto_value_to_json_string)
+                    .context("missing response_json payload in semantic hit")?;
+
+                let parsed: ChatCompletionResponse = serde_json::from_str(&raw_response)
+                    .context("invalid cached semantic response")?;
+
+                tracing::debug!(
+                    model = %model,
+                    score = score,
+                    threshold = self.similarity_threshold,
+                    "semantic hit"
+                );
+
+                return Ok(Some(SemanticLookupHit {
+                    response: parsed,
+                    embedding_usage: embedding_usage.clone(),
+                }));
             }
 
-            let raw_response = payload
-                .get("response_json")
-                .and_then(proto_value_to_json_string)
-                .context("missing response_json payload in semantic hit")?;
-
-            let parsed: ChatCompletionResponse =
-                serde_json::from_str(&raw_response).context("invalid cached semantic response")?;
-
-            tracing::debug!("semantic hit with score={score:.4}");
-            return Ok(Some(SemanticLookupHit {
-                response: parsed,
-                embedding_usage: embedding_usage.clone(),
-            }));
+            Ok(None)
         }
+        .await;
 
-        Ok(None)
+        metrics::SEMANTIC_LOOKUP_DURATION_SECONDS.observe(started.elapsed().as_secs_f64());
+
+        result
     }
 
     async fn store(

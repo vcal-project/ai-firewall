@@ -20,15 +20,33 @@ pub async fn chat_completions(
 
     let Json(req) = match payload {
         Ok(json) => json,
-        Err(rejection) => return Err(map_json_rejection(rejection)),
+        Err(rejection) => {
+            let err = map_json_rejection(rejection);
+            metrics::ERRORS_TOTAL
+                .with_label_values(&[err.metrics_class()])
+                .inc();
+            return Err(err);
+        }
     };
 
-    validate_chat_request(&state, &req).await?;
+    if let Err(err) = validate_chat_request(&state, &req).await {
+        metrics::ERRORS_TOTAL
+            .with_label_values(&[err.metrics_class()])
+            .inc();
+        return Err(err);
+    }
 
     let service = state.chat_service().await;
-    let response = service.handle(req).await?;
 
-    Ok(Json(response))
+    match service.handle(req).await {
+        Ok(response) => Ok(Json(response)),
+        Err(err) => {
+            metrics::ERRORS_TOTAL
+                .with_label_values(&[err.metrics_class()])
+                .inc();
+            Err(err)
+        }
+    }
 }
 
 async fn validate_chat_request(
@@ -38,7 +56,7 @@ async fn validate_chat_request(
     let model = req.normalized_model();
 
     if model.is_empty() {
-        return Err(AppError::bad_request("Model must not be empty"));
+        return Err(AppError::bad_request("model must not be empty"));
     }
 
     let allow_unknown = state.allow_unknown_models_pass_through().await;
@@ -46,7 +64,7 @@ async fn validate_chat_request(
 
     if !allow_unknown && !is_allowed {
         return Err(AppError::bad_request(format!(
-            "Unsupported model: {}",
+            "unsupported model: {}",
             model
         )));
     }
@@ -70,10 +88,10 @@ fn map_json_rejection(rejection: JsonRejection) -> AppError {
             AppError::bad_request("content-type must be application/json")
         }
         JsonRejection::JsonSyntaxError(_) => {
-            AppError::bad_request(format!("failed to parse the request body as JSON: {msg}"))
+            AppError::bad_request(format!("failed to parse request body as JSON: {msg}"))
         }
         JsonRejection::JsonDataError(_) => AppError::unprocessable(format!(
-            "failed to deserialize the JSON body into the target type: {msg}"
+            "failed to deserialize JSON body into target type: {msg}"
         )),
         _ => AppError::bad_request(msg),
     }

@@ -44,6 +44,9 @@ pub struct ShutdownState {
 
 impl ShutdownState {
     pub fn new() -> Self {
+        metrics::READINESS_STATE.set(1);
+        metrics::SHUTDOWN_IN_PROGRESS.set(0);
+
         Self {
             ready: Arc::new(AtomicBool::new(true)),
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -54,6 +57,11 @@ impl ShutdownState {
     pub fn begin_shutdown(&self) {
         self.ready.store(false, Ordering::SeqCst);
         self.shutting_down.store(true, Ordering::SeqCst);
+
+        metrics::READINESS_STATE.set(0);
+        metrics::SHUTDOWN_IN_PROGRESS.set(1);
+
+        tracing::info!("graceful shutdown started; readiness disabled");
     }
 
     pub fn is_ready(&self) -> bool {
@@ -104,6 +112,13 @@ pub struct BuiltApp {
 }
 
 pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
+    tracing::info!(
+        semantic_cache_enabled = cfg.semantic_cache_enabled,
+        request_timeout_seconds = cfg.request_timeout_seconds,
+        cache_ttl_seconds = cfg.cache_ttl_seconds,
+        "building application runtime"
+    );
+
     let redis_client = redis::Client::open(cfg.redis_url.clone())?;
     let redis_conn = ConnectionManager::new(redis_client).await?;
     let exact_cache: Arc<dyn ExactCache> =
@@ -173,6 +188,8 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
+    tracing::info!("application router built successfully");
+
     Ok(BuiltApp { router, state })
 }
 
@@ -194,6 +211,8 @@ async fn shutdown_gate_middleware(
 
     if state.shutdown.is_shutting_down() && !is_probe {
         metrics::SHUTDOWN_REJECTIONS_TOTAL.inc();
+
+        tracing::debug!(path = %path, "request rejected because shutdown is in progress");
 
         return (
             StatusCode::SERVICE_UNAVAILABLE,
