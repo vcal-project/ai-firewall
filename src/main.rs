@@ -56,6 +56,10 @@ fn resolve_config_path(explicit: Option<String>) -> Option<String> {
     None
 }
 
+fn parse_prune_expired_semantic_cache() -> bool {
+    std::env::args().any(|a| a == "--prune-expired-semantic-cache")
+}
+
 async fn config_reload_loop(
     state: Arc<app::AppState>,
     config_path: Option<String>,
@@ -205,6 +209,7 @@ async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    metrics::init();
     dotenvy::dotenv().ok();
 
     tracing_subscriber::registry()
@@ -217,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
 
     let test_config = parse_test_config();
     let print_config = parse_print_config();
+    let prune_expired_semantic_cache = parse_prune_expired_semantic_cache();
 
     let explicit_config_path = parse_config_path();
     let reload_config_path = resolve_config_path(explicit_config_path.clone());
@@ -235,6 +241,20 @@ async fn main() -> anyhow::Result<()> {
             e
         );
         return Err(e);
+    }
+
+    if prune_expired_semantic_cache {
+        tracing::info!("running semantic cache prune maintenance mode");
+
+        semantic::qdrant::prune_expired_semantic_cache_entries(
+            cfg.qdrant_url.clone(),
+            cfg.qdrant_api_key.clone(),
+            cfg.qdrant_collection.clone(),
+        )
+        .await?;
+
+        tracing::info!("semantic cache prune maintenance mode completed");
+        return Ok(());
     }
 
     if print_config {

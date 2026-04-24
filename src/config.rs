@@ -39,6 +39,8 @@ pub struct Config {
     pub qdrant_vector_size: u64,
 
     pub cache_ttl_seconds: usize,
+    pub exact_cache_ttl_seconds: usize,
+    pub semantic_cache_retention_seconds: usize,
     pub request_timeout_seconds: u64,
     pub graceful_shutdown_timeout_seconds: u64,
     pub max_request_body_bytes: usize,
@@ -91,6 +93,17 @@ impl Config {
 
         if self.cache_ttl_seconds == 0 {
             errors.push("cache_ttl_seconds must be > 0".into());
+        }
+
+        if self.exact_cache_ttl_seconds == 0 {
+            errors.push("exact_cache_ttl_seconds must be > 0".into());
+        }
+
+        if self.semantic_cache_enabled && self.semantic_cache_retention_seconds == 0 {
+            errors.push(
+                "semantic_cache_retention_seconds must be > 0 when semantic_cache_enabled=true"
+                    .into(),
+            );
         }
 
         if self.graceful_shutdown_timeout_seconds == 0 {
@@ -255,6 +268,15 @@ impl Config {
         let map = parse_nginx_style_config(&text)?;
         let model_prices = parse_model_prices(&text)?;
 
+        // v0.1.5: keep legacy cache_ttl_seconds as the default for both cache layers.
+        let cache_ttl_seconds = parse_or_default(&map, "cache_ttl_seconds", 86400usize)?;
+
+        let exact_cache_ttl_seconds =
+            parse_or_default(&map, "exact_cache_ttl_seconds", cache_ttl_seconds)?;
+
+        let semantic_cache_retention_seconds =
+            parse_or_default(&map, "semantic_cache_retention_seconds", cache_ttl_seconds)?;
+
         let cfg = Self {
             listen_addr: get_or_default(&map, "listen_addr", "0.0.0.0:8080"),
             redis_url: get_required(&map, "redis_url")?,
@@ -289,7 +311,10 @@ impl Config {
             qdrant_collection: get_or_default(&map, "qdrant_collection", "aif_semantic_cache"),
             qdrant_vector_size: parse_or_default(&map, "qdrant_vector_size", 1536u64)?,
 
-            cache_ttl_seconds: parse_or_default(&map, "cache_ttl_seconds", 86400usize)?,
+            cache_ttl_seconds,
+            exact_cache_ttl_seconds,
+            semantic_cache_retention_seconds,
+
             request_timeout_seconds: parse_or_default(&map, "request_timeout_seconds", 120u64)?,
 
             semantic_cache_enabled: parse_or_default(&map, "semantic_cache_enabled", false)?,
@@ -326,6 +351,40 @@ impl Config {
     }
 
     pub fn from_env() -> Result<Self> {
+        // v0.1.5: legacy cache_ttl_seconds remains the default for both cache layers.
+        let cache_ttl_seconds: usize = {
+            let raw = env::var("AIF_CACHE_TTL_SECONDS").unwrap_or_else(|_| "86400".into());
+
+            raw.parse::<usize>().map_err(|e| {
+                cfg_err(format!(
+                    "invalid AIF_CACHE_TTL_SECONDS value '{}': {}",
+                    raw, e
+                ))
+            })?
+        };
+
+        let exact_cache_ttl_seconds = {
+            let raw = env::var("AIF_EXACT_CACHE_TTL_SECONDS")
+                .unwrap_or_else(|_| cache_ttl_seconds.to_string());
+            raw.parse().map_err(|e| {
+                cfg_err(format!(
+                    "invalid AIF_EXACT_CACHE_TTL_SECONDS value '{}': {}",
+                    raw, e
+                ))
+            })?
+        };
+
+        let semantic_cache_retention_seconds = {
+            let raw = env::var("AIF_SEMANTIC_CACHE_RETENTION_SECONDS")
+                .unwrap_or_else(|_| cache_ttl_seconds.to_string());
+            raw.parse().map_err(|e| {
+                cfg_err(format!(
+                    "invalid AIF_SEMANTIC_CACHE_RETENTION_SECONDS value '{}': {}",
+                    raw, e
+                ))
+            })?
+        };
+
         let cfg = Self {
             listen_addr: env::var("AIF_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             redis_url: env::var("AIF_REDIS_URL")
@@ -372,15 +431,9 @@ impl Config {
                 })?
             },
 
-            cache_ttl_seconds: {
-                let raw = env::var("AIF_CACHE_TTL_SECONDS").unwrap_or_else(|_| "86400".into());
-                raw.parse().map_err(|e| {
-                    cfg_err(format!(
-                        "invalid AIF_CACHE_TTL_SECONDS value '{}': {}",
-                        raw, e
-                    ))
-                })?
-            },
+            cache_ttl_seconds,
+            exact_cache_ttl_seconds,
+            semantic_cache_retention_seconds,
 
             request_timeout_seconds: {
                 let raw = env::var("AIF_REQUEST_TIMEOUT_SECONDS").unwrap_or_else(|_| "120".into());
@@ -495,8 +548,14 @@ impl fmt::Debug for Config {
             .field("qdrant_collection", &self.qdrant_collection)
             .field("qdrant_vector_size", &self.qdrant_vector_size)
             .field("cache_ttl_seconds", &self.cache_ttl_seconds)
+            .field("exact_cache_ttl_seconds", &self.exact_cache_ttl_seconds)
+            .field(
+                "semantic_cache_retention_seconds",
+                &self.semantic_cache_retention_seconds,
+            )
             .field("request_timeout_seconds", &self.request_timeout_seconds)
             .field("semantic_cache_enabled", &self.semantic_cache_enabled)
+            .field("request_timeout_seconds", &self.request_timeout_seconds)
             .field(
                 "semantic_similarity_threshold",
                 &self.semantic_similarity_threshold,
@@ -545,6 +604,8 @@ fn allowed_directives() -> HashSet<&'static str> {
         "qdrant_collection",
         "qdrant_vector_size",
         "cache_ttl_seconds",
+        "exact_cache_ttl_seconds",
+        "semantic_cache_retention_seconds",
         "request_timeout_seconds",
         "semantic_cache_enabled",
         "semantic_similarity_threshold",
@@ -752,6 +813,34 @@ fn warn_if_suspicious(cfg: &Config) {
     if cfg.semantic_cache_enabled && cfg.embedding_price.is_none() {
         tracing::warn!(
             "semantic_cache_enabled=true but embedding_price is not configured; net savings metrics may be incomplete"
+        );
+    }
+
+    if cfg.cache_ttl_seconds != cfg.exact_cache_ttl_seconds
+        || cfg.cache_ttl_seconds != cfg.semantic_cache_retention_seconds
+    {
+        tracing::warn!(
+            cache_ttl_seconds = cfg.cache_ttl_seconds,
+            exact_cache_ttl_seconds = cfg.exact_cache_ttl_seconds,
+            semantic_cache_retention_seconds = cfg.semantic_cache_retention_seconds,
+            "cache_ttl_seconds is used as a legacy default; explicit TTLs override it"
+        );
+    }
+
+    if cfg.semantic_cache_enabled && cfg.semantic_cache_retention_seconds > 7 * 24 * 3600 {
+        tracing::warn!(
+            semantic_cache_retention_seconds = cfg.semantic_cache_retention_seconds,
+            "semantic_cache_retention_seconds is relatively long; this may increase Qdrant storage usage. Consider periodic cleanup with --prune-expired-semantic-cache"
+        );
+    }
+
+    if cfg.semantic_cache_enabled
+        && cfg.semantic_cache_retention_seconds == cfg.exact_cache_ttl_seconds
+    {
+        tracing::info!(
+            semantic_cache_retention_seconds = cfg.semantic_cache_retention_seconds,
+            exact_cache_ttl_seconds = cfg.exact_cache_ttl_seconds,
+            "semantic and exact cache TTLs are equal; consider longer semantic retention to improve reuse"
         );
     }
 }

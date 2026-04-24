@@ -60,6 +60,9 @@ Key metrics include:
 - `aif_upstream_calls`
 - `aif_tokens_saved`
 - `aif_cost_saved_micro_usd`
+- `aif_semantic_store_total`
+- `aif_semantic_store_errors_total`
+
 
 These metrics can be visualized using **Grafana dashboards**.
 
@@ -233,29 +236,38 @@ The service will reload configuration without dropping connections.
 
 ## Is AI Cost Firewall production-ready?
 
-The project is currently in **MVP stage**, but designed with production architecture:
+AI Cost Firewall is in an early production-ready stage.
 
-- Rust async runtime
-- Redis-compatible caching
-- vector search with Qdrant
-- Prometheus observability
-- Grafana dashboards
-- Docker deployment
+It is designed with production-grade components:
 
-Future versions will expand features and provider support.
+Rust async runtime
+Redis exact cache
+Qdrant semantic cache
+Prometheus + Grafana observability
+Docker deployment
+graceful shutdown and readiness checks
+
+Recent releases improved:
+
+- runtime stability and error handling
+- observability and diagnostics
+- semantic cache lifecycle control (expiration and pruning)
+
+The system is stable to run, with further improvements planned.
 
 ---
 
 ## Why is the semantic cache not being used?
 
-Semantic caching requires all of the following components to be correctly configured:
-- Qdrant running and reachable
-- embedding API configured
-- semantic caching enabled
+Most common reasons:
 
-Minimum required configuration:
+### 1. Not configured
+
+Semantic cache requires:
 
 ```text
+semantic_cache_enabled true;
+
 embedding_base_url https://api.openai.com;
 embedding_api_key sk-xxxx;
 embedding_model text-embedding-3-small;
@@ -263,20 +275,39 @@ embedding_model text-embedding-3-small;
 qdrant_url http://qdrant:6334;
 qdrant_collection aif_semantic_cache;
 qdrant_vector_size 1536;
-
-semantic_cache_enabled true;
-semantic_similarity_threshold 0.92;
 ```
 
-If any of these are missing, semantic caching will be disabled and only exact request caching will be used.
+### 2. No similar requests
 
-You can confirm semantic cache activity using Prometheus metrics:
+Semantic cache only works if **similar prompts repeat**.
+
+### 3. Threshold too strict
+
+```text
+semantic_similarity_threshold 0.92
+```
+
+Higher → fewer matches.
+
+### 4. Entries expired (v0.1.5)
+
+Expired entries are skipped automatically.
+
+If retention is too short:
+
+```text
+semantic_cache_retention_seconds
+```
+
+→ no reuse happens.
+
+### Quick check
 
 ```text
 aif_cache_semantic_hits
 ```
 
-If this value remains zero, the semantic cache is not being triggered.
+If this stays `0`, semantic cache is not being used.
 
 ---
 

@@ -24,13 +24,15 @@ flowchart TD
 
     E{Semantic Search<br/>Qdrant}
 
+    E2{Candidate Valid?<br/>similarity &gt; threshold<br/>AND not expired}
+
     F[Forward Request<br/>to Upstream LLM]
 
     G[Receive Upstream Response]
 
     H[Store in Exact Cache<br/>Redis]
 
-    I[Store Embedding<br/>Qdrant]
+    I[Store in Semantic Cache<br/>Qdrant<br/>embedding + expires_at]
 
     J[Return Response<br/>to Client]
 
@@ -42,8 +44,10 @@ flowchart TD
 
     C -->|MISS| E
 
-    E -->|SIMILAR PROMPT FOUND| D
-    E -->|NO MATCH| F
+    E --> E2
+
+    E2 -->|YES| D
+    E2 -->|NO| F
 
     F --> G
     G --> H
@@ -66,7 +70,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <your-key>" \
   -d '{
-    "model": "gpt-4o-mini",
+    "model": "gpt-4o-mini-2024-07-18",
     "messages": [
       {"role":"user","content":"Explain Redis briefly"}
     ]
@@ -152,72 +156,112 @@ The firewall generates an embedding for the normalized prompt text.
 
 Example embedding model:
 
-```text
+```
 text-embedding-3-small
 ```
 
 The embedding is used to search the Qdrant vector collection:
 
-```bash
+```
 aif_semantic_cache
 ```
 
 Search example:
 
-```text
+```
 vector search → top matches
 ```
 
+Each returned candidate represents a previously cached response with similar meaning.
+
 ---
 
-# Step 4 — Semantic Similarity Check
+# Step 4 — Semantic Similarity & Lifecycle Check
 
-Each match returned by Qdrant includes a similarity score.
+> Semantic cache decisions are based on both similarity and freshness.
+
+Each match returned by Qdrant includes:
+
+- a similarity score
+- cached response payload
+- lifecycle metadata (`inserted_at`, `expires_at`)
 
 Example:
 
-```text
+```
 Prompt: "Explain Redis briefly"
 Cached prompt: "What is Redis used for?"
 Similarity score: 0.94
 ```
 
-The firewall compares this score to the configured threshold.
+The firewall evaluates each candidate using two conditions in the following order:
+
+1. Similarity threshold
+2. Expiration (lifecycle validity)
 
 Example configuration:
 
-```text
+```
 semantic_similarity_threshold 0.92
 ```
 
+---
+
 ## Semantic Cache Hit
 
-If the similarity score exceeds the threshold:
+A candidate is considered a hit only if:
 
-```text
-0.94 > 0.92
+```
+similarity_score > threshold
+AND
+expires_at > now
+```
+
+Example:
+
+```
+0.94 > 0.92 → pass
+expires_at > now → valid
 ```
 
 The firewall returns the cached response.
 
 Benefits:
+
 - avoids an expensive LLM call
 - reuses previously generated answers
-- significantly increases cache hit rates
-
-## Semantic Cache Miss
-
-If no similar prompt exceeds the threshold:
-
-```text
-semantic MISS
-```
-
-The firewall forwards the request to the upstream LLM API.
+- improves response latency
+- increases effective cache hit rate
 
 ---
 
-### Step 5 — Upstream LLM Request
+## Semantic Cache Miss
+
+A semantic miss occurs if:
+
+- no candidate exceeds the similarity threshold
+- OR all candidates are expired
+- OR candidates are missing required metadata
+
+Example:
+
+```
+semantic MISS
+```
+
+In this case, the firewall forwards the request to the upstream LLM API.
+
+---
+
+## Important Notes (v0.1.5)
+
+- Expired semantic entries are never returned, even if similarity is high
+- Expiration is enforced during lookup, not via automatic deletion
+- Expired entries may remain stored in Qdrant until manually pruned
+
+---
+
+# Step 5 — Upstream LLM Request
 
 The firewall forwards the request to the configured upstream provider.
 
@@ -251,6 +295,10 @@ Stored data includes:
 - normalized prompt text
 - embedding vector
 - response payload
+- `inserted_at`
+- `expires_at`
+
+The expiration timestamp is calculated using: semantic_cache_retention_seconds
 
 ---
 
@@ -327,6 +375,8 @@ aif_cache_semantic_hits
 aif_cache_misses
 aif_tokens_saved
 aif_cost_saved_micro_usd
+aif_semantic_store_total
+aif_semantic_store_errors_total
 ```
 These metrics can be visualized using Grafana dashboards.
 

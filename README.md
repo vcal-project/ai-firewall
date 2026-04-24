@@ -82,29 +82,31 @@ Shows how the system balances reuse and precision while maintaining near-zero up
 - Request size protection (`max_request_body_bytes`)
 - Lightweight Rust + Axum implementation
 
-AI Cost Firewall is designed to be safe by default preventing accidental misconfiguration and unintended upstream costs.
+AI Cost Firewall is designed to be safe by default, preventing accidental misconfiguration and unintended upstream costs.
 
 ---
 
-# What’s new in v0.1.4
+# What’s new in v0.1.5
 
-v0.1.4 focuses on **operational predictability and observability** in real deployments.
+v0.1.5 introduces **semantic cache lifecycle control**, making semantic caching explicitly manageable in production environments.
 
 ### Key improvements
 
-- Clear error classification (validation / upstream / timeout / internal)
-- Upstream timeout visibility and latency tracking
-- Graceful shutdown with request draining and rejection tracking
-- Readiness vs liveness separation (`/readyz`, `/healthz`)
-- Semantic cache diagnostics:
-  - candidates checked
-  - threshold pass/fail
-  - expired entries skipped
-  - lookup latency
-- Improved logging for cache decisions (hit / miss / semantic reuse)
-- Safer configuration with better validation and warnings
-
-The system now behaves predictably under load and is easier to debug in production.
+- Separate lifecycle controls:
+  - `exact_cache_ttl_seconds`
+  - `semantic_cache_retention_seconds`
+- `cache_ttl_seconds` remains as a backward-compatible default
+- Semantic cache entries now include:
+  - `inserted_at`
+  - `expires_at`
+- Expired entries are skipped deterministically during lookup
+- Manual cleanup command:
+  ```bash
+  ai-firewall --prune-expired-semantic-cache
+  ```
+- Improved observability:
+  - `aif_semantic_store_total`
+  - `aif_semantic_store_errors_total`
 
 ---
 
@@ -235,7 +237,13 @@ qdrant_url http://qdrant:6334;
 qdrant_collection aif_semantic_cache;
 qdrant_vector_size 1536;
 
+# Backward-compatible default
 cache_ttl_seconds 2592000;
+
+# Optional explicit lifecycle controls
+exact_cache_ttl_seconds 86400;
+semantic_cache_retention_seconds 604800;
+
 request_timeout_seconds 120;
 graceful_shutdown_timeout_seconds 10;  # default
 max_request_body_bytes 1M;
@@ -322,22 +330,39 @@ In this mode:
 
 ### Cache behavior and TTL
 
-`cache_ttl_seconds` defines how long cached responses remain valid.
+AI Cost Firewall separates lifecycle control between cache layers:
 
-- Exact cache (Redis): TTL is enforced automatically by Redis
-- Semantic cache (Qdrant): entries are not physically deleted, but filtered at query time based on expiration
+- `exact_cache_ttl_seconds` — TTL for Redis exact cache
+- `semantic_cache_retention_seconds` — retention window for semantic cache entries
+- `cache_ttl_seconds` — backward-compatible default for both
 
-This ensures consistent behavior across both caching layers.
+Behavior:
 
-v0.1.4 adds visibility into semantic cache lifecycle:
+- Exact cache (Redis): TTL enforced automatically
+- Semantic cache (Qdrant):
+  - entries include `inserted_at` and `expires_at`
+  - expired entries are skipped during lookup
+  - entries are not deleted automatically
 
-- how many candidates are evaluated
-- how many fail similarity threshold
-- how many are skipped due to expiration
+This ensures consistent and predictable cache behavior across both layers.
 
-This helps diagnose low semantic hit rates and tune thresholds effectively.
+### Semantic cache cleanup
 
-> Semantic cache entries are not automatically deleted from Qdrant. Expired entries are ignored during lookup, but remain stored in the collection. To reclaim disk space, old entries can be removed manually (for example, with a periodic cleanup script or scheduled job). Automatic cleanup support may be added in future versions.
+Expired semantic cache entries are ignored automatically during lookup.
+
+To physically remove expired entries from Qdrant:
+
+```bash
+ai-firewall --prune-expired-semantic-cache
+```
+
+Recommended usage:
+
+```bash
+systemctl stop ai-firewall
+ai-firewall --config /etc/ai-firewall/ai-firewall.conf --prune-expired-semantic-cache
+systemctl start ai-firewall
+```
 
 ---
 
@@ -498,6 +523,8 @@ Metrics:
 - `aif_semantic_threshold_results_total{result="pass|fail"}`
 - `aif_semantic_expired_entries_skipped_total`
 - `aif_semantic_lookup_duration_seconds`
+- `aif_semantic_store_total` – semantic cache store attempts
+- `aif_semantic_store_errors_total` – semantic cache store failures
 
 Exact cache hits have no embedding cost.
 

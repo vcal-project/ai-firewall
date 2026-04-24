@@ -157,6 +157,8 @@ aif_cache_semantic_hits
 aif_cache_misses
 aif_tokens_saved
 aif_cost_saved_micro_usd
+aif_semantic_store_total
+aif_semantic_store_errors_total
 ```
 
 ### Token and Cost Accounting

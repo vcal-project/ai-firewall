@@ -13,11 +13,28 @@ qdrant_url http://qdrant:6334;
 qdrant_collection aif_semantic_cache;
 qdrant_vector_size 1536;
 
+# Backward-compatible default for both cache layers
 cache_ttl_seconds 2592000;
+
+# Optional explicit lifecycle controls (v0.1.5)
+# exact_cache_ttl_seconds 86400;
+# semantic_cache_retention_seconds 604800;
+
+# Semantic cache lifecycle behavior:
+# - Entries include inserted_at and expires_at metadata
+# - Expired entries are skipped during lookup
+# - Entries are NOT automatically deleted from Qdrant
+#
+# To clean up expired entries manually:
+# ai-firewall --prune-expired-semantic-cache
+
 request_timeout_seconds 120;
 
 semantic_cache_enabled true;
 semantic_similarity_threshold 0.92;
+
+# Higher threshold = stricter similarity (fewer semantic hits)
+# Lower threshold = more reuse (potentially less precise)
 
 # Model validation behavior
 # By default, only models defined via `model_price` are allowed.

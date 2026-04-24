@@ -80,11 +80,11 @@ https://raw.githubusercontent.com/vcal-project/ai-firewall/main/security/cosign.
 Example:
 
 ```bash
-docker pull vcalproject/ai-firewall:v0.1.3
+docker pull vcalproject/ai-firewall:v0.1.5
 
 cosign verify \
   --key cosign.pub \
-  vcalproject/ai-firewall:v0.1.3
+  vcalproject/ai-firewall:v0.1.5
 ```
 
 If the verification succeeds, the image was produced and signed by the project maintainers and has not been tampered with.
@@ -201,6 +201,9 @@ docker run -p 6334:6334 qdrant/qdrant
 
 For MVP testing you can disable semantic cache.
 
+> In v0.1.5, semantic cache entries are not automatically deleted.  
+> Expired entries are ignored during lookup but remain stored until manually pruned.
+
 ---
 
 ## 2. Build the Firewall
@@ -254,7 +257,13 @@ qdrant_url http://127.0.0.1:6334;
 qdrant_collection aif_semantic_cache;
 qdrant_vector_size 1536;
 
+# Backward-compatible default
 cache_ttl_seconds 86400;
+
+# Optional lifecycle controls (v0.1.5)
+# exact_cache_ttl_seconds 86400;
+# semantic_cache_retention_seconds 604800;
+
 request_timeout_seconds 120;
 
 semantic_cache_enabled false;
@@ -273,6 +282,34 @@ model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 # Embedding pricing (optional, used for cost estimation only)
 embedding_price 0.020;
 ```
+
+### Semantic cache lifecycle (v0.1.5)
+
+Semantic cache entries now include lifecycle metadata:
+
+- `inserted_at`
+- `expires_at`
+
+Behavior:
+
+- expired entries are automatically skipped during lookup
+- expired entries are NOT deleted automatically
+- semantic cache correctness does not depend on pruning
+
+To remove expired entries manually:
+
+```bash
+ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
+```
+
+Recommended usage:
+
+```bash
+systemctl stop ai-firewall
+ai-firewall --config /etc/ai-firewall/ai-firewall.conf --prune-expired-semantic-cache
+systemctl start ai-firewall
+```
+
 
 Alternatively, you can use environment variables (via a `.env` file), but the config file is the recommended approach.
 
@@ -440,7 +477,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer <your-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o-mini",
+    "model": "gpt-4o-mini-2024-07-18",
     "messages": [
       {"role": "user", "content": "Say hello."}
     ]
@@ -464,6 +501,8 @@ Example metrics:
     aif_cache_semantic_hits
     aif_tokens_saved
     aif_cost_saved_micro_usd
+    aif_semantic_store_total
+    aif_semantic_store_errors_total
 
 ---
 

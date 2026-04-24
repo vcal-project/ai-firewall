@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use qdrant_client::{
     qdrant::{
-        vectors_config::Config, Condition, CreateCollection, Distance, FieldCondition, Filter,
-        Match, PointStruct, SearchPoints, UpsertPoints, Value, VectorParams, VectorsConfig,
+        points_selector::PointsSelectorOneOf, vectors_config::Config, Condition, CreateCollection,
+        DeletePoints, Distance, FieldCondition, Filter, Match, PointStruct, PointsSelector, Range,
+        SearchPoints, UpsertPoints, Value, VectorParams, VectorsConfig,
     },
     Qdrant,
 };
@@ -26,7 +27,7 @@ pub struct QdrantSemanticCache {
     embedder: Arc<dyn EmbeddingProvider>,
     collection_name: String,
     similarity_threshold: f32,
-    cache_ttl_seconds: usize,
+    semantic_retention_seconds: usize,
 }
 
 impl QdrantSemanticCache {
@@ -36,7 +37,7 @@ impl QdrantSemanticCache {
         collection_name: String,
         vector_size: u64,
         similarity_threshold: f32,
-        cache_ttl_seconds: usize,
+        semantic_retention_seconds: usize,
         embedder: Arc<dyn EmbeddingProvider>,
     ) -> Result<Self> {
         let mut builder = Qdrant::from_url(&qdrant_url);
@@ -52,7 +53,7 @@ impl QdrantSemanticCache {
             embedder,
             collection_name,
             similarity_threshold,
-            cache_ttl_seconds,
+            semantic_retention_seconds,
         })
     }
 }
@@ -137,26 +138,6 @@ impl SemanticCache for QdrantSemanticCache {
             for point in search_result.result {
                 metrics::SEMANTIC_CANDIDATES_CHECKED_TOTAL.inc();
 
-                let score = point.score;
-                if score < self.similarity_threshold {
-                    metrics::SEMANTIC_THRESHOLD_RESULTS_TOTAL
-                        .with_label_values(&["fail"])
-                        .inc();
-
-                    tracing::debug!(
-                        model = %model,
-                        score = score,
-                        threshold = self.similarity_threshold,
-                        "semantic candidate rejected below threshold"
-                    );
-
-                    continue;
-                }
-
-                metrics::SEMANTIC_THRESHOLD_RESULTS_TOTAL
-                    .with_label_values(&["pass"])
-                    .inc();
-
                 let payload = point.payload;
 
                 let expires_at = match payload.get("expires_at").and_then(proto_value_to_i64) {
@@ -181,6 +162,26 @@ impl SemanticCache for QdrantSemanticCache {
                     );
                     continue;
                 }
+
+                let score = point.score;
+                if score < self.similarity_threshold {
+                    metrics::SEMANTIC_THRESHOLD_RESULTS_TOTAL
+                        .with_label_values(&["fail"])
+                        .inc();
+
+                    tracing::debug!(
+                        model = %model,
+                        score = score,
+                        threshold = self.similarity_threshold,
+                        "semantic candidate rejected below threshold"
+                    );
+
+                    continue;
+                }
+
+                metrics::SEMANTIC_THRESHOLD_RESULTS_TOTAL
+                    .with_label_values(&["pass"])
+                    .inc();
 
                 let raw_response = payload
                     .get("response_json")
@@ -218,68 +219,79 @@ impl SemanticCache for QdrantSemanticCache {
         normalized_prompt: &str,
         response: &ChatCompletionResponse,
     ) -> Result<()> {
-        let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
-        let vector = embedding_result.embedding;
+        metrics::SEMANTIC_STORE_TOTAL.inc();
 
-        let request_hash = sha256_hex(normalized_prompt);
+        let result = async {
+            let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
+            let vector = embedding_result.embedding;
 
-        let inserted_at = Utc::now().timestamp();
-        let expires_at = inserted_at + self.cache_ttl_seconds as i64;
+            let request_hash = sha256_hex(normalized_prompt);
 
-        let record = SemanticCacheRecord {
-            request_hash: request_hash.clone(),
-            model: model.to_string(),
-            normalized_prompt: normalized_prompt.to_string(),
-            response: response.clone(),
-            inserted_at,
-            expires_at,
-        };
+            let inserted_at = Utc::now().timestamp();
+            let expires_at = inserted_at + self.semantic_retention_seconds as i64;
 
-        let response_json =
-            serde_json::to_string(&record.response).context("failed to serialize response_json")?;
+            let record = SemanticCacheRecord {
+                request_hash: request_hash.clone(),
+                model: model.to_string(),
+                normalized_prompt: normalized_prompt.to_string(),
+                response: response.clone(),
+                inserted_at,
+                expires_at,
+            };
 
-        let point = PointStruct::new(
-            Uuid::new_v4().to_string(),
-            vector,
-            [
-                (
-                    "request_hash",
-                    json_to_proto_value(JsonValue::String(record.request_hash)),
-                ),
-                (
-                    "model",
-                    json_to_proto_value(JsonValue::String(record.model)),
-                ),
-                (
-                    "normalized_prompt",
-                    json_to_proto_value(JsonValue::String(record.normalized_prompt)),
-                ),
-                (
-                    "inserted_at",
-                    json_to_proto_value(JsonValue::Number(record.inserted_at.into())),
-                ),
-                (
-                    "expires_at",
-                    json_to_proto_value(JsonValue::Number(record.expires_at.into())),
-                ),
-                (
-                    "response_json",
-                    json_to_proto_value(JsonValue::String(response_json)),
-                ),
-            ],
-        );
+            let response_json = serde_json::to_string(&record.response)
+                .context("failed to serialize response_json")?;
 
-        self.client
-            .upsert_points(UpsertPoints {
-                collection_name: self.collection_name.clone(),
-                points: vec![point],
-                wait: Some(false),
-                ..Default::default()
-            })
-            .await
-            .context("Qdrant upsert failed")?;
+            let point = PointStruct::new(
+                Uuid::new_v4().to_string(),
+                vector,
+                [
+                    (
+                        "request_hash",
+                        json_to_proto_value(JsonValue::String(record.request_hash)),
+                    ),
+                    (
+                        "model",
+                        json_to_proto_value(JsonValue::String(record.model)),
+                    ),
+                    (
+                        "normalized_prompt",
+                        json_to_proto_value(JsonValue::String(record.normalized_prompt)),
+                    ),
+                    (
+                        "inserted_at",
+                        json_to_proto_value(JsonValue::Number(record.inserted_at.into())),
+                    ),
+                    (
+                        "expires_at",
+                        json_to_proto_value(JsonValue::Number(record.expires_at.into())),
+                    ),
+                    (
+                        "response_json",
+                        json_to_proto_value(JsonValue::String(response_json)),
+                    ),
+                ],
+            );
 
-        Ok(())
+            self.client
+                .upsert_points(UpsertPoints {
+                    collection_name: self.collection_name.clone(),
+                    points: vec![point],
+                    wait: Some(false),
+                    ..Default::default()
+                })
+                .await
+                .context("Qdrant upsert failed")?;
+
+            Ok(())
+        }
+        .await;
+
+        if result.is_err() {
+            metrics::SEMANTIC_STORE_ERRORS_TOTAL.inc();
+        }
+
+        result
     }
 }
 
@@ -330,4 +342,66 @@ fn proto_value_to_i64(v: &Value) -> Option<i64> {
         Some(qdrant_client::qdrant::value::Kind::DoubleValue(f)) => Some(*f as i64),
         _ => None,
     }
+}
+
+pub async fn prune_expired_semantic_cache_entries(
+    qdrant_url: String,
+    qdrant_api_key: Option<String>,
+    collection_name: String,
+) -> Result<()> {
+    let mut builder = Qdrant::from_url(&qdrant_url);
+
+    if let Some(api_key) = qdrant_api_key {
+        builder = builder.api_key(api_key);
+    }
+
+    let client = builder.build().context("failed to build Qdrant client")?;
+
+    let now = Utc::now().timestamp();
+
+    tracing::info!(
+        collection = %collection_name,
+        now = now,
+        "pruning expired semantic cache entries from Qdrant"
+    );
+
+    client
+        .delete_points(DeletePoints {
+            collection_name: collection_name.clone(),
+            points: Some(PointsSelector {
+                points_selector_one_of: Some(PointsSelectorOneOf::Filter(Filter {
+                    must: vec![Condition {
+                        condition_one_of: Some(
+                            qdrant_client::qdrant::condition::ConditionOneOf::Field(
+                                FieldCondition {
+                                    key: "expires_at".to_string(),
+                                    range: Some(Range {
+                                        lt: Some(now as f64),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }],
+                    ..Default::default()
+                })),
+            }),
+            wait: Some(true),
+            ..Default::default()
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "failed to prune expired semantic cache entries from Qdrant collection {}",
+                collection_name
+            )
+        })?;
+
+    tracing::info!(
+        collection = %collection_name,
+        "expired semantic cache pruning completed; exact deleted count is not reported"
+    );
+
+    Ok(())
 }

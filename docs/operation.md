@@ -4,16 +4,18 @@ This section describes how AI Cost Firewall behaves at runtime: health checks, g
 
 ---
 
-## v0.1.4 Operational Improvements
+## Runtime behavior overview
 
-v0.1.4 improves runtime predictability and observability.
+AI Cost Firewall provides predictable runtime behavior with explicit lifecycle control, observability, and safe shutdown semantics.
 
-Key additions:
+Key capabilities:
 
 - explicit error classification (validation / upstream / timeout / internal)
 - upstream latency and timeout visibility
 - semantic cache diagnostics (threshold decisions, expiration behavior)
-- improved shutdown visibility via metrics
+- graceful shutdown with request draining
+- readiness and liveness separation
+- semantic cache lifecycle control (v0.1.5)
 
 ---
 
@@ -75,7 +77,7 @@ AI Cost Firewall supports graceful shutdown on:
 4. In-flight requests complete
 5. Process exits after `graceful_shutdown_timeout_seconds`
 
-### v0.1.4 behavior
+### Behavior
 
 - `/readyz` returns `503` immediately
 - New requests are rejected
@@ -170,6 +172,8 @@ Metric:
 - `aif_semantic_threshold_results_total{result="pass|fail"}`
 - `aif_semantic_expired_entries_skipped_total`
 - `aif_semantic_lookup_duration_seconds`
+- `aif_semantic_store_total`
+- `aif_semantic_store_errors_total`
 
 ---
 
@@ -203,7 +207,68 @@ Candidates may be skipped due to:
 These metrics help tune:
 
 - `semantic_similarity_threshold`
-- `cache_ttl_seconds`
+- `semantic_cache_retention_seconds`
+
+---
+
+## Semantic Cache Lifecycle (v0.1.5)
+
+Semantic cache entries include lifecycle metadata:
+
+- `inserted_at`
+- `expires_at`
+
+### Runtime behavior
+
+- expired entries are skipped during lookup
+- expired entries are never returned
+- expired entries remain stored in Qdrant
+
+This ensures:
+
+- no reuse of stale responses
+- predictable semantic cache behavior
+- safe operation without background cleanup
+
+### Cleanup
+
+Expired entries can be removed manually:
+
+```bash
+ai-firewall --prune-expired-semantic-cache
+```
+
+Recommended usage:
+
+```bash
+systemctl stop ai-firewall
+ai-firewall --config /path/to/ai-firewall.conf --prune-expired-semantic-cache
+systemctl start ai-firewall
+```
+
+Notes:
+
+- pruning deletes only expired entries (`expires_at < now`)
+- valid entries are not affected
+- pruning is optional and does not affect correctness
+
+---
+
+## Maintenance
+
+Semantic cache storage may grow over time depending on retention settings.
+
+To reclaim space:
+
+```bash
+ai-firewall --prune-expired-semantic-cache
+```
+
+This operation:
+
+- removes expired semantic entries
+- does not affect active cache entries
+- can be run during maintenance windows
 
 ---
 
@@ -247,3 +312,5 @@ Inspect:
 - No automatic file watching
 - Reload via SIGHUP only
 - Requests exceeding `request_timeout_seconds` are aborted and classified as upstream timeouts
+- `aif_semantic_store_total`
+- `aif_semantic_store_errors_total`

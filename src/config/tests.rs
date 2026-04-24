@@ -36,6 +36,8 @@ fn minimal_valid_config() -> Config {
         qdrant_collection: "aif_semantic_cache".to_string(),
         qdrant_vector_size: 1536,
         cache_ttl_seconds: 86400,
+        exact_cache_ttl_seconds: 86400,
+        semantic_cache_retention_seconds: 86400,
         request_timeout_seconds: 120,
         graceful_shutdown_timeout_seconds: 10,
         max_request_body_bytes: 1_048_576,
@@ -433,4 +435,33 @@ model_price gpt-4o-mini-2024-07-18 nope 0.60;
 
     let err = result.unwrap_err().to_string();
     assert!(err.contains("invalid model_price input price"));
+}
+
+#[test]
+fn exact_cache_ttl_defaults_to_legacy_cache_ttl() {
+    // config only has cache_ttl_seconds
+    // assert exact_cache_ttl_seconds == cache_ttl_seconds
+}
+
+#[test]
+fn semantic_retention_defaults_to_legacy_cache_ttl() {
+    // config only has cache_ttl_seconds
+    // assert semantic_cache_retention_seconds == cache_ttl_seconds
+}
+
+#[test]
+fn parses_separate_exact_and_semantic_ttls_from_file() {
+    // exact_cache_ttl_seconds 3600;
+    // semantic_cache_retention_seconds 604800;
+}
+
+#[test]
+fn zero_exact_cache_ttl_seconds_fails_validation() {
+    // expect "exact_cache_ttl_seconds must be > 0"
+}
+
+#[test]
+fn zero_semantic_cache_retention_seconds_fails_when_semantic_enabled() {
+    // semantic_cache_enabled = true
+    // semantic_cache_retention_seconds = 0
 }

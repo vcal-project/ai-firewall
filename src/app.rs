@@ -116,13 +116,17 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
         semantic_cache_enabled = cfg.semantic_cache_enabled,
         request_timeout_seconds = cfg.request_timeout_seconds,
         cache_ttl_seconds = cfg.cache_ttl_seconds,
+        exact_cache_ttl_seconds = cfg.exact_cache_ttl_seconds,
+        semantic_cache_retention_seconds = cfg.semantic_cache_retention_seconds,
         "building application runtime"
     );
 
     let redis_client = redis::Client::open(cfg.redis_url.clone())?;
     let redis_conn = ConnectionManager::new(redis_client).await?;
-    let exact_cache: Arc<dyn ExactCache> =
-        Arc::new(RedisExactCache::new(redis_conn, cfg.cache_ttl_seconds));
+    let exact_cache: Arc<dyn ExactCache> = Arc::new(RedisExactCache::new(
+        redis_conn,
+        cfg.exact_cache_ttl_seconds,
+    ));
 
     let upstream: Arc<dyn LlmUpstream> = Arc::new(OpenAiUpstream::new(
         cfg.upstream_base_url.clone(),
@@ -145,7 +149,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
                 cfg.qdrant_collection.clone(),
                 cfg.qdrant_vector_size,
                 cfg.semantic_similarity_threshold,
-                cfg.cache_ttl_seconds,
+                cfg.semantic_cache_retention_seconds,
                 embedder,
             )
             .await?,
@@ -187,8 +191,6 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
-
-    tracing::info!("application router built successfully");
 
     Ok(BuiltApp { router, state })
 }

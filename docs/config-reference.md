@@ -31,19 +31,42 @@ The configuration file is divided into the following logical sections:
 
 ---
 
-## v0.1.4 Notes
+## v0.1.5 Notes
 
-v0.1.4 introduces improvements focused on **operational predictability and observability**.
+v0.1.5 introduces **semantic cache lifecycle control**, making semantic caching explicitly manageable.
 
-Key additions relevant to configuration:
+Key additions:
 
-- clearer timeout behavior (`request_timeout_seconds`)
-- improved shutdown handling (`graceful_shutdown_timeout_seconds`)
-- request size protection (`max_request_body_bytes`)
-- semantic cache lifecycle visibility (TTL-based filtering)
-- stronger validation and safer defaults
+- separate lifecycle controls:
+  - `exact_cache_ttl_seconds`
+  - `semantic_cache_retention_seconds`
+- `cache_ttl_seconds` remains as a backward-compatible default
+- semantic cache entries now include:
+  - `inserted_at`
+  - `expires_at`
+- expired entries are skipped deterministically during lookup
+- manual cleanup command:
+  ```bash
+  ai-firewall --prune-expired-semantic-cache
+```
+- new observability metrics:
+  - `aif_semantic_store_total`
+  - `aif_semantic_store_errors_total`
 
-These changes do not introduce breaking configuration changes, but improve runtime behavior and diagnostics.
+
+
+---
+
+## Previous (v0.1.4)
+
+v0.1.4 introduced operational hardening and observability:
+
+- error classification
+- upstream timeout visibility
+- graceful shutdown and readiness handling
+- semantic cache diagnostics
+
+These changes remain part of the system in v0.1.5.
 
 ---
 
@@ -65,7 +88,13 @@ qdrant_url http://qdrant:6334;
 qdrant_collection aif_semantic_cache;
 qdrant_vector_size 1536;
 
+# Backward-compatible default
 cache_ttl_seconds 86400;
+
+# Optional lifecycle controls (v0.1.5)
+#exact_cache_ttl_seconds 86400;
+#semantic_cache_retention_seconds 604800;
+
 request_timeout_seconds 120;
 graceful_shutdown_timeout_seconds 10;  # default
 max_request_body_bytes 1048576;
@@ -107,31 +136,62 @@ Example:
 }
 ```
 
-## Cache TTL (Time-To-Live)
+## Cache Lifecycle and TTL
 
-`cache_ttl_seconds` defines how long cached responses are considered valid for both exact (Redis) and semantic (Qdrant) caching.
+AI Cost Firewall separates lifecycle control between cache layers:
 
-Redis enforces TTL automatically, while semantic entries are filtered at query time based on expiration.
+- `exact_cache_ttl_seconds` — TTL for Redis exact cache
+- `semantic_cache_retention_seconds` — retention window for semantic cache entries
+- `cache_ttl_seconds` — backward-compatible default for both
 
-### Semantic TTL behavior (v0.1.4)
+### Behavior
 
-Semantic cache entries are not physically deleted when expired.
+**Exact cache (Redis):**
+- TTL enforced automatically by Redis
 
-Instead:
-
-- each entry includes `inserted_at` and `expires_at`
+**Semantic cache (Qdrant):**
+- entries include `inserted_at` and `expires_at`
 - expired entries are skipped during lookup
-- valid entries are reused if similarity threshold is met
+- entries are NOT automatically deleted
 
 This ensures:
 
-- consistent behavior across cache layers
+- consistent cache behavior
 - predictable reuse window
 - no accidental reuse of stale responses
 
+## Semantic Cache Cleanup
+
+Expired semantic cache entries are ignored automatically during lookup.
+
+To physically remove expired entries:
+
+```bash
+ai-firewall --prune-expired-semantic-cache
+```
+
+Recommended usage:
+
+```bash
+systemctl stop ai-firewall
+ai-firewall --config /path/to/ai-firewall.conf --prune-expired-semantic-cache
+systemctl start ai-firewall
+```
+
+Notes:
+
+- pruning removes only expired entries (`expires_at < now`)
+- valid entries remain untouched
+- Qdrant does not return exact deletion counts
+- command can run during operation, but maintenance window is recommended
+
+When `exact_cache_ttl_seconds` or `semantic_cache_retention_seconds` are explicitly set, they override `cache_ttl_seconds` for their respective cache layers.
+
+In this case, `cache_ttl_seconds` acts only as a fallback default.
+
 ### Observability
 
-v0.1.4 introduces visibility into semantic cache lifecycle:
+v0.1.4 introduced visibility into semantic cache lifecycle:
 
 - number of candidates evaluated
 - threshold pass / fail decisions
@@ -154,13 +214,6 @@ graceful_shutdown_timeout_seconds 10;
 ```
 
 Default: 10 seconds
-
-v0.1.4 behavior:
-
-- `/readyz` returns 503 once shutdown begins
-- New requests are rejected immediately
-- Existing requests are allowed to complete within the timeout
-- Rejected requests are tracked (`aif_shutdown_rejections_total`)
 
 ## Optional: allow pass-through
 
@@ -236,14 +289,6 @@ Alternatively, the configuration file can be specified explicitly:
 ai-firewall --config /path/to/ai-firewall.conf
 ```
 
-## Qdrant Notes
-
-AI Cost Firewall uses the Qdrant gRPC interface by default, which runs on port `6334`.  
-
-The firewall uses the Qdrant gRPC interface (`6334`) by default.
-
-The REST API port (`6333`) is not used for semantic caching.
-
 ---
 
 ## Observability and Diagnostics
@@ -283,6 +328,8 @@ aif_errors_total{class=...}
 - `aif_semantic_threshold_results_total{result="pass|fail"}`
 - `aif_semantic_expired_entries_skipped_total`
 - `aif_semantic_lookup_duration_seconds`
+- `aif_semantic_store_total`
+- `aif_semantic_store_errors_total`
 
 **Running with explicit config**
 
@@ -527,13 +574,19 @@ request_timeout_seconds 120;
 ```
 Default: 120 seconds
 
-*v0.1.4 behavior:*
-
-- Requests exceeding this timeout are classified as upstream timeouts
-- Timeouts are tracked in metrics (`aif_upstream_timeouts_total`)
-- Timeout errors are returned with clear classification
-
 This prevents indefinite blocking on slow or unresponsive upstream providers.
+
+### exact_cache_ttl_seconds
+
+TTL for exact cache entries (Redis).
+
+Overrides `cache_ttl_seconds` for exact cache only.
+
+Example:
+
+```text
+exact_cache_ttl_seconds 86400;
+```
 
 ---
 
@@ -592,16 +645,40 @@ Supported formats:
 2M
 ```
 
-v0.1.4 behavior:
+Behavior:
 
-Requests exceeding the limit are rejected early (HTTP 413)
-Large payloads do not reach upstream providers
-Protects against accidental or malicious oversized prompts
+- Requests exceeding the limit are rejected early (HTTP 413)
+- Large payloads do not reach upstream providers
+- Protects against accidental or malicious oversized prompts
 
 Notes:
 
-Values below 1K trigger a startup warning
-Applies to `/v1/chat/completions` endpoint
+- Values below 1K trigger a startup warning
+- Applies to /v1/chat/completions endpoint
+
+### semantic_cache_retention_seconds
+
+Retention window for semantic cache entries.
+
+Controls how long entries remain valid for reuse.
+
+Example:
+
+```text
+semantic_cache_retention_seconds 604800;
+```
+
+Behavior:
+
+Entries include `inserted_at` and `expires_at`
+Expired entries are skipped during lookup
+Expired entries are not reused
+
+Notes:
+
+Entries are not deleted automatically from Qdrant
+Longer retention increases reuse but may increase collection size
+Use `ai-firewall --prune-expired-semantic-cache` to remove expired entries
 
 ---
 

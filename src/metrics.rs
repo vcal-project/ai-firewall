@@ -133,6 +133,22 @@ pub static UPSTREAM_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 // Semantic diagnostics metrics
 // -----------------------------
 
+pub static SEMANTIC_STORE_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_semantic_store_total",
+        "Total number of semantic cache store attempts",
+    )
+    .expect("metric aif_semantic_store_total must be valid")
+});
+
+pub static SEMANTIC_STORE_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_semantic_store_errors_total",
+        "Total number of semantic cache store failures",
+    )
+    .expect("metric aif_semantic_store_errors_total must be valid")
+});
+
 pub static SEMANTIC_CANDIDATES_CHECKED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_semantic_candidates_checked_total",
@@ -169,11 +185,20 @@ pub static SEMANTIC_LOOKUP_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 });
 
 pub fn init() {
+    Lazy::force(&SEMANTIC_STORE_TOTAL);
+    Lazy::force(&SEMANTIC_STORE_ERRORS_TOTAL);
+    Lazy::force(&SEMANTIC_CANDIDATES_CHECKED_TOTAL);
+    Lazy::force(&SEMANTIC_THRESHOLD_RESULTS_TOTAL);
+    Lazy::force(&SEMANTIC_LOOKUP_DURATION_SECONDS);
+    Lazy::force(&SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL);
+
     INIT.call_once(|| {
         let collectors: Vec<Box<dyn Collector>> = vec![
             Box::new(REQUESTS_TOTAL.clone()),
             Box::new(CACHE_EXACT_HITS.clone()),
             Box::new(CACHE_SEMANTIC_HITS.clone()),
+            Box::new(SEMANTIC_STORE_TOTAL.clone()),
+            Box::new(SEMANTIC_STORE_ERRORS_TOTAL.clone()),
             Box::new(CACHE_MISSES.clone()),
             Box::new(UPSTREAM_CALLS.clone()),
             Box::new(TOKENS_SAVED.clone()),
