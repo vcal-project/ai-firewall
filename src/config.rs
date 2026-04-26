@@ -555,7 +555,6 @@ impl fmt::Debug for Config {
             )
             .field("request_timeout_seconds", &self.request_timeout_seconds)
             .field("semantic_cache_enabled", &self.semantic_cache_enabled)
-            .field("request_timeout_seconds", &self.request_timeout_seconds)
             .field(
                 "semantic_similarity_threshold",
                 &self.semantic_similarity_threshold,

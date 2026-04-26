@@ -264,13 +264,6 @@ async fn main() -> anyhow::Result<()> {
 
     if test_config {
         tracing::info!("configuration OK");
-
-        if let Err(e) = app::build_runtime(&cfg).await {
-            tracing::error!("runtime dependency check failed: {}", e);
-            return Err(e);
-        }
-
-        tracing::info!("runtime dependencies initialized successfully");
         return Ok(());
     }
 

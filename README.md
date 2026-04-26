@@ -356,12 +356,46 @@ To physically remove expired entries from Qdrant:
 ai-firewall --prune-expired-semantic-cache
 ```
 
-Recommended usage:
+Recommended usage depends on how AI Firewall is deployed.
+
+#### Systemd / binary deployment
+
+For conservative maintenance windows, stop the service before pruning.
 
 ```bash
 systemctl stop ai-firewall
 ai-firewall --config /etc/ai-firewall/ai-firewall.conf --prune-expired-semantic-cache
 systemctl start ai-firewall
+```
+
+#### Docker Compose deployment
+
+Run pruning as a one-off container using the same Compose service and config:
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf \
+  --prune-expired-semantic-cache
+```
+
+In the default `docker-compose.yml`, the AI Firewall service is named `firewall`.
+
+This command does not stop or modify the running AI Firewall container. It starts a temporary one-off container on the same Docker network, connects to Qdrant using the configured `qdrant_url`, prunes expired semantic entries in Qdrant, and exits.
+
+The running AI Firewall service continues handling traffic during pruning.
+
+To verify the Qdrant collection size before or after pruning:
+
+```bash
+curl -s http://127.0.0.1:6333/collections/aif_semantic_cache/points/count \
+  -H "Content-Type: application/json" \
+  -d '{"exact": true}'
+```
+
+> If your Compose service has a different name, replace firewall with the output of:
+
+```bash
+docker compose ps --services
 ```
 
 ---

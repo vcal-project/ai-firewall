@@ -157,9 +157,26 @@ cargo --version
 
 The firewall uses Redis for **exact request caching**.
 
-Redis can be installed either via the system package manager or via Docker. For quick local testing, installing Redis via `apt` is usually the simplest option.
+Redis can be installed either via the system package manager or via Docker.
 
-#### Ubuntu / Debian
+#### Option 1 — Docker (recommended for quick start)
+
+```bash
+docker run -p 6379:6379 redis:8
+```
+
+Verify
+```bash
+redis-cli -h 127.0.0.1 ping
+```
+
+Expected output:
+
+```bash
+PONG
+```
+
+#### Option 2 — System package (Ubuntu / Debian)
 
 ``` bash
 sudo apt install redis-server
@@ -189,6 +206,8 @@ Expected output:
 PONG
 ```
 
+> On RHEL / Rocky Linux, Redis may not be available in default repositories. Using Docker is recommended for consistency across environments.
+
 ### Qdrant (for semantic cache, optional)
 
 Semantic caching requires a vector database.
@@ -197,6 +216,12 @@ Run Qdrant using Docker:
 
 ``` bash
 docker run -p 6334:6334 qdrant/qdrant
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:6333/healthz
 ```
 
 For MVP testing you can disable semantic cache.
@@ -418,14 +443,41 @@ The firewall provides a command similar to `nginx -t`.
 
 Validate the configuration:
 
+### Local binary
+
 ``` bash
 cargo run -- --config configs/ai-firewall.conf --test-config
 ```
 
 Expected output:
 
-    configuration OK
-    runtime dependencies initialized successfully
+```bash
+configuration OK
+```
+
+The command exits immediately after validation and does not start the server.
+
+### Docker Compose
+
+Use the firewall service from docker-compose.yml:
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf \
+  --test-config
+```
+
+Expected output:
+
+```bash
+configuration OK
+```
+
+> If your Compose service has a different name, check it with:
+
+```bash
+docker compose ps --services
+```
 
 ---
 
@@ -433,11 +485,23 @@ Expected output:
 
 You can inspect the resolved configuration:
 
+### Local binary
+
 ``` bash
 cargo run -- --config configs/ai-firewall.conf --print-config
 ```
 
+### Docker Compose
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf \
+  --print-config
+```
+
 Secrets are automatically masked in the output.
+
+The command prints the loaded configuration and exits without starting the server.
 
 ---
 
