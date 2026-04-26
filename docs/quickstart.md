@@ -574,6 +574,8 @@ Example metrics:
 
 The firewall supports **nginx-style reload**.
 
+### Systemd / binary deployment
+
 Reload configuration without restarting:
 
 ``` bash
@@ -586,10 +588,22 @@ Example:
 kill -HUP $(pgrep ai-firewall)
 ```
 
+### Docker Compose deployment
+
+Send the SIGHUP signal to the running container:
+
+```bash
+docker compose kill -s HUP firewall
+```
+
+### Expected behavior
+
 Logs will show:
 
     received SIGHUP, reloading config
     config and runtime successfully reloaded
+
+The server continues running and starts using the updated configuration.
 
 ---
 
