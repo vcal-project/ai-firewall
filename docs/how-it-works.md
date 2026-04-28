@@ -180,29 +180,35 @@ Each returned candidate represents a previously cached response with similar mea
 
 > Semantic cache decisions are based on both similarity and freshness.
 
-Each match returned by Qdrant includes:
+Each semantic cache entry stored in Qdrant includes:
 
-- a similarity score
+- an embedding vector
 - cached response payload
 - lifecycle metadata (`inserted_at`, `expires_at`)
+- model metadata
 
 Example:
 
-```
+```text
 Prompt: "Explain Redis briefly"
 Cached prompt: "What is Redis used for?"
 Similarity score: 0.94
 ```
 
-The firewall evaluates each candidate using two conditions in the following order:
+In v0.1.6, expired semantic entries are filtered before similarity ranking.
 
-1. Similarity threshold
-2. Expiration (lifecycle validity)
+The lookup flow is:
+
+1. Qdrant searches only entries for the same model.
+2. Qdrant filters out expired entries using `expires_at > now`.
+3. The firewall evaluates returned candidates against `semantic_similarity_threshold`.
+4. The firewall verifies that the cached response payload is valid.
+5. The first valid candidate is returned as a semantic cache hit.
 
 Example configuration:
 
-```
-semantic_similarity_threshold 0.92
+```conf
+semantic_similarity_threshold 0.92;
 ```
 
 ---
@@ -212,16 +218,19 @@ semantic_similarity_threshold 0.92
 A candidate is considered a hit only if:
 
 ```
-similarity_score > threshold
-AND
 expires_at > now
+AND
+similarity_score >= semantic_similarity_threshold
+AND
+cached response payload is valid
 ```
 
 Example:
 
 ```
-0.94 > 0.92 → pass
 expires_at > now → valid
+0.94 >= 0.92 → pass
+cached response payload exists → valid
 ```
 
 The firewall returns the cached response.
@@ -239,9 +248,11 @@ Benefits:
 
 A semantic miss occurs if:
 
-- no candidate exceeds the similarity threshold
-- OR all candidates are expired
-- OR candidates are missing required metadata
+- no non-expired candidate is returned by Qdrant
+- no returned candidate meets the similarity threshold
+- a returned candidate is missing required metadata
+- a returned candidate has an invalid or missing cached response payload
+- semantic lookup fails and fail-open behavior continues the request upstream
 
 Example:
 
@@ -253,11 +264,13 @@ In this case, the firewall forwards the request to the upstream LLM API.
 
 ---
 
-## Important Notes (v0.1.5)
+## Important Notes
 
-- Expired semantic entries are never returned, even if similarity is high
-- Expiration is enforced during lookup, not via automatic deletion
-- Expired entries may remain stored in Qdrant until manually pruned
+- Expired semantic entries are never returned, even if similarity would otherwise be high.
+- Expired entries are filtered during lookup before similarity ranking.
+- Expiration is enforced by query-time filtering and defensive runtime checks, not by automatic Qdrant deletion.
+- Expired entries may remain stored in Qdrant until manually pruned.
+- Manual pruning removes expired entries where `expires_at <= now`.
 
 ---
 
@@ -345,54 +358,74 @@ Return Response to Client
 
 # When Semantic Caching is Disabled
 
-For certain request types, semantic caching is automatically disabled.
+Semantic caching can be disabled globally or skipped automatically for specific request types.
 
-Examples:
+## Globally disabled by configuration
 
-- streaming responses (`stream=true`)
-- tool usage
-- structured response formats
+Semantic caching is disabled for all requests when the configuration contains:
 
-In these cases the firewall only uses the exact cache.
+```conf
+semantic_cache_enabled false;
+```
+
+In this mode, the firewall uses only the exact cache and upstream forwarding.
+
+## Automatically skipped for specific requests
+
+Even when semantic caching is enabled globally, the firewall skips semantic lookup for streaming requests.
+
+Streaming is controlled by the incoming request body, not by the firewall configuration.
+
+Examples include:
+
+- streaming requests, where the request body contains `stream: true`
+- requests using tools or function-calling
+- requests using structured response formats
+
+Example streaming request:
+
+```json
+{
+  "model": "gpt-4o-mini-2024-07-18",
+  "stream": true,
+  "messages": [
+    {"role": "user", "content": "Say hello"}
+  ]
+}
+```
+
+In these cases, the firewall does not use semantic caching for that request. The request is handled through exact cache logic where applicable, or forwarded upstream.
 
 ---
 
 # Observability
 
-AI Cost Firewall exposes Prometheus metrics that allow monitoring of:
+AI Cost Firewall exposes Prometheus metrics that show how requests move through the cache and upstream path.
+
+Metrics are available at:
+
+```text
+/metrics
+```
+
+Example:
+
+```bash
+curl http://localhost:8080/metrics
+```
 
 - cache hit rates
 - upstream API usage
 - token savings
 - estimated cost savings
 
-Example metrics:
+The most useful metrics for understanding request flow are:
 
 ```text
 aif_requests_total
 aif_cache_exact_hits
 aif_cache_semantic_hits
 aif_cache_misses
-aif_tokens_saved
-aif_cost_saved_micro_usd
-aif_semantic_store_total
-aif_semantic_store_errors_total
+aif_upstream_calls_total
 ```
-These metrics can be visualized using Grafana dashboards.
-
----
-
-# Summary
-
-AI Cost Firewall reduces LLM costs using a layered caching strategy:
-
-1. Exact cache (Redis) for identical requests
-2. Semantic cache (Qdrant) for similar prompts
-3. Upstream LLM calls only when necessary
-
-This architecture significantly reduces:
-- API costs
-- response latency
-- token consumption
-
-while remaining fully OpenAI API compatible.
+These show whether requests are served from cache or forwarded upstream.

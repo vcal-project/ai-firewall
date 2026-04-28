@@ -31,31 +31,34 @@ The configuration file is divided into the following logical sections:
 
 ---
 
-## v0.1.5 Notes
+## v0.1.6 Notes
 
-v0.1.5 introduces **semantic cache lifecycle control**, making semantic caching explicitly manageable.
+v0.1.6 hardens configuration diagnostics and semantic cache startup behavior.
 
 Key additions:
 
-- separate lifecycle controls:
-  - `exact_cache_ttl_seconds`
-  - `semantic_cache_retention_seconds`
-- `cache_ttl_seconds` remains as a backward-compatible default
-- semantic cache entries now include:
-  - `inserted_at`
-  - `expires_at`
-- expired entries are skipped deterministically during lookup
-- manual cleanup command:
-  ```bash
-  ai-firewall --prune-expired-semantic-cache
-```
-- new observability metrics:
-  - `aif_semantic_store_total`
-  - `aif_semantic_store_errors_total`
-
-
+- `--test-config` is a static validation command and exits with `configuration OK`
+- `--print-config` prints a masked configuration view
+- runtime semantic fail-open behavior is documented separately from strict startup initialization
+- existing Qdrant collections are validated against `qdrant_vector_size`
+- expired semantic entries are filtered before similarity ranking, preventing expired entries from blocking valid semantic hits
+- placeholder API keys do not create bearer auth headers for OpenAI-compatible upstream or embedding providers:
+  - `dummy`
+  - `none`
+  - `null`
+  - `-`
 
 ---
+
+## Previous (v0.1.5)
+
+v0.1.5 introduced semantic cache lifecycle control:
+
+- `exact_cache_ttl_seconds`
+- `semantic_cache_retention_seconds`
+- `inserted_at` and `expires_at` payload fields
+- manual cleanup with `--prune-expired-semantic-cache`
+- semantic store metrics
 
 ## Previous (v0.1.4)
 
@@ -66,7 +69,7 @@ v0.1.4 introduced operational hardening and observability:
 - graceful shutdown and readiness handling
 - semantic cache diagnostics
 
-These changes remain part of the system in v0.1.5.
+These changes remain part of the system in v0.1.6.
 
 ---
 
@@ -91,7 +94,7 @@ qdrant_vector_size 1536;
 # Backward-compatible default
 cache_ttl_seconds 86400;
 
-# Optional lifecycle controls (v0.1.5)
+# Optional lifecycle controls
 #exact_cache_ttl_seconds 86400;
 #semantic_cache_retention_seconds 604800;
 
@@ -151,7 +154,7 @@ AI Cost Firewall separates lifecycle control between cache layers:
 
 **Semantic cache (Qdrant):**
 - entries include `inserted_at` and `expires_at`
-- expired entries are skipped during lookup
+- expired entries are filtered during lookup before similarity ranking
 - entries are NOT automatically deleted
 
 This ensures:
@@ -180,7 +183,7 @@ systemctl start ai-firewall
 
 Notes:
 
-- pruning removes only expired entries (`expires_at < now`)
+- pruning removes only expired entries (`expires_at <= now`)
 - valid entries remain untouched
 - Qdrant does not return exact deletion counts
 - command can run during operation, but maintenance window is recommended
@@ -280,6 +283,10 @@ Runtime behavior (graceful shutdown, readiness, and config reload) is described 
 AI Cost Firewall uses the Qdrant gRPC interface by default, which runs on port `6334`.  
 
 The REST API port (`6333`) is not used by the firewall.
+
+When `semantic_cache_enabled true;` is configured, Qdrant must be reachable during startup. If the collection already exists, its vector size is validated against `qdrant_vector_size`. A mismatch fails startup with a clear configuration/runtime initialization error.
+
+`semantic_cache_fail_open true;` applies to runtime semantic lookup failures. It does not allow startup to continue when Qdrant initialization fails.
 
 ## Running with explicit config
 
@@ -534,6 +541,8 @@ qdrant_vector_size 1536;
 ```
 This must match the dimensionality of the embedding model used to generate vectors.
 
+If the Qdrant collection already exists, AI Cost Firewall validates the existing collection vector size during startup. If the existing collection was created with a different vector size, startup fails clearly instead of producing confusing runtime errors.
+
 Example:
 
 | Model | Dimensions |
@@ -605,6 +614,20 @@ semantic_cache_enabled true;
 ```
 
 Default: `true`
+
+### semantic_cache_fail_open
+
+Controls runtime behavior when semantic cache lookup fails.
+
+Example:
+
+```text
+semantic_cache_fail_open true;
+```
+
+When set to `true`, runtime semantic lookup failures are treated as cache skips and the request continues upstream.
+
+This does not disable startup initialization. If `semantic_cache_enabled true;` is configured, Qdrant must still be reachable during startup.
 
 ### semantic_similarity_threshold
 
@@ -709,15 +732,17 @@ when started from the project root directory.
 
 ## Configuration Validation
 
-AI Cost Firewall provides a configuration validation command similar to nginx -t.
-This command checks the configuration syntax and verifies that all runtime dependencies can be initialized.
+AI Cost Firewall provides a static configuration validation command similar to `nginx -t`.
 
-Validation does **not start the HTTP server**, but it ensures that:
+Validation does **not start the HTTP server** and does **not** connect to Redis, Qdrant, embedding providers, or upstream LLM providers.
+
+It checks that:
+
 - the configuration file syntax is valid
 - required directives are present
-- Redis connectivity can be initialized
-- Qdrant configuration is valid (if semantic cache is enabled)
-
+- values have valid formats and ranges
+- semantic cache settings are complete when `semantic_cache_enabled true;` is configured
+- at least one `model_price` is configured unless `allow_unknown_models_pass_through true;` is enabled
 
 ### Validate a configuration file
 
@@ -729,16 +754,15 @@ cargo run -- --config configs/ai-firewall.conf --test-config
 
 Expected output:
 
-```bash
+```text
 configuration OK
-runtime dependencies initialized successfully
 ```
 
 If an error is detected, the firewall prints a detailed message and exits with a non-zero status.
 
 Example:
 
-```bash
+```text
 configuration error: unknown directive "redsi_url"
 ```
 
@@ -754,9 +778,10 @@ Sensitive fields such as API keys are automatically masked in the output.
 
 Example:
 
-```bash
-upstream_api_key: ********
-embedding_api_key: ********
+```text
+upstream_api_key = sk-y...-key
+embedding_api_key = sk-y...-key
+qdrant_api_key = <not set>
 ```
 
 ---

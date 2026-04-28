@@ -47,8 +47,6 @@
               }
             ]
           },
-          "min": 0,
-          "max": 1,
           "unit": "bool"
         },
         "overrides": []
@@ -111,8 +109,6 @@
               }
             ]
           },
-          "min": 0,
-          "max": 1,
           "unit": "bool"
         },
         "overrides": []
@@ -170,7 +166,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -225,9 +222,14 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -256,7 +258,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_upstream_timeouts_total",
+          "expr": "increase(aif_upstream_timeouts_total[$__range])",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -282,9 +284,14 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -313,7 +320,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_shutdown_rejections_total",
+          "expr": "increase(aif_shutdown_rejections_total[$__range])",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -339,9 +346,14 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -370,13 +382,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_semantic_expired_entries_skipped_total",
+          "expr": "increase(aif_semantic_store_errors_total[$__range])",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Expired Semantic Entries Skipped",
+      "title": "Semantic Store Errors",
       "type": "stat"
     },
     {
@@ -460,7 +472,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"validation\"}[$__rate_interval]))",
+          "expr": "sum(rate(aif_errors_total{class=~\"validation|validation_error\"}[$__rate_interval]))",
           "legendFormat": "Validation/sec",
           "range": true,
           "refId": "A"
@@ -474,14 +486,14 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream\"}[$__rate_interval]))",
+          "expr": "sum(rate(aif_errors_total{class=~\"upstream|upstream_error\"}[$__rate_interval]))",
           "legendFormat": "Upstream/sec",
           "range": true,
           "refId": "C"
         },
         {
           "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"internal\"}[$__rate_interval]))",
+          "expr": "sum(rate(aif_errors_total{class=~\"internal|internal_error\"}[$__rate_interval]))",
           "legendFormat": "Internal/sec",
           "range": true,
           "refId": "D"
@@ -658,8 +670,8 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
+        "h": 8,
+        "w": 12,
         "x": 0,
         "y": 13
       },
@@ -700,9 +712,16 @@
           "legendFormat": "Threshold fail/sec",
           "range": true,
           "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_expired_entries_skipped_total[$__rate_interval])",
+          "legendFormat": "Expired skipped/sec",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Semantic Threshold Decisions",
+      "title": "Semantic Threshold and Expiration Decisions",
       "type": "timeseries"
     },
     {
@@ -722,8 +741,8 @@
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 80,
+            "drawStyle": "line",
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -732,7 +751,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -741,7 +760,7 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "normal"
+              "mode": "none"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -762,9 +781,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
+        "h": 8,
+        "w": 12,
+        "x": 12,
         "y": 13
       },
       "id": 10,
@@ -786,34 +805,27 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_semantic_candidates_checked_total[$__range])",
-          "legendFormat": "Candidates checked",
+          "expr": "rate(aif_semantic_store_total[$__rate_interval])",
+          "legendFormat": "Store attempts/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range])",
-          "legendFormat": "Threshold pass",
+          "expr": "rate(aif_semantic_store_errors_total[$__rate_interval])",
+          "legendFormat": "Store errors/sec",
           "range": true,
           "refId": "B"
         },
         {
           "editorMode": "code",
-          "expr": "increase(aif_semantic_threshold_results_total{result=\"fail\"}[$__range])",
-          "legendFormat": "Threshold fail",
+          "expr": "100 * rate(aif_semantic_store_errors_total[$__rate_interval]) / clamp_min(rate(aif_semantic_store_total[$__rate_interval]), 1)",
+          "legendFormat": "Store error %",
           "range": true,
           "refId": "C"
-        },
-        {
-          "editorMode": "code",
-          "expr": "increase(aif_semantic_expired_entries_skipped_total[$__range])",
-          "legendFormat": "Expired skipped",
-          "range": true,
-          "refId": "D"
         }
       ],
-      "title": "Semantic Decisions (selected range)",
+      "title": "Semantic Store Health",
       "type": "timeseries"
     },
     {
@@ -826,10 +838,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 1,
           "mappings": [],
-          "max": 100,
-          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -847,15 +856,16 @@
               }
             ]
           },
-          "unit": "percent"
+          "unit": "percent",
+          "decimals": 1
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 13
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 21
       },
       "id": 11,
       "options": {
@@ -910,12 +920,70 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
+        "h": 6,
         "w": 6,
-        "x": 0,
-        "y": 20
+        "x": 6,
+        "y": 21
       },
-      "id": 14,
+      "id": 12,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "increase(aif_semantic_expired_entries_skipped_total[$__range])",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Expired Entries Skipped",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 21
+      },
+      "id": 13,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -940,7 +1008,7 @@
           "refId": "A"
         }
       ],
-      "title": "Semantic Store Attempts (selected range)",
+      "title": "Semantic Store Attempts",
       "type": "stat"
     },
     {
@@ -962,24 +1030,29 @@
                 "value": null
               },
               {
-                "color": "red",
+                "color": "yellow",
                 "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
               }
             ]
           },
-          "unit": "short"
+          "unit": "percent",
+          "decimals": 2
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
+        "h": 6,
         "w": 6,
-        "x": 6,
-        "y": 20
+        "x": 18,
+        "y": 21
       },
-      "id": 15,
+      "id": 14,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
@@ -990,19 +1063,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value"
       },
       "pluginVersion": "12.4.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_semantic_store_errors_total[$__range])",
+          "expr": "100 * increase(aif_semantic_store_errors_total[$__range]) / clamp_min(increase(aif_semantic_store_total[$__range]), 1)",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Semantic Store Errors (selected range)",
+      "title": "Semantic Store Error Rate",
       "type": "stat"
     },
     {
@@ -1057,104 +1130,7 @@
               }
             ]
           },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 20
-      },
-      "id": 16,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "rate(aif_semantic_store_total[$__rate_interval])",
-          "legendFormat": "Store attempts/sec",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "rate(aif_semantic_store_errors_total[$__rate_interval])",
-          "legendFormat": "Store errors/sec",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Semantic Store Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -1164,7 +1140,7 @@
         "x": 0,
         "y": 27
       },
-      "id": 12,
+      "id": 15,
       "options": {
         "legend": {
           "calcs": [
@@ -1197,10 +1173,17 @@
         },
         {
           "editorMode": "code",
+          "expr": "aif_inflight_requests",
+          "legendFormat": "In-flight requests",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
           "expr": "rate(aif_shutdown_rejections_total[$__rate_interval])",
           "legendFormat": "Shutdown rejections/sec",
           "range": true,
-          "refId": "C"
+          "refId": "D"
         }
       ],
       "title": "Runtime Pressure Signals",
@@ -1214,7 +1197,7 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
           "mappings": [],
           "min": 0,
@@ -1242,7 +1225,7 @@
         "x": 12,
         "y": 27
       },
-      "id": 13,
+      "id": 16,
       "options": {
         "displayMode": "basic",
         "minVizHeight": 10,
@@ -1289,6 +1272,20 @@
           "legendFormat": "TTL visibility present",
           "range": true,
           "refId": "D"
+        },
+        {
+          "editorMode": "code",
+          "expr": "(aif_semantic_store_total >= bool 0)",
+          "legendFormat": "Semantic store metric present",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "editorMode": "code",
+          "expr": "(aif_cost_saved_micro_usd >= bool 0)",
+          "legendFormat": "Cost metric present",
+          "range": true,
+          "refId": "F"
         }
       ],
       "title": "Operational Signals",
@@ -1304,7 +1301,7 @@
     "operations",
     "prometheus",
     "semantic-cache",
-    "v0.1.5"
+    "v0.1.6"
   ],
   "templating": {
     "list": []
@@ -1317,7 +1314,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Diagnostics",
   "uid": "ai-cost-firewall-diagnostics",
-  "version": 2,
+  "version": 3,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall including runtime health, upstream latency, semantic threshold decisions, expiration behavior, and v0.1.5 semantic store metrics."
+  "description": "Diagnostics dashboard for AI Cost Firewall v0.1.6 including runtime health, error classes, upstream latency, semantic threshold decisions, expiration filtering, store errors, and startup/runtime signals."
 }

@@ -66,6 +66,13 @@ Check logs:
 docker compose logs -f firewall
 ```
 
+Check health and readiness:
+
+```bash
+curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/readyz
+```
+
 ### Verifying the Container Image (Optional)
 
 The `vcalproject/ai-firewall:vx.x.x` container image is signed with Cosign.
@@ -80,11 +87,11 @@ https://raw.githubusercontent.com/vcal-project/ai-firewall/main/security/cosign.
 Example:
 
 ```bash
-docker pull vcalproject/ai-firewall:v0.1.5
+docker pull vcalproject/ai-firewall:v0.1.6
 
 cosign verify \
   --key cosign.pub \
-  vcalproject/ai-firewall:v0.1.5
+  vcalproject/ai-firewall:v0.1.6
 ```
 
 If the verification succeeds, the image was produced and signed by the project maintainers and has not been tampered with.
@@ -114,6 +121,18 @@ configuration error: invalid AIF_MAX_REQUEST_BODY_BYTES value 'abc'
 ```
 
 Fix: use values like `1M`, `512K`, `1048576`.
+
+### Qdrant unavailable with semantic cache enabled
+
+If `semantic_cache_enabled true;` is configured, Qdrant must be reachable during startup.
+
+Fix: start Qdrant, correct `qdrant_url`, or disable semantic cache for local testing.
+
+### Qdrant vector size mismatch
+
+If the existing Qdrant collection was created for a different embedding dimension, startup fails clearly.
+
+Fix: recreate the collection or set `qdrant_vector_size` to match the embedding model.
 
 ## Example Request
 
@@ -162,12 +181,13 @@ Redis can be installed either via the system package manager or via Docker.
 #### Option 1 — Docker (recommended for quick start)
 
 ```bash
-docker run -p 6379:6379 redis:8
+docker run -d -p 6379:6379 redis:8
 ```
 
 Verify
 ```bash
-redis-cli -h 127.0.0.1 ping
+docker ps
+docker exec -it <redis-container> redis-cli ping
 ```
 
 Expected output:
@@ -215,7 +235,10 @@ Semantic caching requires a vector database.
 Run Qdrant using Docker:
 
 ``` bash
-docker run -p 6334:6334 qdrant/qdrant
+docker run -d --rm --name qdrant \
+  -p 6333:6333 \
+  -p 6334:6334 \
+  qdrant/qdrant
 ```
 
 Verify:
@@ -226,8 +249,8 @@ curl http://127.0.0.1:6333/healthz
 
 For MVP testing you can disable semantic cache.
 
-> In v0.1.5, semantic cache entries are not automatically deleted.  
-> Expired entries are ignored during lookup but remain stored until manually pruned.
+> In v0.1.6, semantic cache entries are not automatically deleted.  
+> Expired entries are filtered during lookup and remain stored until manually pruned.
 
 ---
 
@@ -285,7 +308,7 @@ qdrant_vector_size 1536;
 # Backward-compatible default
 cache_ttl_seconds 86400;
 
-# Optional lifecycle controls (v0.1.5)
+# Optional lifecycle controls
 # exact_cache_ttl_seconds 86400;
 # semantic_cache_retention_seconds 604800;
 
@@ -308,7 +331,7 @@ model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 embedding_price 0.020;
 ```
 
-### Semantic cache lifecycle (v0.1.5)
+### Semantic cache lifecycle (v0.1.6)
 
 Semantic cache entries now include lifecycle metadata:
 
@@ -317,24 +340,51 @@ Semantic cache entries now include lifecycle metadata:
 
 Behavior:
 
-- expired entries are automatically skipped during lookup
+- expired entries are filtered during lookup before similarity ranking
 - expired entries are NOT deleted automatically
 - semantic cache correctness does not depend on pruning
 
 To remove expired entries manually:
 
 ```bash
-ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
+./target/release/ai-firewall \
+  --config configs/ai-firewall.conf \
+  --prune-expired-semantic-cache
 ```
 
 Recommended usage:
 
 ```bash
 systemctl stop ai-firewall
-ai-firewall --config /etc/ai-firewall/ai-firewall.conf --prune-expired-semantic-cache
+./target/release/ai-firewall \
+  --config configs/ai-firewall.conf \
+  --prune-expired-semantic-cache
 systemctl start ai-firewall
 ```
 
+If the binary was installed into your $PATH, for example as /usr/local/bin/ai-firewall, you can use:
+
+```bash
+ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
+```
+
+For systemd or installed binary deployments, use the production config path:
+
+```bash
+systemctl stop ai-firewall
+ai-firewall \
+  --config /etc/ai-firewall/ai-firewall.conf \
+  --prune-expired-semantic-cache
+systemctl start ai-firewall
+```
+
+For Docker Compose deployments, run pruning as a one-off container:
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf \
+  --prune-expired-semantic-cache
+```
 
 Alternatively, you can use environment variables (via a `.env` file), but the config file is the recommended approach.
 
@@ -446,16 +496,25 @@ Validate the configuration:
 ### Local binary
 
 ``` bash
+./target/release/ai-firewall --config configs/ai-firewall.conf --test-config
+```
+Or, if the release binary has not been built yet:
+
+```bash
 cargo run -- --config configs/ai-firewall.conf --test-config
 ```
 
+if the release binary has not been built yet.
+
 Expected output:
 
-```bash
+```text
 configuration OK
 ```
 
 The command exits immediately after validation and does not start the server.
+
+`--test-config` is static validation only. It does not connect to Redis, Qdrant, embedding providers, or upstream LLM providers.
 
 ### Docker Compose
 
@@ -469,7 +528,7 @@ docker compose run --rm firewall \
 
 Expected output:
 
-```bash
+```text
 configuration OK
 ```
 
@@ -488,6 +547,12 @@ You can inspect the resolved configuration:
 ### Local binary
 
 ``` bash
+./target/release/ai-firewall --config configs/ai-firewall.conf --print-config
+```
+
+Or, if the release binary has not been built yet:
+
+```bash
 cargo run -- --config configs/ai-firewall.conf --print-config
 ```
 
@@ -530,6 +595,27 @@ The firewall is now running at:
 
     http://localhost:8080
 
+### Runtime dependency validation
+
+Runtime dependencies are initialized when the firewall starts normally.
+
+- Redis is required for exact caching.
+- Qdrant is required when `semantic_cache_enabled true;` is configured.
+- If the Qdrant collection already exists, its vector size must match `qdrant_vector_size`.
+
+Check liveness and readiness:
+
+```bash
+curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/readyz
+```
+
+Expected result when the service is running normally:
+
+```text
+HTTP/1.1 200 OK
+```
+
 ---
 
 ## 8. Test the Proxy
@@ -558,6 +644,12 @@ Prometheus metrics are available at:
 
     http://localhost:8080/metrics
 
+You can check them directly from the CLI:
+
+```bash
+curl http://localhost:8080/metrics
+```
+
 Example metrics:
 
     aif_requests_total
@@ -567,6 +659,10 @@ Example metrics:
     aif_cost_saved_micro_usd
     aif_semantic_store_total
     aif_semantic_store_errors_total
+
+This endpoint works without Prometheus or Grafana. Prometheus and Grafana are included in the Docker Compose stack for scraping, dashboards, and visualization.
+
+> Note: `aif_inflight_requests` counts active HTTP requests to the firewall, including the `/metrics` scrape itself. When checking metrics with `curl http://localhost:8080/metrics`, it is normal to see `aif_inflight_requests 1` even when no chat request is running.
 
 ---
 

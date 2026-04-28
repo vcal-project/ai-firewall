@@ -20,6 +20,7 @@ pub struct ChatService {
     semantic_cache: Arc<dyn SemanticCache>,
     upstream: Arc<dyn LlmUpstream>,
     semantic_cache_enabled: bool,
+    semantic_cache_fail_open: bool,
     model_prices: HashMap<String, ModelPrice>,
     embedding_price: Option<EmbeddingPrice>,
 }
@@ -30,6 +31,7 @@ impl ChatService {
         semantic_cache: Arc<dyn SemanticCache>,
         upstream: Arc<dyn LlmUpstream>,
         semantic_cache_enabled: bool,
+        semantic_cache_fail_open: bool,
         model_prices: HashMap<String, ModelPrice>,
         embedding_price: Option<EmbeddingPrice>,
     ) -> Self {
@@ -38,6 +40,7 @@ impl ChatService {
             semantic_cache,
             upstream,
             semantic_cache_enabled,
+            semantic_cache_fail_open,
             model_prices,
             embedding_price,
         }
@@ -82,40 +85,61 @@ impl ChatService {
         }
 
         if self.semantic_cache_enabled && self.semantic_eligible(&req) {
-            if let Some(hit) = self
+            match self
                 .semantic_cache
                 .lookup(req.normalized_model(), &semantic_text)
                 .await
-                .map_err(|e| AppError::internal(format!("semantic lookup failed: {e}")))?
             {
-                metrics::CACHE_SEMANTIC_HITS.inc();
+                Ok(Some(hit)) => {
+                    metrics::CACHE_SEMANTIC_HITS.inc();
 
-                self.record_semantic_hit_savings(
-                    &hit.response,
-                    hit.embedding_usage
-                        .as_ref()
-                        .map(|u| u.prompt_tokens)
-                        .unwrap_or(0),
-                );
+                    self.record_semantic_hit_savings(
+                        &hit.response,
+                        hit.embedding_usage
+                            .as_ref()
+                            .map(|u| u.prompt_tokens)
+                            .unwrap_or(0),
+                    );
 
-                tracing::debug!(
-                    model = %req.normalized_model(),
-                    "semantic cache hit"
-                );
-
-                if let Ok(raw) = serde_json::to_string(&hit.response) {
-                    if let Err(e) = self.exact_cache.set(&exact_key, raw).await {
-                        tracing::debug!("failed to warm exact cache from semantic hit: {e}");
-                    }
-                } else {
                     tracing::debug!(
-                        "failed to serialize semantic-hit response for exact cache warming"
+                        model = %req.normalized_model(),
+                        "semantic cache hit"
+                    );
+
+                    if let Ok(raw) = serde_json::to_string(&hit.response) {
+                        if let Err(e) = self.exact_cache.set(&exact_key, raw).await {
+                            tracing::debug!("failed to warm exact cache from semantic hit: {e}");
+                        }
+                    } else {
+                        tracing::debug!(
+                            "failed to serialize semantic-hit response for exact cache warming"
+                        );
+                    }
+
+                    return Ok(hit.response);
+                }
+
+                Ok(None) => {}
+
+                Err(e) if self.semantic_cache_fail_open => {
+                    self.record_semantic_skip("lookup_error");
+
+                    tracing::warn!(
+                        model = %req.normalized_model(),
+                        error = %e,
+                        "semantic lookup failed; skipping semantic cache and continuing upstream"
                     );
                 }
 
-                return Ok(hit.response);
+                Err(e) => {
+                    return Err(AppError::semantic_provider(format!(
+                        "semantic lookup failed and semantic_cache_fail_open=false: {e}"
+                    )));
+                }
             }
         } else if self.semantic_cache_enabled {
+            self.record_semantic_skip("ineligible_request");
+
             tracing::debug!(
                 model = %req.normalized_model(),
                 "semantic cache skipped because request is ineligible"
@@ -145,7 +169,13 @@ impl ChatService {
                 .store(req.normalized_model(), &semantic_text, &response)
                 .await
             {
-                tracing::debug!("failed to store semantic cache entry: {e}");
+                self.record_semantic_skip("store_error");
+
+                tracing::warn!(
+                    model = %req.normalized_model(),
+                    error = %e,
+                    "semantic store failed; response returned without semantic cache write"
+                );
             }
         }
 
@@ -189,6 +219,12 @@ impl ChatService {
 
     fn exact_cache_key(&self, normalized: &str) -> String {
         format!("chatcmpl:v1:{}", sha256_hex(normalized))
+    }
+
+    fn record_semantic_skip(&self, reason: &'static str) {
+        metrics::SEMANTIC_SKIPS_TOTAL
+            .with_label_values(&[reason])
+            .inc();
     }
 
     fn record_exact_hit_savings(&self, response: &ChatCompletionResponse) {
@@ -324,6 +360,8 @@ mod tests {
     #[derive(Default)]
     struct SemanticCacheState {
         lookup_result: Option<SemanticLookupHit>,
+        lookup_error: Option<String>,
+        store_error: Option<String>,
         lookup_calls: usize,
         store_calls: usize,
         last_store_model: Option<String>,
@@ -354,6 +392,24 @@ mod tests {
         fn state(&self) -> Arc<Mutex<SemanticCacheState>> {
             Arc::clone(&self.state)
         }
+
+        fn with_lookup_error(message: &str) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(SemanticCacheState {
+                    lookup_error: Some(message.to_string()),
+                    ..Default::default()
+                })),
+            }
+        }
+
+        fn with_store_error(message: &str) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(SemanticCacheState {
+                    store_error: Some(message.to_string()),
+                    ..Default::default()
+                })),
+            }
+        }
     }
 
     #[async_trait]
@@ -365,6 +421,11 @@ mod tests {
         ) -> anyhow::Result<Option<SemanticLookupHit>> {
             let mut state = self.state.lock().unwrap();
             state.lookup_calls += 1;
+
+            if let Some(err) = &state.lookup_error {
+                anyhow::bail!("{}", err);
+            }
+
             Ok(state.lookup_result.clone())
         }
 
@@ -376,6 +437,11 @@ mod tests {
         ) -> anyhow::Result<()> {
             let mut state = self.state.lock().unwrap();
             state.store_calls += 1;
+
+            if let Some(err) = &state.store_error {
+                anyhow::bail!("{}", err);
+            }
+
             state.last_store_model = Some(model.to_string());
             state.last_store_prompt = Some(normalized_prompt.to_string());
             state.last_store_response = Some(response.clone());
@@ -464,6 +530,12 @@ mod tests {
         }
     }
 
+    fn response_with_content(content: &str) -> ChatCompletionResponse {
+        let mut response = response_with_usage("upstream-response", 1000, 500);
+        response.choices[0].message.content = json!(content);
+        response
+    }
+
     fn model_prices() -> HashMap<String, ModelPrice> {
         let mut prices = HashMap::new();
         prices.insert(
@@ -487,6 +559,7 @@ mod tests {
             semantic_cache,
             upstream,
             semantic_cache_enabled,
+            true,
             model_prices(),
             Some(EmbeddingPrice {
                 usd_per_1m_tokens: 0.020,
@@ -696,5 +769,94 @@ mod tests {
         let semantic = semantic_state.lock().unwrap();
         assert_eq!(semantic.lookup_calls, 0);
         assert_eq!(semantic.store_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn semantic_lookup_error_fail_open_continues_upstream() {
+        let exact_cache = Arc::new(FakeExactCache::new());
+        let semantic_cache = Arc::new(FakeSemanticCache::with_lookup_error(
+            "embedding provider unavailable",
+        ));
+        let upstream = Arc::new(FakeUpstream::new(response_with_content(
+            "upstream response",
+        )));
+
+        let service = ChatService::new(
+            exact_cache,
+            semantic_cache,
+            upstream,
+            true,
+            true,
+            model_prices(),
+            Some(EmbeddingPrice {
+                usd_per_1m_tokens: 0.020,
+            }),
+        );
+
+        let response = service.handle(request()).await.unwrap();
+
+        assert_eq!(
+            response.choices[0].message.content,
+            json!("upstream response")
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_lookup_error_fail_closed_returns_error() {
+        let exact_cache = Arc::new(FakeExactCache::new());
+        let semantic_cache = Arc::new(FakeSemanticCache::with_lookup_error(
+            "embedding provider unavailable",
+        ));
+        let upstream = Arc::new(FakeUpstream::new(response_with_content(
+            "upstream response",
+        )));
+
+        let service = ChatService::new(
+            exact_cache,
+            semantic_cache,
+            upstream,
+            true,
+            false,
+            model_prices(),
+            Some(EmbeddingPrice {
+                usd_per_1m_tokens: 0.020,
+            }),
+        );
+
+        let err = service.handle(request()).await.unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("semantic lookup failed"));
+        assert!(msg.contains("semantic_cache_fail_open=false"));
+    }
+
+    #[tokio::test]
+    async fn semantic_store_error_does_not_fail_response() {
+        let exact_cache = Arc::new(FakeExactCache::new());
+        let semantic_cache = Arc::new(FakeSemanticCache::with_store_error(
+            "embedding provider unavailable during store",
+        ));
+        let upstream = Arc::new(FakeUpstream::new(response_with_content(
+            "upstream response",
+        )));
+
+        let service = ChatService::new(
+            exact_cache,
+            semantic_cache,
+            upstream,
+            true,
+            false,
+            model_prices(),
+            Some(EmbeddingPrice {
+                usd_per_1m_tokens: 0.020,
+            }),
+        );
+
+        let response = service.handle(request()).await.unwrap();
+
+        assert_eq!(
+            response.choices[0].message.content,
+            json!("upstream response")
+        );
     }
 }

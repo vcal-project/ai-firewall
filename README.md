@@ -1,18 +1,17 @@
 # AI Cost Firewall
 
-![Rust](https://img.shields.io/badge/Rust-1.75+-orange)
+![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![License](https://img.shields.io/github/license/vcal-project/ai-firewall)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
-![Status](https://img.shields.io/badge/status-MVP-green)
+![Status](https://img.shields.io/badge/status-early--production-blue)
 
 **OpenAI-compatible gateway for caching and cost control.**
 
-AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM API costs and latency by caching responses using exact
-matching and semantic similarity.
+AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM API costs and latency by caching responses using exact matching and semantic similarity.
 
 It sits between applications and LLM providers and forwards only necessary requests to the upstream API.
 
-The project is developed and supported by the creators of VCAL Server.
+AI Cost Firewall is developed and maintained by VCAL Labs, Inc., the team behind VCAL Server.
 
 https://vcal-project.com
 
@@ -84,27 +83,54 @@ Shows how the system balances reuse and precision while maintaining near-zero up
 
 AI Cost Firewall is designed to be safe by default, preventing accidental misconfiguration and unintended upstream costs.
 
+AI Cost Firewall is in an early production-ready stage: suitable for controlled deployments, pilots, and self-hosted evaluation. Operators should still validate configuration, provider behavior, cache thresholds, and observability in their own environment before broad production rollout.
+
 ---
 
-# What’s new in v0.1.5
+# What’s new in v0.1.6
 
-v0.1.5 introduces **semantic cache lifecycle control**, making semantic caching explicitly manageable in production environments.
+v0.1.6 focuses on release hardening, safer diagnostics, and more predictable semantic cache behavior.
 
 ### Key improvements
+
+- `--test-config` remains a static validation command:
+  - parses the config file
+  - validates required directives, value ranges, semantic cache settings, and model validation configuration
+  - exits with `configuration OK`
+  - does not connect to Redis, Qdrant, embedding providers, or upstream LLM providers
+- `--print-config` now prints a masked configuration view instead of raw debug output
+- Startup diagnostics are clearer:
+  - Redis connection failures show the Redis endpoint being used, with credentials masked
+  - Qdrant initialization failures show the Qdrant endpoint, collection, and vector size
+  - startup and reload errors include more useful runtime initialization context
+- Semantic fail-open behavior is clearer:
+  - runtime semantic lookup failures can fail open and continue upstream
+  - startup dependency initialization remains strict
+- Existing Qdrant collections are validated against `qdrant_vector_size` during startup
+- Expired Qdrant semantic entries are filtered before similarity ranking, so expired entries cannot hide valid semantic hits
+- Semantic pruning consistently removes expired entries from Qdrant where `expires_at <= now`
+- OpenAI-compatible upstream and embedding providers skip bearer auth for placeholder keys:
+  - `dummy`
+  - `none`
+  - `null`
+  - `-`
+  
+### Previous v0.1.5 improvements
+
+v0.1.5 introduced semantic cache lifecycle control:
 
 - Separate lifecycle controls:
   - `exact_cache_ttl_seconds`
   - `semantic_cache_retention_seconds`
 - `cache_ttl_seconds` remains as a backward-compatible default
-- Semantic cache entries now include:
-  - `inserted_at`
-  - `expires_at`
-- Expired entries are skipped deterministically during lookup
+- Semantic cache entries include `inserted_at` and `expires_at`
 - Manual cleanup command:
   ```bash
-  ai-firewall --prune-expired-semantic-cache
+  ./target/release/ai-firewall \
+    --config configs/ai-firewall.conf \
+    --prune-expired-semantic-cache
   ```
-- Improved observability:
+- Improved semantic store observability:
   - `aif_semantic_store_total`
   - `aif_semantic_store_errors_total`
 
@@ -178,6 +204,34 @@ docker compose up -d
 ```bash
 docker compose logs -f firewall
 ```
+
+## Validate the configuration
+
+`--test-config` performs static configuration validation only. It checks that the configuration can be parsed and that required values are present and valid.
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf \
+  --test-config
+```
+
+Expected output:
+
+```text
+configuration OK
+```
+
+This command does not connect to Redis, Qdrant, embedding providers, or upstream LLM providers.
+
+## Print the loaded configuration
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf \
+  --print-config
+```
+
+Secrets such as API keys and service credentials are masked in the output.
 
 ## Services
 
@@ -341,30 +395,32 @@ Behavior:
 - Exact cache (Redis): TTL enforced automatically
 - Semantic cache (Qdrant):
   - entries include `inserted_at` and `expires_at`
-  - expired entries are skipped during lookup
+  - expired entries are filtered during lookup before similarity ranking
   - entries are not deleted automatically
 
 This ensures consistent and predictable cache behavior across both layers.
 
 ### Semantic cache cleanup
 
-Expired semantic cache entries are ignored automatically during lookup.
+Expired semantic cache entries are ignored automatically during lookup, but they are not physically deleted from Qdrant.
 
-To physically remove expired entries from Qdrant:
+To remove expired entries manually, use the same binary and config path as your deployment.
+
+#### Local release binary
 
 ```bash
-ai-firewall --prune-expired-semantic-cache
+./target/release/ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
 ```
 
 Recommended usage depends on how AI Firewall is deployed.
 
-#### Systemd / binary deployment
+#### Installed binary / systemd deployment
 
 For conservative maintenance windows, stop the service before pruning.
 
 ```bash
 systemctl stop ai-firewall
-ai-firewall --config /etc/ai-firewall/ai-firewall.conf --prune-expired-semantic-cache
+./target/release/ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
 systemctl start ai-firewall
 ```
 
@@ -443,6 +499,10 @@ Required fields:
 - qdrant_url
 - qdrant_collection
 - qdrant_vector_size
+
+Startup behavior is strict: when `semantic_cache_enabled true;` is configured, Qdrant must be reachable and the existing Qdrant collection, if present, must match `qdrant_vector_size`.
+
+`semantic_cache_fail_open true;` applies to runtime semantic lookup failures. It does not bypass startup dependency initialization.
 
 ---
 

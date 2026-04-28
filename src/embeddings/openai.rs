@@ -78,14 +78,18 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             input,
         };
 
-        let response = self
-            .client
-            .post(url)
-            .bearer_auth(&self.api_key)
-            .json(&req)
-            .send()
-            .await
-            .context("embedding request failed")?;
+        let mut request = self.client.post(url).json(&req);
+
+        if should_send_bearer_auth(&self.api_key) {
+            request = request.bearer_auth(self.api_key.trim());
+        }
+
+        let response = request.send().await.with_context(|| {
+            format!(
+                "embedding request failed for model '{}' at '{}'",
+                self.model, self.base_url
+            )
+        })?;
 
         let status = response.status();
         let body = response
@@ -94,7 +98,12 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             .context("failed reading embedding body")?;
 
         if !status.is_success() {
-            anyhow::bail!("embedding upstream returned {}: {}", status, body);
+            anyhow::bail!(
+                "embedding provider returned {} for model '{}': {}",
+                status,
+                self.model,
+                body
+            );
         }
 
         let parsed: EmbeddingResponse =
@@ -106,6 +115,10 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             .next()
             .context("embedding response contained no vectors")?;
 
+        if first.embedding.is_empty() {
+            anyhow::bail!("embedding provider returned an empty vector");
+        }
+
         Ok(EmbeddingResult {
             embedding: first.embedding,
             usage: parsed.usage.map(|u| EmbeddingUsage {
@@ -115,4 +128,25 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             model: parsed.model.or_else(|| Some(self.model.clone())),
         })
     }
+}
+
+fn should_send_bearer_auth(api_key: &str) -> bool {
+    let key = api_key.trim();
+
+    !key.is_empty()
+        && !matches!(
+            key.to_ascii_lowercase().as_str(),
+            "dummy" | "none" | "null" | "-"
+        )
+}
+
+#[test]
+fn placeholder_embedding_keys_do_not_send_auth() {
+    assert!(!should_send_bearer_auth(""));
+    assert!(!should_send_bearer_auth("dummy"));
+    assert!(!should_send_bearer_auth("none"));
+    assert!(!should_send_bearer_auth("null"));
+    assert!(!should_send_bearer_auth("-"));
+    assert!(!should_send_bearer_auth(" DUMMY "));
+    assert!(should_send_bearer_auth("sk-real-key"));
 }

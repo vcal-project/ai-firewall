@@ -25,24 +25,34 @@ fn minimal_valid_config() -> Config {
     Config {
         listen_addr: "127.0.0.1:8080".to_string(),
         redis_url: "redis://127.0.0.1:6379".to_string(),
+
+        upstream_provider: ProviderKind::OpenAiCompatible,
         upstream_base_url: "https://api.openai.com".to_string(),
         upstream_api_key: "test-upstream-key".to_string(),
+
+        embedding_provider: ProviderKind::OpenAiCompatible,
         embedding_base_url: "https://api.openai.com".to_string(),
         embedding_api_key: "test-embedding-key".to_string(),
         embedding_model: "text-embedding-3-small".to_string(),
         embedding_price: None,
+
         qdrant_url: "http://127.0.0.1:6334".to_string(),
         qdrant_api_key: None,
         qdrant_collection: "aif_semantic_cache".to_string(),
         qdrant_vector_size: 1536,
+
         cache_ttl_seconds: 86400,
         exact_cache_ttl_seconds: 86400,
         semantic_cache_retention_seconds: 86400,
+
         request_timeout_seconds: 120,
         graceful_shutdown_timeout_seconds: 10,
         max_request_body_bytes: 1_048_576,
+
         semantic_cache_enabled: false,
         semantic_similarity_threshold: 0.92,
+        semantic_cache_fail_open: true,
+
         model_prices: prices,
         allow_unknown_models_pass_through: false,
     }
@@ -300,6 +310,142 @@ fn semantic_cache_reports_multiple_missing_fields_together() {
 }
 
 #[test]
+fn provider_fields_default_to_openai_compatible() {
+    let path = temp_config_path("provider_defaults");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+embedding_api_key test-embedding-key;
+cache_ttl_seconds 86400;
+request_timeout_seconds 120;
+semantic_cache_enabled false;
+semantic_similarity_threshold 0.92;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(cfg.upstream_provider, ProviderKind::OpenAiCompatible);
+    assert_eq!(cfg.embedding_provider, ProviderKind::OpenAiCompatible);
+    assert!(cfg.semantic_cache_fail_open);
+}
+
+#[test]
+fn parses_provider_fields_and_semantic_fail_open_from_file() {
+    let path = temp_config_path("provider_fields");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+
+upstream_provider openai_compatible;
+upstream_api_key test-upstream-key;
+
+embedding_provider openai_compatible;
+embedding_api_key test-embedding-key;
+
+semantic_cache_fail_open false;
+
+cache_ttl_seconds 86400;
+request_timeout_seconds 120;
+semantic_cache_enabled false;
+semantic_similarity_threshold 0.92;
+
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(cfg.upstream_provider, ProviderKind::OpenAiCompatible);
+    assert_eq!(cfg.embedding_provider, ProviderKind::OpenAiCompatible);
+    assert!(!cfg.semantic_cache_fail_open);
+}
+
+#[test]
+fn invalid_upstream_provider_is_rejected() {
+    let path = temp_config_path("invalid_upstream_provider");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_provider invalid_provider;
+upstream_api_key test-upstream-key;
+cache_ttl_seconds 86400;
+request_timeout_seconds 120;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let result = Config::from_file(&path);
+    fs::remove_file(&path).ok();
+
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("invalid value for upstream_provider"));
+    assert!(err.contains("unsupported provider"));
+}
+
+#[test]
+fn invalid_embedding_provider_is_rejected() {
+    let path = temp_config_path("invalid_embedding_provider");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+embedding_provider invalid_provider;
+cache_ttl_seconds 86400;
+request_timeout_seconds 120;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let result = Config::from_file(&path);
+    fs::remove_file(&path).ok();
+
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("invalid value for embedding_provider"));
+    assert!(err.contains("unsupported provider"));
+}
+
+#[test]
+#[serial]
+fn parses_provider_fields_and_semantic_fail_open_from_env() {
+    unsafe {
+        std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
+        std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
+        std::env::set_var("AIF_UPSTREAM_PROVIDER", "openai_compatible");
+        std::env::set_var("AIF_EMBEDDING_PROVIDER", "openai_compatible");
+        std::env::set_var("AIF_SEMANTIC_CACHE_FAIL_OPEN", "false");
+    }
+
+    let cfg = Config::from_env().unwrap();
+
+    unsafe {
+        std::env::remove_var("AIF_REDIS_URL");
+        std::env::remove_var("AIF_UPSTREAM_API_KEY");
+        std::env::remove_var("AIF_UPSTREAM_PROVIDER");
+        std::env::remove_var("AIF_EMBEDDING_PROVIDER");
+        std::env::remove_var("AIF_SEMANTIC_CACHE_FAIL_OPEN");
+    }
+
+    assert_eq!(cfg.upstream_provider, ProviderKind::OpenAiCompatible);
+    assert_eq!(cfg.embedding_provider, ProviderKind::OpenAiCompatible);
+    assert!(!cfg.semantic_cache_fail_open);
+}
+
+#[test]
 fn invalid_listen_addr_fails_validation() {
     let mut cfg = minimal_valid_config();
     cfg.listen_addr = "not-an-addr".to_string();
@@ -439,29 +585,22 @@ model_price gpt-4o-mini-2024-07-18 nope 0.60;
 
 #[test]
 fn exact_cache_ttl_defaults_to_legacy_cache_ttl() {
-    // config only has cache_ttl_seconds
-    // assert exact_cache_ttl_seconds == cache_ttl_seconds
-}
+    let path = temp_config_path("exact_ttl_default");
 
-#[test]
-fn semantic_retention_defaults_to_legacy_cache_ttl() {
-    // config only has cache_ttl_seconds
-    // assert semantic_cache_retention_seconds == cache_ttl_seconds
-}
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+cache_ttl_seconds 86400;
+request_timeout_seconds 120;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
 
-#[test]
-fn parses_separate_exact_and_semantic_ttls_from_file() {
-    // exact_cache_ttl_seconds 3600;
-    // semantic_cache_retention_seconds 604800;
-}
+    fs::write(&path, text).unwrap();
 
-#[test]
-fn zero_exact_cache_ttl_seconds_fails_validation() {
-    // expect "exact_cache_ttl_seconds must be > 0"
-}
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
 
-#[test]
-fn zero_semantic_cache_retention_seconds_fails_when_semantic_enabled() {
-    // semantic_cache_enabled = true
-    // semantic_cache_retention_seconds = 0
+    assert_eq!(cfg.exact_cache_ttl_seconds, 86400);
 }

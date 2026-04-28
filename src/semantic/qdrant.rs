@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use qdrant_client::{
@@ -66,6 +66,7 @@ async fn ensure_collection(client: &Qdrant, collection_name: &str, vector_size: 
         .any(|c| c.name == collection_name);
 
     if exists {
+        validate_collection_vector_size(client, collection_name, vector_size).await?;
         return Ok(());
     }
 
@@ -87,6 +88,57 @@ async fn ensure_collection(client: &Qdrant, collection_name: &str, vector_size: 
     Ok(())
 }
 
+async fn validate_collection_vector_size(
+    client: &Qdrant,
+    collection_name: &str,
+    expected_vector_size: u64,
+) -> Result<()> {
+    let collection = client
+        .collection_info(collection_name)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to inspect existing Qdrant collection '{}'",
+                collection_name
+            )
+        })?;
+
+    let actual_vector_size = collection
+        .result
+        .and_then(|info| info.config)
+        .and_then(|config| config.params)
+        .and_then(|params| params.vectors_config)
+        .and_then(|vectors_config| vectors_config.config)
+        .and_then(|config| match config {
+            Config::Params(params) => Some(params.size),
+            Config::ParamsMap(_) => None,
+        })
+        .with_context(|| {
+            format!(
+                "failed to determine vector size for existing Qdrant collection '{}'",
+                collection_name
+            )
+        })?;
+
+    if actual_vector_size != expected_vector_size {
+        bail!(
+            "Qdrant collection '{}' has vector size {}, but config requires {}; \
+             recreate the collection or set qdrant_vector_size to match the embedding model",
+            collection_name,
+            actual_vector_size,
+            expected_vector_size
+        );
+    }
+
+    tracing::info!(
+        collection = %collection_name,
+        vector_size = actual_vector_size,
+        "existing Qdrant collection vector size validated"
+    );
+
+    Ok(())
+}
+
 #[async_trait]
 impl SemanticCache for QdrantSemanticCache {
     async fn lookup(
@@ -97,9 +149,27 @@ impl SemanticCache for QdrantSemanticCache {
         let started = Instant::now();
 
         let result = async {
-            let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
+            let embedding_result = match self.embedder.embed_text(normalized_prompt).await {
+                Ok(result) => result,
+                Err(err) => {
+                    metrics::SEMANTIC_PROVIDER_ERRORS_TOTAL
+                        .with_label_values(&["embedding", "lookup"])
+                        .inc();
+
+                    tracing::warn!(
+                        model = %model,
+                        error = %err,
+                        "embedding provider failed during semantic lookup"
+                    );
+
+                    return Err(err).context("embedding provider failed during semantic lookup");
+                }
+            };
+
             let vector = embedding_result.embedding.clone();
             let embedding_usage = embedding_result.usage.clone();
+
+            let now = Utc::now().timestamp();
 
             let search_result = self
                 .client
@@ -109,31 +179,50 @@ impl SemanticCache for QdrantSemanticCache {
                     limit: 3,
                     with_payload: Some(true.into()),
                     filter: Some(Filter {
-                        must: vec![Condition {
-                            condition_one_of: Some(
-                                qdrant_client::qdrant::condition::ConditionOneOf::Field(
-                                    FieldCondition {
-                                        key: "model".to_string(),
-                                        r#match: Some(Match {
-                                            match_value: Some(
-                                                qdrant_client::qdrant::r#match::MatchValue::Keyword(
-                                                    model.to_string(),
+                        must: vec![
+                            Condition {
+                                condition_one_of: Some(
+                                    qdrant_client::qdrant::condition::ConditionOneOf::Field(
+                                        FieldCondition {
+                                            key: "model".to_string(),
+                                            r#match: Some(Match {
+                                                match_value: Some(
+                                                    qdrant_client::qdrant::r#match::MatchValue::Keyword(
+                                                        model.to_string(),
+                                                    ),
                                                 ),
-                                            ),
-                                        }),
-                                        ..Default::default()
-                                    },
+                                            }),
+                                            ..Default::default()
+                                        },
+                                    ),
                                 ),
-                            ),
-                        }],
+                            },
+                            Condition {
+                                condition_one_of: Some(
+                                    qdrant_client::qdrant::condition::ConditionOneOf::Field(
+                                        FieldCondition {
+                                            key: "expires_at".to_string(),
+                                            range: Some(Range {
+                                                gt: Some(now as f64),
+                                                ..Default::default()
+                                            }),
+                                            ..Default::default()
+                                        },
+                                    ),
+                                ),
+                            },
+                        ],
                         ..Default::default()
                     }),
                     ..Default::default()
                 })
                 .await
-                .context("Qdrant semantic search failed")?;
-
-            let now = Utc::now().timestamp();
+                .with_context(|| {
+                    format!(
+                        "Qdrant semantic search failed for model '{}' in collection '{}'",
+                        model, self.collection_name
+                    )
+                })?;
 
             for point in search_result.result {
                 metrics::SEMANTIC_CANDIDATES_CHECKED_TOTAL.inc();
@@ -208,6 +297,10 @@ impl SemanticCache for QdrantSemanticCache {
         }
         .await;
 
+        if result.is_err() {
+            metrics::SEMANTIC_LOOKUP_ERRORS_TOTAL.inc();
+        }
+
         metrics::SEMANTIC_LOOKUP_DURATION_SECONDS.observe(started.elapsed().as_secs_f64());
 
         result
@@ -222,7 +315,23 @@ impl SemanticCache for QdrantSemanticCache {
         metrics::SEMANTIC_STORE_TOTAL.inc();
 
         let result = async {
-            let embedding_result = self.embedder.embed_text(normalized_prompt).await?;
+            let embedding_result = match self.embedder.embed_text(normalized_prompt).await {
+                Ok(result) => result,
+                Err(err) => {
+                    metrics::SEMANTIC_PROVIDER_ERRORS_TOTAL
+                        .with_label_values(&["embedding", "store"])
+                        .inc();
+
+                    tracing::warn!(
+                        model = %model,
+                        error = %err,
+                        "embedding provider failed during semantic store"
+                    );
+
+                    return Err(err).context("embedding provider failed during semantic store");
+                }
+            };
+
             let vector = embedding_result.embedding;
 
             let request_hash = sha256_hex(normalized_prompt);
@@ -281,7 +390,12 @@ impl SemanticCache for QdrantSemanticCache {
                     ..Default::default()
                 })
                 .await
-                .context("Qdrant upsert failed")?;
+                .with_context(|| {
+                    format!(
+                        "Qdrant upsert failed for model '{}' in collection '{}'",
+                        model, self.collection_name
+                    )
+                })?;
 
             Ok(())
         }
@@ -376,7 +490,7 @@ pub async fn prune_expired_semantic_cache_entries(
                                 FieldCondition {
                                     key: "expires_at".to_string(),
                                     range: Some(Range {
-                                        lt: Some(now as f64),
+                                        lte: Some(now as f64),
                                         ..Default::default()
                                     }),
                                     ..Default::default()

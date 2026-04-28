@@ -1,64 +1,120 @@
 # Operational Behavior
 
-This section describes how AI Cost Firewall behaves at runtime: health checks, graceful shutdown, and live configuration reload.
+This document describes how AI Cost Firewall behaves at runtime: health checks, readiness, graceful shutdown, timeouts, live configuration reload, semantic cache lifecycle, and operational troubleshooting.
 
 ---
 
-## Runtime behavior overview
+## Runtime Behavior Overview
 
-AI Cost Firewall provides predictable runtime behavior with explicit lifecycle control, observability, and safe shutdown semantics.
+AI Cost Firewall is designed to behave predictably in production environments.
 
 Key capabilities:
 
-- explicit error classification (validation / upstream / timeout / internal)
+- explicit error classification: validation, upstream, timeout, internal
 - upstream latency and timeout visibility
-- semantic cache diagnostics (threshold decisions, expiration behavior)
-- graceful shutdown with request draining
 - readiness and liveness separation
-- semantic cache lifecycle control (v0.1.5)
+- graceful shutdown with request draining
+- hot configuration reload via `SIGHUP`
+- semantic cache diagnostics: candidates, threshold decisions, lookup latency, expiration behavior
+- semantic cache lifecycle control
+- strict startup dependency initialization
+- runtime semantic cache fail-open behavior
+
+---
+
+## Startup Dependency Behavior
+
+Runtime dependencies are initialized when the firewall starts normally.
+
+### Required dependencies
+
+Redis is required for exact caching.
+
+If semantic caching is enabled:
+
+```conf
+semantic_cache_enabled true;
+```
+
+then Qdrant must also be reachable during startup.
+
+If the configured Qdrant collection already exists, AI Cost Firewall validates that its vector size matches:
+
+```conf
+qdrant_vector_size 1536;
+```
+
+A mismatch fails startup clearly instead of producing confusing runtime errors.
+
+### `semantic_cache_fail_open` does not change startup behavior
+
+`semantic_cache_fail_open` controls runtime lookup behavior only.
+
+Example:
+
+```conf
+semantic_cache_fail_open true;
+```
+
+When enabled, runtime semantic lookup failures are treated as cache skips and requests continue upstream.
+
+It does **not** allow startup to continue if Qdrant cannot be initialized while semantic cache is enabled.
+
+Summary:
+
+| Setting / condition | Behavior |
+|---|---|
+| Redis unavailable | startup fails |
+| `semantic_cache_enabled true` and Qdrant unavailable | startup fails |
+| Qdrant collection vector size mismatch | startup fails |
+| Runtime semantic lookup error and `semantic_cache_fail_open true` | request continues upstream |
+| Runtime semantic lookup error and `semantic_cache_fail_open false` | request fails |
 
 ---
 
 ## Health & Readiness Endpoints
 
-AI Cost Firewall exposes two standard endpoints:
+AI Cost Firewall exposes two standard operational endpoints.
 
 ### `/healthz` — Liveness
 
 Indicates that the process is running.
 
-- Returns: `200 OK`
-- Does not depend on downstream services
-- Used by orchestrators to detect crashes
-
-```
+```bash
 curl -i http://localhost:8080/healthz
 ```
+
+Behavior:
+
+- returns `200 OK` when the process is alive
+- does not depend on downstream services
+- can be used by orchestrators to detect crashed processes
 
 ---
 
 ### `/readyz` — Readiness
 
-Indicates whether the service is ready to accept new requests.
+Indicates whether the service is ready to accept traffic.
 
-- Returns:
-  - `200 OK` → ready
-  - `503 Service Unavailable` → not accepting traffic
-- Used by load balancers and orchestrators
-
-```
+```bash
 curl -i http://localhost:8080/readyz
 ```
 
+Behavior:
+
+- returns `200 OK` during normal operation
+- returns `503 Service Unavailable` when the firewall is shutting down or not accepting new requests
+- can be used by load balancers and orchestrators before routing traffic
+
 ---
 
-### Behavior summary
+### Behavior Summary
 
-| State                 | `/healthz` | `/readyz` |
-|----------------------|-----------|----------|
-| Normal operation     | 200       | 200      |
-| During shutdown      | 200       | 503      |
-| Process crashed      | ❌        | ❌       |
+| State | `/healthz` | `/readyz` |
+|---|---:|---:|
+| Normal operation | 200 | 200 |
+| During graceful shutdown | 200 | 503 |
+| Process crashed | unavailable | unavailable |
 
 ---
 
@@ -69,46 +125,38 @@ AI Cost Firewall supports graceful shutdown on:
 - `SIGTERM`
 - `SIGINT`
 
-### Shutdown sequence
+This is useful for systemd, Docker, Kubernetes, and other deployment environments.
 
-1. Receive signal
-2. `/readyz` returns `503`
-3. New requests are rejected
-4. In-flight requests complete
-5. Process exits after `graceful_shutdown_timeout_seconds`
+### Shutdown Sequence
 
-### Behavior
+1. Shutdown signal is received.
+2. Readiness changes to unavailable.
+3. `/readyz` returns `503`.
+4. New requests are rejected.
+5. In-flight requests are allowed to complete.
+6. The process exits after `graceful_shutdown_timeout_seconds`.
 
-- `/readyz` returns `503` immediately
-- New requests are rejected
-- In-flight requests continue
-- Rejections are tracked (`aif_shutdown_rejections_total`)
-- Shutdown state is exposed (`aif_shutdown_in_progress`)
+Example configuration:
 
----
-
-## Upstream Timeout Behavior
-
-Requests to upstream providers are bounded by `request_timeout_seconds`.
-
-### Behavior
-
-- Requests exceeding the timeout are aborted
-- Returned as `upstream_timeout` errors
-- Counted in metrics
-
-### Observability
-
-- `aif_upstream_timeouts_total`
-- `aif_upstream_request_duration_seconds`
-
-This prevents the system from hanging on slow or unresponsive providers.
-
----
-
-## Request Rejection During Shutdown
-
+```conf
+graceful_shutdown_timeout_seconds 10;
 ```
+
+### Runtime Behavior
+
+During shutdown:
+
+- `/healthz` still returns `200 OK`
+- `/readyz` returns `503 Service Unavailable`
+- new requests are rejected
+- in-flight requests continue until completed or timeout expires
+- shutdown state is exposed through metrics
+
+### Shutdown Rejection Response
+
+New requests received during shutdown return:
+
+```json
 {
   "error": {
     "code": 503,
@@ -118,36 +166,186 @@ This prevents the system from hanging on slow or unresponsive providers.
 }
 ```
 
+### Related Metrics
+
+```text
+aif_inflight_requests
+aif_shutdown_in_progress
+aif_shutdown_rejections_total
+```
+
 ---
 
-## Configuration Reload (SIGHUP)
+## Upstream Timeout Behavior
 
-Reload without restart:
+Requests to upstream LLM providers are bounded by:
 
-```
-kill -HUP <pid>
+```conf
+request_timeout_seconds 120;
 ```
 
 ### Behavior
 
-- Config reloaded and validated
-- Runtime rebuilt (Redis, Qdrant, embeddings, upstream)
-- Atomic swap
-- No downtime
+If an upstream request exceeds the configured timeout:
+
+- the request is aborted
+- the error is classified as `upstream_timeout`
+- the timeout is counted in Prometheus metrics
+- the firewall does not wait indefinitely for a slow provider
+
+### Related Metrics
+
+```text
+aif_upstream_timeouts_total
+aif_upstream_request_duration_seconds
+```
+
+This helps distinguish provider slowness from local firewall errors.
+
+---
+
+## Configuration Reload
+
+AI Cost Firewall supports nginx-style hot reload using `SIGHUP`.
+
+Reloading allows configuration changes without fully restarting the process.
+
+### Binary / systemd deployment
+
+```bash
+kill -HUP <firewall_pid>
+```
+
+Example:
+
+```bash
+kill -HUP $(pgrep ai-firewall)
+```
+
+### Docker Compose deployment
+
+```bash
+docker compose kill -s HUP firewall
+```
+
+If your Compose service has a different name, check it with:
+
+```bash
+docker compose ps --services
+```
+
+### Reload Behavior
+
+On `SIGHUP`, the firewall:
+
+1. reloads the configuration file
+2. validates the new configuration
+3. rebuilds runtime dependencies
+4. atomically swaps the active runtime state
+5. continues serving traffic
+
+Expected log messages:
+
+```text
+received SIGHUP, reloading config
+config and runtime successfully reloaded
+```
+
+### Important Notes
+
+Reload is not simple file watching. The firewall reloads only when it receives `SIGHUP`.
+
+If the new configuration is invalid, reload fails and the existing runtime configuration remains active.
+
+---
+
+## Static Configuration Validation
+
+For static validation, use:
+
+```bash
+cargo run -- --config configs/ai-firewall.conf --test-config
+```
+
+Expected output:
+
+```text
+configuration OK
+```
+
+`--test-config` validates the configuration file only.
+
+It checks:
+
+- syntax
+- required directives
+- value formats
+- semantic cache configuration completeness
+- model validation configuration
+
+It does **not** connect to Redis, Qdrant, embedding providers, or upstream LLM providers.
+
+Runtime dependencies are checked only during normal startup or runtime reload.
+
+---
+
+## Print Loaded Configuration
+
+To inspect the resolved configuration:
+
+```bash
+cargo run -- --config configs/ai-firewall.conf --print-config
+```
+
+Sensitive fields are masked.
+
+Example:
+
+```text
+upstream_api_key = sk-y...-key
+embedding_api_key = sk-y...-key
+qdrant_api_key = <not set>
+```
+
+This is useful for troubleshooting without exposing credentials in logs or terminals.
 
 ---
 
 ## Metrics
 
-AI Cost Firewall exposes Prometheus metrics for runtime visibility.
+AI Cost Firewall exposes Prometheus metrics at:
 
-### Core runtime metrics
+```text
+/metrics
+```
+
+Example:
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+---
+
+### Core Runtime Metrics
+
+```text
+aif_inflight_requests
+aif_shutdown_in_progress
+aif_shutdown_rejections_total
+aif_readiness_state
+```
+
+Meaning:
 
 - `aif_inflight_requests` — active request count
-- `aif_shutdown_in_progress` — shutdown state (1/0)
+- `aif_shutdown_in_progress` — shutdown state, `1` or `0`
 - `aif_shutdown_rejections_total` — requests rejected during shutdown
+- `aif_readiness_state` — readiness state, `1` or `0`
 
-### Error classification
+---
+
+### Error Classification Metrics
 
 Errors are categorized as:
 
@@ -158,22 +356,81 @@ Errors are categorized as:
 
 Metric:
 
-`aif_errors_total{class=...}`
+```text
+aif_errors_total{class="..."}
+```
 
+Examples:
 
-### Upstream behavior
+```text
+aif_errors_total{class="validation_error"}
+aif_errors_total{class="upstream_timeout"}
+```
 
-- `aif_upstream_request_duration_seconds`
-- `aif_upstream_timeouts_total`
+---
 
-### Semantic cache diagnostics
+### Upstream Metrics
 
-- `aif_semantic_candidates_checked_total`
-- `aif_semantic_threshold_results_total{result="pass|fail"}`
-- `aif_semantic_expired_entries_skipped_total`
-- `aif_semantic_lookup_duration_seconds`
-- `aif_semantic_store_total`
-- `aif_semantic_store_errors_total`
+```text
+aif_upstream_request_duration_seconds
+aif_upstream_timeouts_total
+aif_upstream_calls_total
+```
+
+These help diagnose provider latency, timeout behavior, and upstream usage.
+
+---
+
+### Cache Metrics
+
+```text
+aif_cache_exact_hits
+aif_cache_semantic_hits
+aif_cache_misses
+```
+
+These metrics show whether requests are served from exact cache, semantic cache, or forwarded upstream.
+
+---
+
+### Cost and Token Metrics
+
+```text
+aif_tokens_saved
+aif_chat_cost_saved_micro_usd
+aif_embedding_cost_micro_usd
+aif_cost_saved_micro_usd
+```
+
+Meaning:
+
+- `aif_chat_cost_saved_micro_usd` — gross avoided chat-completion cost
+- `aif_embedding_cost_micro_usd` — embedding lookup cost
+- `aif_cost_saved_micro_usd` — net savings
+- `aif_tokens_saved` — estimated avoided chat-completion tokens
+
+If `embedding_price` is not configured, embedding cost is treated as zero and savings may be overestimated.
+
+---
+
+### Semantic Cache Diagnostics
+
+```text
+aif_semantic_candidates_checked_total
+aif_semantic_threshold_results_total{result="pass"}
+aif_semantic_threshold_results_total{result="fail"}
+aif_semantic_expired_entries_skipped_total
+aif_semantic_lookup_duration_seconds
+aif_semantic_store_total
+aif_semantic_store_errors_total
+```
+
+These metrics help tune:
+
+- `semantic_similarity_threshold`
+- `semantic_cache_retention_seconds`
+- embedding provider performance
+- Qdrant behavior
 
 ---
 
@@ -181,94 +438,173 @@ Metric:
 
 Semantic caching evaluates similar requests before forwarding to upstream.
 
-### Lookup flow
+### Lookup Flow
 
-1. Generate embedding for request
-2. Query Qdrant for candidates
-3. For each candidate:
-   - check similarity threshold
-   - check expiration (`expires_at`)
-4. Return first valid match
+1. Normalize the request.
+2. Generate an embedding.
+3. Query Qdrant for candidates.
+4. Filter expired entries before similarity ranking.
+5. Evaluate similarity threshold.
+6. Return the first valid cached response.
+7. If no valid match exists, continue upstream.
 
-### Rejection reasons
+### Candidate Requirements
 
-Candidates may be skipped due to:
+A semantic candidate is reusable only if:
 
-- similarity below threshold
-- expired TTL
-- missing metadata
+```text
+similarity_score >= semantic_similarity_threshold
+AND
+expires_at > now
+AND
+cached response payload is valid
+```
 
-### Observability
+### Rejection Reasons
 
-- candidates evaluated
-- threshold pass / fail counts
-- expired entries skipped
+Candidates may be skipped because:
 
-These metrics help tune:
+- similarity is below threshold
+- entry is expired
+- required metadata is missing
+- cached response payload is invalid
+- semantic lookup failed and fail-open behavior is enabled
 
-- `semantic_similarity_threshold`
-- `semantic_cache_retention_seconds`
+### Runtime Fail-Open Behavior
+
+When enabled:
+
+```conf
+semantic_cache_fail_open true;
+```
+
+runtime semantic cache failures are treated as cache skips.
+
+The request then continues to the upstream LLM provider.
+
+This is useful when semantic caching should improve cost and latency, but should not block normal LLM traffic if Qdrant or the embedding provider fails during runtime.
 
 ---
 
-## Semantic Cache Lifecycle (v0.1.5)
+## Semantic Cache Lifecycle
 
 Semantic cache entries include lifecycle metadata:
 
 - `inserted_at`
 - `expires_at`
 
-### Runtime behavior
+The expiration timestamp is calculated from:
 
-- expired entries are skipped during lookup
-- expired entries are never returned
-- expired entries remain stored in Qdrant
-
-This ensures:
-
-- no reuse of stale responses
-- predictable semantic cache behavior
-- safe operation without background cleanup
-
-### Cleanup
-
-Expired entries can be removed manually:
-
-```bash
-ai-firewall --prune-expired-semantic-cache
+```conf
+semantic_cache_retention_seconds 604800;
 ```
 
-Recommended usage:
+### Runtime Behavior
+
+Expired entries:
+
+- are not reused
+- are filtered during lookup before similarity ranking
+- may remain stored in Qdrant until manually pruned
+
+This prevents expired entries from blocking valid non-expired semantic hits.
+
+### Correctness vs Cleanup
+
+Semantic cache correctness does not depend on cleanup.
+
+Even if expired entries remain in Qdrant, they are not returned as valid cache hits.
+
+Cleanup is only needed to reduce Qdrant collection size over time.
+
+---
+
+## Semantic Cache Cleanup
+
+Expired semantic cache entries can be physically removed from Qdrant with:
+
+```bash
+ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
+```
+
+The command removes entries where:
+
+```text
+expires_at <= now
+```
+
+Valid entries remain untouched.
+
+---
+
+### Binary / systemd deployment
+
+For conservative maintenance windows:
 
 ```bash
 systemctl stop ai-firewall
-ai-firewall --config /path/to/ai-firewall.conf --prune-expired-semantic-cache
+ai-firewall --config /etc/ai-firewall/ai-firewall.conf --prune-expired-semantic-cache
 systemctl start ai-firewall
 ```
 
-Notes:
+---
 
-- pruning deletes only expired entries (`expires_at < now`)
-- valid entries are not affected
-- pruning is optional and does not affect correctness
+### Docker Compose deployment
+
+Run pruning as a one-off container using the same Compose service and config:
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf \
+  --prune-expired-semantic-cache
+```
+
+This starts a temporary container on the same Docker network, connects to Qdrant using the configured `qdrant_url`, prunes expired semantic entries, and exits.
+
+The running firewall container does not need to be stopped.
+
+---
+
+### Verify Qdrant Collection Count
+
+Qdrant exposes collection operations through its REST API on port `6333`.
+
+Example count request:
+
+```bash
+curl -s http://127.0.0.1:6333/collections/aif_semantic_cache/points/count \
+  -H "Content-Type: application/json" \
+  -d '{"exact": true}'
+```
+
+Note:
+
+- AI Cost Firewall uses Qdrant gRPC on port `6334`
+- manual Qdrant inspection commonly uses the REST API on port `6333`
 
 ---
 
 ## Maintenance
 
-Semantic cache storage may grow over time depending on retention settings.
+Semantic cache storage may grow over time depending on traffic volume and retention settings.
 
-To reclaim space:
+Recommended maintenance actions:
 
-```bash
-ai-firewall --prune-expired-semantic-cache
-```
+- review `semantic_cache_retention_seconds`
+- monitor Qdrant collection size
+- periodically run `--prune-expired-semantic-cache`
+- check semantic cache metrics in Prometheus or Grafana
 
-This operation:
+Cleanup frequency depends on workload.
 
-- removes expired semantic entries
-- does not affect active cache entries
-- can be run during maintenance windows
+For small deployments, manual pruning may be enough.
+
+For larger deployments, run pruning periodically through:
+
+- cron
+- systemd timer
+- Kubernetes CronJob
+- scheduled CI/CD maintenance job
 
 ---
 
@@ -278,39 +614,145 @@ This operation:
 
 Check:
 
-- semantic threshold too high
-- TTL too short
-- many expired entries
+- `aif_cache_exact_hits`
+- `aif_cache_semantic_hits`
+- `aif_cache_misses`
+- `aif_semantic_threshold_results_total{result="fail"}`
+
+Common causes:
+
+- semantic threshold is too high
+- prompts are not actually similar
+- request parameters differ
+- semantic cache is disabled
+- retention window is too short
+- entries expired before reuse
+
+---
 
 ### High upstream latency
 
 Check:
 
-- `aif_upstream_request_duration_seconds`
-- upstream provider health
+```text
+aif_upstream_request_duration_seconds
+```
 
-### Frequent timeouts
+Common causes:
+
+- upstream provider is slow
+- network latency
+- large prompts
+- model latency
+- provider-side throttling
+
+---
+
+### Frequent upstream timeouts
+
+Check:
+
+```text
+aif_upstream_timeouts_total
+```
+
+Possible actions:
 
 - increase `request_timeout_seconds`
-- inspect upstream performance
+- inspect upstream provider health
+- reduce prompt size
+- check network connectivity
+- use a faster model/provider
 
-### High error rate
+---
 
-Inspect:
+### High validation errors
 
-`aif_errors_total{class=...}`
+Check:
 
-- `validation_error` → bad requests
-- `upstream_error` → provider issues
-- `upstream_timeout` → slow upstream
-- `internal_error` → system issue
+```text
+aif_errors_total{class="validation_error"}
+```
+
+Common causes:
+
+- unsupported model
+- malformed JSON
+- missing `messages`
+- request body too large
+- invalid request format
+
+---
+
+### High semantic store errors
+
+Check:
+
+```text
+aif_semantic_store_errors_total
+```
+
+Common causes:
+
+- Qdrant unavailable
+- collection configuration mismatch
+- embedding vector size mismatch
+- malformed Qdrant payload
+- network issues between firewall and Qdrant
+
+---
+
+### Qdrant startup failure
+
+If semantic cache is enabled, Qdrant must be reachable at startup.
+
+Check:
+
+```conf
+qdrant_url http://qdrant:6334;
+```
+
+For Docker Compose, use service names:
+
+```conf
+redis_url redis://redis:6379;
+qdrant_url http://qdrant:6334;
+```
+
+For local binary execution, use local addresses:
+
+```conf
+redis_url redis://127.0.0.1:6379;
+qdrant_url http://127.0.0.1:6334;
+```
+
+---
+
+### Qdrant vector size mismatch
+
+If the existing Qdrant collection was created with a different vector size, startup fails.
+
+Example:
+
+```text
+Qdrant collection 'aif_semantic_cache' has vector size 768, but config requires 1536
+```
+
+Fix options:
+
+- recreate the Qdrant collection
+- use a matching embedding model
+- update `qdrant_vector_size` to match the collection and embedding model
 
 ---
 
 ## Notes
 
 - No automatic file watching
-- Reload via SIGHUP only
+- Reload happens via `SIGHUP`
+- `--test-config` is static validation only
+- Runtime dependencies are initialized during normal startup and reload
+- Redis is required for exact caching
+- Qdrant is required only when semantic cache is enabled
+- `semantic_cache_fail_open` applies to runtime semantic lookup failures, not startup initialization
 - Requests exceeding `request_timeout_seconds` are aborted and classified as upstream timeouts
-- `aif_semantic_store_total`
-- `aif_semantic_store_errors_total`

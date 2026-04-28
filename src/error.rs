@@ -71,6 +71,12 @@ impl AppError {
         }
     }
 
+    pub fn semantic_provider(message: impl Into<String>) -> Self {
+        Self::Internal {
+            message: message.into(),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn upstream_json(status: StatusCode, body: String) -> Response {
         match serde_json::from_str::<Value>(&body) {

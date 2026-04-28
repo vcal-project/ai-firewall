@@ -20,14 +20,44 @@ pub struct EmbeddingPrice {
     pub usd_per_1m_tokens: f64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ProviderKind {
+    #[default]
+    OpenAiCompatible,
+}
+
+impl ProviderKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible => "openai_compatible",
+        }
+    }
+}
+
+impl std::str::FromStr for ProviderKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "openai_compatible" | "openai-compatible" | "openai" => Ok(Self::OpenAiCompatible),
+            other => Err(format!(
+                "unsupported provider '{}'. Supported providers: openai_compatible",
+                other
+            )),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub listen_addr: String,
     pub redis_url: String,
 
+    pub upstream_provider: ProviderKind,
     pub upstream_base_url: String,
     pub upstream_api_key: String,
 
+    pub embedding_provider: ProviderKind,
     pub embedding_base_url: String,
     pub embedding_api_key: String,
     pub embedding_model: String,
@@ -47,6 +77,7 @@ pub struct Config {
 
     pub semantic_cache_enabled: bool,
     pub semantic_similarity_threshold: f32,
+    pub semantic_cache_fail_open: bool,
 
     pub model_prices: HashMap<String, ModelPrice>,
 
@@ -84,6 +115,13 @@ impl Config {
 
         if self.upstream_api_key.trim().is_empty() {
             errors.push("upstream_api_key must not be empty".into());
+        }
+
+        // ---- upstream provider
+        match self.upstream_provider {
+            ProviderKind::OpenAiCompatible => {
+                // Currently all upstream providers are OpenAI-compatible HTTP endpoints.
+            }
         }
 
         // ---- timeouts
@@ -164,6 +202,13 @@ impl Config {
                 ));
             }
 
+            // ---- embedding provider
+            match self.embedding_provider {
+                ProviderKind::OpenAiCompatible => {
+                    // Currently all embedding providers are OpenAI-compatible HTTP endpoints.
+                }
+            }
+
             if !self.qdrant_url.trim().is_empty() && !looks_like_http_url(&self.qdrant_url) {
                 errors.push(format!(
                     "invalid qdrant_url '{}': must start with http:// or https://",
@@ -224,6 +269,169 @@ impl Config {
         Ok(())
     }
 
+    pub fn to_masked_display(&self) -> String {
+        fn mask_secret_value(value: &str) -> String {
+            let value = value.trim();
+
+            if value.is_empty() {
+                return "<empty>".to_string();
+            }
+
+            if matches!(
+                value.to_ascii_lowercase().as_str(),
+                "dummy" | "none" | "null" | "-"
+            ) {
+                return value.to_string();
+            }
+
+            let chars: Vec<char> = value.chars().collect();
+
+            if chars.len() <= 8 {
+                return "****".to_string();
+            }
+
+            let prefix: String = chars.iter().take(4).collect();
+            let suffix: String = chars
+                .iter()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+
+            format!("{prefix}...{suffix}")
+        }
+
+        fn mask_optional_secret(value: &Option<String>) -> String {
+            match value {
+                Some(v) => mask_secret_value(v),
+                None => "<not set>".to_string(),
+            }
+        }
+
+        let embedding_price = self
+            .embedding_price
+            .as_ref()
+            .map(|p| p.usd_per_1m_tokens.to_string())
+            .unwrap_or_else(|| "<not set>".to_string());
+
+        let mut out = String::new();
+
+        out.push_str("AI Cost Firewall configuration\n");
+        out.push_str("--------------------------------\n");
+
+        out.push_str(&format!("listen_addr = {}\n", self.listen_addr));
+        out.push_str(&format!(
+            "redis_url = {}\n",
+            mask_secret_value(&self.redis_url)
+        ));
+
+        out.push_str(&format!(
+            "upstream_provider = {}\n",
+            self.upstream_provider.as_str()
+        ));
+        out.push_str(&format!("upstream_base_url = {}\n", self.upstream_base_url));
+        out.push_str(&format!(
+            "upstream_api_key = {}\n",
+            mask_secret_value(&self.upstream_api_key)
+        ));
+
+        out.push_str(&format!(
+            "request_timeout_seconds = {}\n",
+            self.request_timeout_seconds
+        ));
+        out.push_str(&format!("cache_ttl_seconds = {}\n", self.cache_ttl_seconds));
+        out.push_str(&format!(
+            "exact_cache_ttl_seconds = {}\n",
+            self.exact_cache_ttl_seconds
+        ));
+        out.push_str(&format!(
+            "max_request_body_bytes = {}\n",
+            self.max_request_body_bytes
+        ));
+        out.push_str(&format!(
+            "allow_unknown_models_pass_through = {}\n",
+            self.allow_unknown_models_pass_through
+        ));
+
+        out.push_str("\nSemantic cache\n");
+        out.push_str("--------------------------------\n");
+
+        out.push_str(&format!(
+            "semantic_cache_enabled = {}\n",
+            self.semantic_cache_enabled
+        ));
+        out.push_str(&format!(
+            "semantic_cache_fail_open = {}\n",
+            self.semantic_cache_fail_open
+        ));
+        out.push_str(&format!(
+            "semantic_similarity_threshold = {}\n",
+            self.semantic_similarity_threshold
+        ));
+        out.push_str(&format!(
+            "semantic_cache_retention_seconds = {}\n",
+            self.semantic_cache_retention_seconds
+        ));
+
+        out.push_str(&format!(
+            "embedding_provider = {}\n",
+            self.embedding_provider.as_str()
+        ));
+        out.push_str(&format!(
+            "embedding_base_url = {}\n",
+            self.embedding_base_url
+        ));
+        out.push_str(&format!(
+            "embedding_api_key = {}\n",
+            mask_secret_value(&self.embedding_api_key)
+        ));
+        out.push_str(&format!("embedding_model = {}\n", self.embedding_model));
+        out.push_str(&format!(
+            "embedding_price_usd_per_1m_tokens = {}\n",
+            embedding_price
+        ));
+
+        out.push_str(&format!("qdrant_url = {}\n", self.qdrant_url));
+        out.push_str(&format!(
+            "qdrant_api_key = {}\n",
+            mask_optional_secret(&self.qdrant_api_key)
+        ));
+        out.push_str(&format!("qdrant_collection = {}\n", self.qdrant_collection));
+        out.push_str(&format!(
+            "qdrant_vector_size = {}\n",
+            self.qdrant_vector_size
+        ));
+
+        out.push_str("\nLifecycle\n");
+        out.push_str("--------------------------------\n");
+
+        out.push_str(&format!(
+            "graceful_shutdown_timeout_seconds = {}\n",
+            self.graceful_shutdown_timeout_seconds
+        ));
+
+        out.push_str("\nModel prices\n");
+        out.push_str("--------------------------------\n");
+
+        if self.model_prices.is_empty() {
+            out.push_str("<none>\n");
+        } else {
+            let mut models: Vec<_> = self.model_prices.iter().collect();
+            models.sort_by(|a, b| a.0.cmp(b.0));
+
+            for (model, price) in models {
+                out.push_str(&format!(
+                    "{}: input_usd_per_1m_tokens = {}, output_usd_per_1m_tokens = {}\n",
+                    model, price.input_usd_per_1m_tokens, price.output_usd_per_1m_tokens
+                ));
+            }
+        }
+
+        out
+    }
+
     fn parse_bytes(input: &str) -> Result<usize> {
         let s = input.trim();
         if s.is_empty() {
@@ -281,14 +489,26 @@ impl Config {
             listen_addr: get_or_default(&map, "listen_addr", "0.0.0.0:8080"),
             redis_url: get_required(&map, "redis_url")?,
 
+            upstream_provider: parse_or_default(
+                &map,
+                "upstream_provider",
+                ProviderKind::OpenAiCompatible,
+            )?,
             upstream_base_url: get_or_default(&map, "upstream_base_url", "https://api.openai.com"),
             upstream_api_key: get_required(&map, "upstream_api_key")?,
+
+            embedding_provider: parse_or_default(
+                &map,
+                "embedding_provider",
+                ProviderKind::OpenAiCompatible,
+            )?,
 
             embedding_base_url: get_or_default(
                 &map,
                 "embedding_base_url",
                 "https://api.openai.com",
             ),
+
             embedding_api_key: map
                 .get("embedding_api_key")
                 .cloned()
@@ -324,6 +544,8 @@ impl Config {
                 0.92f32,
             )?,
 
+            semantic_cache_fail_open: parse_or_default(&map, "semantic_cache_fail_open", true)?,
+
             model_prices,
 
             allow_unknown_models_pass_through: parse_or_default(
@@ -344,6 +566,19 @@ impl Config {
                 .transpose()?
                 .unwrap_or(1_048_576usize),
         };
+
+        let cache_ttl_was_set = map.contains_key("cache_ttl_seconds");
+        let exact_ttl_was_set = map.contains_key("exact_cache_ttl_seconds");
+        let semantic_ttl_was_set = map.contains_key("semantic_cache_retention_seconds");
+
+        if cache_ttl_was_set && (exact_ttl_was_set || semantic_ttl_was_set) {
+            tracing::warn!(
+                cache_ttl_seconds = cfg.cache_ttl_seconds,
+                exact_cache_ttl_seconds = cfg.exact_cache_ttl_seconds,
+                semantic_cache_retention_seconds = cfg.semantic_cache_retention_seconds,
+                "cache_ttl_seconds is configured together with explicit TTLs; explicit TTLs take precedence"
+            );
+        }
 
         warn_if_suspicious(&cfg);
 
@@ -390,11 +625,33 @@ impl Config {
             redis_url: env::var("AIF_REDIS_URL")
                 .map_err(|_| cfg_err("AIF_REDIS_URL is required when no config file is used"))?,
 
+            upstream_provider: {
+                let raw = env::var("AIF_UPSTREAM_PROVIDER")
+                    .unwrap_or_else(|_| "openai_compatible".into());
+                raw.parse::<ProviderKind>().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_UPSTREAM_PROVIDER value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
             upstream_base_url: env::var("AIF_UPSTREAM_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".into()),
             upstream_api_key: env::var("AIF_UPSTREAM_API_KEY").map_err(|_| {
                 cfg_err("AIF_UPSTREAM_API_KEY is required when no config file is used")
             })?,
+
+            embedding_provider: {
+                let raw = env::var("AIF_EMBEDDING_PROVIDER")
+                    .unwrap_or_else(|_| "openai_compatible".into());
+                raw.parse::<ProviderKind>().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_EMBEDDING_PROVIDER value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
 
             embedding_base_url: env::var("AIF_EMBEDDING_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".into()),
@@ -461,6 +718,17 @@ impl Config {
                 raw.parse().map_err(|e| {
                     cfg_err(format!(
                         "invalid AIF_SEMANTIC_SIMILARITY_THRESHOLD value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            semantic_cache_fail_open: {
+                let raw =
+                    env::var("AIF_SEMANTIC_CACHE_FAIL_OPEN").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_SEMANTIC_CACHE_FAIL_OPEN value '{}': {}",
                         raw, e
                     ))
                 })?
@@ -534,8 +802,10 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("listen_addr", &self.listen_addr)
             .field("redis_url", &self.redis_url)
+            .field("upstream_provider", &self.upstream_provider.as_str())
             .field("upstream_base_url", &self.upstream_base_url)
             .field("upstream_api_key", &mask_secret(&self.upstream_api_key))
+            .field("embedding_provider", &self.embedding_provider.as_str())
             .field("embedding_base_url", &self.embedding_base_url)
             .field("embedding_api_key", &mask_secret(&self.embedding_api_key))
             .field("embedding_model", &self.embedding_model)
@@ -559,6 +829,7 @@ impl fmt::Debug for Config {
                 "semantic_similarity_threshold",
                 &self.semantic_similarity_threshold,
             )
+            .field("semantic_cache_fail_open", &self.semantic_cache_fail_open)
             .field("model_prices", &self.model_prices)
             .field(
                 "allow_unknown_models_pass_through",
@@ -592,8 +863,10 @@ fn allowed_directives() -> HashSet<&'static str> {
     HashSet::from([
         "listen_addr",
         "redis_url",
+        "upstream_provider",
         "upstream_base_url",
         "upstream_api_key",
+        "embedding_provider",
         "embedding_base_url",
         "embedding_api_key",
         "embedding_model",
@@ -608,6 +881,7 @@ fn allowed_directives() -> HashSet<&'static str> {
         "request_timeout_seconds",
         "semantic_cache_enabled",
         "semantic_similarity_threshold",
+        "semantic_cache_fail_open",
         "model_price",
         "allow_unknown_models_pass_through",
         "graceful_shutdown_timeout_seconds",
@@ -809,20 +1083,30 @@ fn warn_if_suspicious(cfg: &Config) {
         );
     }
 
-    if cfg.semantic_cache_enabled && cfg.embedding_price.is_none() {
-        tracing::warn!(
-            "semantic_cache_enabled=true but embedding_price is not configured; net savings metrics may be incomplete"
+    if cfg.semantic_cache_fail_open && !cfg.semantic_cache_enabled {
+        tracing::info!(
+            "semantic_cache_fail_open=true has no effect because semantic_cache_enabled=false"
         );
     }
 
-    if cfg.cache_ttl_seconds != cfg.exact_cache_ttl_seconds
-        || cfg.cache_ttl_seconds != cfg.semantic_cache_retention_seconds
-    {
+    if cfg.semantic_cache_enabled && cfg.semantic_cache_fail_open {
+        tracing::info!(
+            "semantic_cache_fail_open=true; runtime semantic lookup failures will skip semantic cache and continue upstream. Startup still requires semantic dependencies to initialize."
+        );
+    }
+
+    if cfg.semantic_cache_enabled && cfg.embedding_provider == ProviderKind::OpenAiCompatible {
+        tracing::info!(
+            embedding_base_url = cfg.embedding_base_url,
+            embedding_model = cfg.embedding_model,
+            qdrant_vector_size = cfg.qdrant_vector_size,
+            "using OpenAI-compatible embedding provider; ensure qdrant_vector_size matches the embedding model dimension"
+        );
+    }
+
+    if cfg.semantic_cache_enabled && cfg.embedding_price.is_none() {
         tracing::warn!(
-            cache_ttl_seconds = cfg.cache_ttl_seconds,
-            exact_cache_ttl_seconds = cfg.exact_cache_ttl_seconds,
-            semantic_cache_retention_seconds = cfg.semantic_cache_retention_seconds,
-            "cache_ttl_seconds is used as a legacy default; explicit TTLs override it"
+            "semantic_cache_enabled=true but embedding_price is not configured; net savings metrics may be incomplete"
         );
     }
 

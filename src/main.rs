@@ -128,8 +128,8 @@ async fn config_reload_loop(
                     }
                     Err(e) => {
                         tracing::error!(
-                            "config reload aborted: new runtime initialization failed: {}",
-                            e
+                            error = ?e,
+                            "config reload aborted: new runtime initialization failed"
                         );
                     }
                 }
@@ -225,9 +225,10 @@ async fn main() -> anyhow::Result<()> {
     let prune_expired_semantic_cache = parse_prune_expired_semantic_cache();
 
     let explicit_config_path = parse_config_path();
-    let reload_config_path = resolve_config_path(explicit_config_path.clone());
+    let config_path = resolve_config_path(explicit_config_path);
+    let reload_config_path = config_path.clone();
 
-    let cfg = match config::Config::from_env_or_file(explicit_config_path.as_deref()) {
+    let cfg = match config::Config::from_env_or_file(config_path.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             tracing::error!("startup aborted due to configuration error: {}", e);
@@ -241,6 +242,16 @@ async fn main() -> anyhow::Result<()> {
             e
         );
         return Err(e);
+    }
+
+    if print_config {
+        println!("{}", cfg.to_masked_display());
+        return Ok(());
+    }
+
+    if test_config {
+        tracing::info!("configuration OK");
+        return Ok(());
     }
 
     if prune_expired_semantic_cache {
@@ -257,26 +268,20 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if print_config {
-        println!("{:#?}", cfg);
-        return Ok(());
-    }
-
-    if test_config {
-        tracing::info!("configuration OK");
-        return Ok(());
-    }
-
     let listen_addr = cfg.listen_addr.clone();
     let shutdown_timeout = Duration::from_secs(cfg.graceful_shutdown_timeout_seconds);
 
     let built = match app::build_app(cfg).await {
         Ok(built) => built,
         Err(e) => {
-            tracing::error!("startup aborted during runtime initialization: {}", e);
+            tracing::error!(
+                error = ?e,
+                "startup aborted during runtime initialization"
+            );
             return Err(e);
         }
     };
+
     let state = built.state.clone();
 
     tokio::spawn(async move {
@@ -285,9 +290,19 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind(&listen_addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to bind {}: {}", listen_addr, e))?;
+    let listener = match tokio::net::TcpListener::bind(&listen_addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!(
+                listen_addr = %listen_addr,
+                error = %e,
+                "failed to bind HTTP listener"
+            );
+
+            return Err(anyhow::anyhow!("failed to bind {}: {}", listen_addr, e));
+        }
+    };
+
     tracing::info!("listening on {}", listen_addr);
 
     axum::serve(listener, built.router)

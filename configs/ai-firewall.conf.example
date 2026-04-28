@@ -1,16 +1,43 @@
 listen_addr 0.0.0.0:8080;
 
+# Redis exact cache
+#
+# Local/dev example:
 redis_url redis://redis:6379;
 
+# Production reminder:
+# Protect Redis with authentication and private networking.
+# Example with password:
+# redis_url redis://:your-redis-password@redis:6379;
+
+# Chat upstream provider
+# Default: openai_compatible
+# Supports OpenAI-compatible /v1/chat/completions endpoints.
+upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-api-key;
 
+# Embedding provider
+# Default: openai_compatible
+# Supports OpenAI-compatible /v1/embeddings endpoints.
+embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
 embedding_api_key sk-your-api-key;
 embedding_model text-embedding-3-small;
 
+# Qdrant semantic cache
+#
+# Local/dev example:
 qdrant_url http://qdrant:6334;
+
+# Production reminder:
+# Protect Qdrant with an API key and private networking.
+# Example:
+# qdrant_api_key your-qdrant-api-key;
+
 qdrant_collection aif_semantic_cache;
+
+# Must match the dimension of the configured embedding_model.
 qdrant_vector_size 1536;
 
 # Backward-compatible default for both cache layers
@@ -35,6 +62,10 @@ semantic_similarity_threshold 0.92;
 
 # Higher threshold = stricter similarity (fewer semantic hits)
 # Lower threshold = more reuse (potentially less precise)
+
+# If the embedding/semantic provider is unavailable, skip semantic cache and continue upstream.
+# Default: true
+semantic_cache_fail_open true;
 
 # Model validation behavior
 # By default, only models defined via `model_price` are allowed.

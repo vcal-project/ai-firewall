@@ -149,6 +149,33 @@ pub static SEMANTIC_STORE_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     .expect("metric aif_semantic_store_errors_total must be valid")
 });
 
+pub static SEMANTIC_LOOKUP_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_semantic_lookup_errors_total",
+        "Total number of semantic cache lookup failures",
+    )
+    .expect("metric aif_semantic_lookup_errors_total must be valid")
+});
+
+pub static SEMANTIC_PROVIDER_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_semantic_provider_errors_total",
+            "Semantic provider errors by provider and operation",
+        ),
+        &["provider", "operation"],
+    )
+    .expect("metric aif_semantic_provider_errors_total must be valid")
+});
+
+pub static SEMANTIC_SKIPS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new("aif_semantic_skips_total", "Semantic cache skips by reason"),
+        &["reason"],
+    )
+    .expect("metric aif_semantic_skips_total must be valid")
+});
+
 pub static SEMANTIC_CANDIDATES_CHECKED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_semantic_candidates_checked_total",
@@ -187,6 +214,9 @@ pub static SEMANTIC_LOOKUP_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 pub fn init() {
     Lazy::force(&SEMANTIC_STORE_TOTAL);
     Lazy::force(&SEMANTIC_STORE_ERRORS_TOTAL);
+    Lazy::force(&SEMANTIC_LOOKUP_ERRORS_TOTAL);
+    Lazy::force(&SEMANTIC_PROVIDER_ERRORS_TOTAL);
+    Lazy::force(&SEMANTIC_SKIPS_TOTAL);
     Lazy::force(&SEMANTIC_CANDIDATES_CHECKED_TOTAL);
     Lazy::force(&SEMANTIC_THRESHOLD_RESULTS_TOTAL);
     Lazy::force(&SEMANTIC_LOOKUP_DURATION_SECONDS);
@@ -199,6 +229,9 @@ pub fn init() {
             Box::new(CACHE_SEMANTIC_HITS.clone()),
             Box::new(SEMANTIC_STORE_TOTAL.clone()),
             Box::new(SEMANTIC_STORE_ERRORS_TOTAL.clone()),
+            Box::new(SEMANTIC_LOOKUP_ERRORS_TOTAL.clone()),
+            Box::new(SEMANTIC_PROVIDER_ERRORS_TOTAL.clone()),
+            Box::new(SEMANTIC_SKIPS_TOTAL.clone()),
             Box::new(CACHE_MISSES.clone()),
             Box::new(UPSTREAM_CALLS.clone()),
             Box::new(TOKENS_SAVED.clone()),

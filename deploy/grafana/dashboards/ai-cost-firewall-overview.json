@@ -42,7 +42,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -71,13 +72,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_cache_exact_hits",
+          "expr": "aif_requests_total",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Exact Cache Hits",
+      "title": "Total Requests",
       "type": "stat"
     },
     {
@@ -95,11 +96,21 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 40
+              },
+              {
+                "color": "green",
+                "value": 70
               }
             ]
-          }
+          },
+          "unit": "percent",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -111,7 +122,7 @@
       },
       "id": 2,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
@@ -122,19 +133,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value"
       },
       "pluginVersion": "12.4.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_cache_semantic_hits",
+          "expr": "100 * (aif_cache_exact_hits + aif_cache_semantic_hits) / clamp_min(aif_cache_exact_hits + aif_cache_semantic_hits + aif_cache_misses, 1)",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Semantic Cache Hits",
+      "title": "Cache Hit Rate",
       "type": "stat"
     },
     {
@@ -156,7 +167,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -185,13 +197,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_cache_misses",
+          "expr": "aif_upstream_calls_total",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Cache Misses",
+      "title": "Upstream Calls",
       "type": "stat"
     },
     {
@@ -204,28 +216,18 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 1,
           "mappings": [],
-          "max": 100,
-          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 40
-              },
-              {
                 "color": "green",
-                "value": 70
+                "value": null
               }
             ]
           },
-          "unit": "percent"
+          "unit": "currencyUSD",
+          "decimals": 4
         },
         "overrides": []
       },
@@ -236,65 +238,6 @@
         "y": 0
       },
       "id": 4,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "12.4.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "100 * (aif_cache_exact_hits + aif_cache_semantic_hits) / clamp_min(aif_cache_exact_hits + aif_cache_semantic_hits + aif_cache_misses, 1)",
-          "legendFormat": "",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Cache Hit Rate",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 4,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 16,
-        "y": 0
-      },
-      "id": 5,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -332,7 +275,6 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 4,
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -343,17 +285,18 @@
               }
             ]
           },
-          "unit": "currencyUSD"
+          "unit": "currencyUSD",
+          "decimals": 4
         },
         "overrides": []
       },
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 20,
+        "x": 16,
         "y": 0
       },
-      "id": 6,
+      "id": 5,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -379,6 +322,68 @@
         }
       ],
       "title": "Embedding Cost",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "bool"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "id": 6,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "aif_readiness_state",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Readiness",
       "type": "stat"
     },
     {
@@ -462,27 +467,41 @@
       "targets": [
         {
           "editorMode": "code",
+          "expr": "rate(aif_requests_total[$__rate_interval])",
+          "legendFormat": "Requests/sec",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
           "expr": "rate(aif_cache_exact_hits[$__rate_interval])",
           "legendFormat": "Exact hits/sec",
           "range": true,
-          "refId": "A"
+          "refId": "B"
         },
         {
           "editorMode": "code",
           "expr": "rate(aif_cache_semantic_hits[$__rate_interval])",
           "legendFormat": "Semantic hits/sec",
           "range": true,
-          "refId": "B"
+          "refId": "C"
         },
         {
           "editorMode": "code",
           "expr": "rate(aif_cache_misses[$__rate_interval])",
           "legendFormat": "Misses/sec",
           "range": true,
-          "refId": "C"
+          "refId": "D"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_upstream_calls_total[$__rate_interval])",
+          "legendFormat": "Upstream calls/sec",
+          "range": true,
+          "refId": "E"
         }
       ],
-      "title": "Cache Activity Rate",
+      "title": "Request and Cache Activity Rate",
       "type": "timeseries"
     },
     {
@@ -588,109 +607,14 @@
         },
         {
           "editorMode": "code",
-          "expr": "rate(aif_chat_cost_saved_micro_usd[$__rate_interval]) * 3600 / 1000000",
-          "legendFormat": "Gross saved/hour",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "editorMode": "code",
-          "expr": "rate(aif_embedding_cost_micro_usd[$__rate_interval]) * 3600 / 1000000",
-          "legendFormat": "Embedding cost/hour",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "editorMode": "code",
           "expr": "rate(aif_cost_saved_micro_usd[$__rate_interval]) * 3600 / 1000000",
           "legendFormat": "Net saved/hour",
           "range": true,
-          "refId": "F"
+          "refId": "D"
         }
       ],
       "title": "Cost Breakdown",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "bool"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 13
-      },
-      "id": 9,
-      "options": {
-        "displayMode": "basic",
-        "minVizHeight": 10,
-        "minVizWidth": 0,
-        "namePlacement": "auto",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "sizing": "auto",
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.4.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "(aif_cache_exact_hits > bool 0)",
-          "legendFormat": "Exact cache active",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "(aif_cache_semantic_hits > bool 0)",
-          "legendFormat": "Semantic cache active",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "(aif_cache_misses >= bool 0)",
-          "legendFormat": "Metrics endpoint alive",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Signal Presence",
-      "type": "bargauge"
     },
     {
       "datasource": {
@@ -709,8 +633,8 @@
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 80,
+            "drawStyle": "line",
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -719,7 +643,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -728,7 +652,132 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "normal"
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_candidates_checked_total[$__rate_interval])",
+          "legendFormat": "Candidates checked/sec",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_threshold_results_total{result=\"pass\"}[$__rate_interval])",
+          "legendFormat": "Threshold pass/sec",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_threshold_results_total{result=\"fail\"}[$__rate_interval])",
+          "legendFormat": "Threshold fail/sec",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_expired_entries_skipped_total[$__rate_interval])",
+          "legendFormat": "Expired skipped/sec",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_store_total[$__rate_interval])",
+          "legendFormat": "Store attempts/sec",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_store_errors_total[$__rate_interval])",
+          "legendFormat": "Store errors/sec",
+          "range": true,
+          "refId": "F"
+        }
+      ],
+      "title": "Semantic Cache Lifecycle Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -749,9 +798,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
+        "h": 8,
+        "w": 12,
+        "x": 12,
         "y": 13
       },
       "id": 10,
@@ -773,27 +822,41 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_cache_exact_hits[$__range])",
-          "legendFormat": "Exact hits",
+          "expr": "aif_inflight_requests",
+          "legendFormat": "In-flight requests",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "increase(aif_cache_semantic_hits[$__range])",
-          "legendFormat": "Semantic hits",
+          "expr": "rate(aif_upstream_timeouts_total[$__rate_interval])",
+          "legendFormat": "Timeouts/sec",
           "range": true,
           "refId": "B"
         },
         {
           "editorMode": "code",
-          "expr": "increase(aif_cache_misses[$__range])",
-          "legendFormat": "Misses",
+          "expr": "rate(aif_errors_total{class=~\"validation|validation_error\"}[$__rate_interval])",
+          "legendFormat": "Validation errors/sec",
           "range": true,
           "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=~\"upstream|upstream_error\"}[$__rate_interval])",
+          "legendFormat": "Upstream errors/sec",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=~\"internal|internal_error\"}[$__rate_interval])",
+          "legendFormat": "Internal errors/sec",
+          "range": true,
+          "refId": "E"
         }
       ],
-      "title": "Requests by Outcome (selected range)",
+      "title": "Runtime and Upstream Signals",
       "type": "timeseries"
     },
     {
@@ -806,10 +869,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 1,
           "mappings": [],
-          "max": 100,
-          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -819,23 +879,24 @@
               },
               {
                 "color": "yellow",
-                "value": 50
+                "value": 25
               },
               {
                 "color": "green",
-                "value": 80
+                "value": 60
               }
             ]
           },
-          "unit": "percent"
+          "unit": "percent",
+          "decimals": 1
         },
         "overrides": []
       },
       "gridPos": {
         "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 13
+        "w": 6,
+        "x": 0,
+        "y": 21
       },
       "id": 11,
       "options": {
@@ -862,7 +923,203 @@
           "refId": "A"
         }
       ],
-      "title": "Exact Hit Share (selected range)",
+      "title": "Exact Hit Share",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 21
+      },
+      "id": 12,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "100 * increase(aif_cache_semantic_hits[$__range]) / clamp_min(increase(aif_cache_exact_hits[$__range]) + increase(aif_cache_semantic_hits[$__range]) + increase(aif_cache_misses[$__range]), 1)",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Semantic Hit Share",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "green",
+                "value": 60
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 21
+      },
+      "id": 13,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "100 * increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range]) / clamp_min(increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range]) + increase(aif_semantic_threshold_results_total{result=\"fail\"}[$__range]), 1)",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Semantic Threshold Pass Share",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 21
+      },
+      "id": 14,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "increase(aif_semantic_store_errors_total[$__range])",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Semantic Store Errors",
       "type": "stat"
     }
   ],
@@ -870,9 +1127,13 @@
   "schemaVersion": 41,
   "tags": [
     "ai-firewall",
-    "prometheus",
+    "cache",
     "cost-control",
-    "cache"
+    "cost-savings",
+    "prometheus",
+    "runtime",
+    "semantic-cache",
+    "v0.1.6"
   ],
   "templating": {
     "list": []
@@ -885,6 +1146,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Overview",
   "uid": "ai-cost-firewall",
-  "version": 2,
-  "weekStart": ""
+  "version": 3,
+  "weekStart": "",
+  "description": "Overview dashboard for AI Cost Firewall v0.1.6: cache outcomes, upstream calls, net savings, embedding overhead, readiness, and semantic cache lifecycle signals."
 }
