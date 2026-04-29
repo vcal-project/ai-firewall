@@ -85,6 +85,12 @@ async fn ensure_collection(client: &Qdrant, collection_name: &str, vector_size: 
         .await
         .with_context(|| format!("failed creating Qdrant collection {}", collection_name))?;
 
+    tracing::info!(
+        collection = %collection_name,
+        vector_size = vector_size,
+        "created Qdrant collection for semantic cache"
+    );
+
     Ok(())
 }
 

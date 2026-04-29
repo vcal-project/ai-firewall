@@ -1,10 +1,11 @@
 use crate::error::AppError;
 use crate::metrics::{UPSTREAM_CALLS, UPSTREAM_REQUEST_DURATION_SECONDS, UPSTREAM_TIMEOUTS_TOTAL};
 use crate::types::openai::{ChatCompletionRequest, ChatCompletionResponse};
-use crate::upstream::llm::LlmUpstream;
+use crate::upstream::llm::{LlmUpstream, UpstreamErrorKind};
 
 use async_trait::async_trait;
 use reqwest::{header, Client};
+use std::error::Error;
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -64,22 +65,29 @@ impl LlmUpstream for OpenAiUpstream {
                 let elapsed = start.elapsed().as_secs_f64();
                 UPSTREAM_REQUEST_DURATION_SECONDS.observe(elapsed);
 
-                if e.is_timeout() {
-                    UPSTREAM_TIMEOUTS_TOTAL.inc();
+                let kind = classify_reqwest_error(&e);
 
-                    return Err(AppError::upstream_timeout(format!(
-                        "upstream timeout for model '{}' at '{}'",
-                        req.normalized_model(),
-                        self.base_url
-                    )));
+                if kind == UpstreamErrorKind::Timeout {
+                    UPSTREAM_TIMEOUTS_TOTAL.inc();
                 }
 
-                return Err(AppError::upstream(format!(
-                    "upstream request failed for model '{}' at '{}': {}",
-                    req.normalized_model(),
-                    self.base_url,
-                    e
-                )));
+                tracing::error!(
+                    error_class = kind.as_str(),
+                    upstream_base_url = %self.base_url,
+                    model = %req.normalized_model(),
+                    error = %e,
+                    "upstream request failed"
+                );
+
+                return Err(AppError::upstream_kind(
+                    kind,
+                    format!(
+                        "{} Model: '{}'. Upstream: '{}'.",
+                        kind.default_message(),
+                        req.normalized_model(),
+                        self.base_url
+                    ),
+                ));
             }
         };
 
@@ -91,9 +99,22 @@ impl LlmUpstream for OpenAiUpstream {
                 let elapsed = start.elapsed().as_secs_f64();
                 UPSTREAM_REQUEST_DURATION_SECONDS.observe(elapsed);
 
-                return Err(AppError::upstream(format!(
-                    "failed to read upstream body: {e}"
-                )));
+                tracing::error!(
+                    error_class = UpstreamErrorKind::Other.as_str(),
+                    upstream_base_url = %self.base_url,
+                    model = %req.normalized_model(),
+                    error = %e,
+                    "failed to read upstream response body"
+                );
+
+                return Err(AppError::upstream_kind(
+                    UpstreamErrorKind::Other,
+                    format!(
+                        "Failed to read upstream response body. Model: '{}'. Upstream: '{}'.",
+                        req.normalized_model(),
+                        self.base_url
+                    ),
+                ));
             }
         };
 
@@ -114,14 +135,94 @@ impl LlmUpstream for OpenAiUpstream {
         }
 
         let parsed = serde_json::from_str::<ChatCompletionResponse>(&body).map_err(|e| {
-            AppError::upstream(format!(
-                "failed to parse upstream response body: {e}; body: {}",
-                body
-            ))
+            tracing::error!(
+                error_class = UpstreamErrorKind::Other.as_str(),
+                upstream_base_url = %self.base_url,
+                model = %req.normalized_model(),
+                error = %e,
+                "failed to parse upstream response body"
+            );
+
+            AppError::upstream_kind(
+                UpstreamErrorKind::Other,
+                format!(
+                    "Failed to parse upstream response body for model '{}' at '{}': {e}; body: {}",
+                    req.normalized_model(),
+                    self.base_url,
+                    body
+                ),
+            )
         })?;
 
         Ok(parsed)
     }
+}
+
+fn classify_reqwest_error(err: &reqwest::Error) -> UpstreamErrorKind {
+    if err.is_timeout() {
+        return UpstreamErrorKind::Timeout;
+    }
+
+    // TLS/certificate errors are often wrapped as connect errors,
+    // so check the full error chain before returning Connect.
+    if error_chain_contains(
+        err,
+        &[
+            "certificate",
+            "cert",
+            "tls",
+            "ssl",
+            "unknown issuer",
+            "invalid peer certificate",
+            "self-signed",
+            "hostname",
+            "not valid for name",
+            "subject alternative name",
+            "invalid certificate",
+            "certificate verify failed",
+        ],
+    ) {
+        return UpstreamErrorKind::Tls;
+    }
+
+    if error_chain_contains(
+        err,
+        &[
+            "dns",
+            "failed to lookup address",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "no such host",
+        ],
+    ) {
+        return UpstreamErrorKind::Dns;
+    }
+
+    if err.is_connect() {
+        return UpstreamErrorKind::Connect;
+    }
+
+    if err.status().is_some() {
+        return UpstreamErrorKind::HttpStatus;
+    }
+
+    UpstreamErrorKind::Other
+}
+
+fn error_chain_contains(err: &(dyn Error + 'static), needles: &[&str]) -> bool {
+    let mut current: Option<&(dyn Error + 'static)> = Some(err);
+
+    while let Some(e) = current {
+        let msg = e.to_string().to_lowercase();
+
+        if needles.iter().any(|needle| msg.contains(needle)) {
+            return true;
+        }
+
+        current = e.source();
+    }
+
+    false
 }
 
 fn should_send_bearer_auth(api_key: &str) -> bool {

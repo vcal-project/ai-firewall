@@ -5,18 +5,19 @@ use axum::{
 };
 use serde_json::{json, Value};
 
+use crate::upstream::llm::UpstreamErrorKind;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("validation error: {message}")]
     Validation { status: StatusCode, message: String },
 
-    #[error("upstream timeout: {message}")]
-    UpstreamTimeout { message: String },
-
     #[error("upstream error: {message}")]
     Upstream {
         status: Option<StatusCode>,
+        kind: UpstreamErrorKind,
         message: String,
+        hint: Option<String>,
     },
 
     #[error("internal error: {message}")]
@@ -45,23 +46,21 @@ impl AppError {
         }
     }
 
-    pub fn upstream_timeout(message: impl Into<String>) -> Self {
-        Self::UpstreamTimeout {
-            message: message.into(),
-        }
-    }
-
-    pub fn upstream(message: impl Into<String>) -> Self {
-        Self::Upstream {
-            status: None,
-            message: message.into(),
-        }
-    }
-
     pub fn upstream_with_status(status: StatusCode, message: impl Into<String>) -> Self {
         Self::Upstream {
             status: Some(status),
+            kind: UpstreamErrorKind::HttpStatus,
             message: message.into(),
+            hint: None,
+        }
+    }
+
+    pub fn upstream_kind(kind: UpstreamErrorKind, message: impl Into<String>) -> Self {
+        Self::Upstream {
+            status: None,
+            kind,
+            message: message.into(),
+            hint: kind.default_hint().map(str::to_string),
         }
     }
 
@@ -99,8 +98,7 @@ impl AppError {
     pub fn metrics_class(&self) -> &'static str {
         match self {
             AppError::Validation { .. } => "validation",
-            AppError::UpstreamTimeout { .. } => "upstream_timeout",
-            AppError::Upstream { .. } => "upstream",
+            AppError::Upstream { kind, .. } => kind.metrics_class(),
             AppError::Internal { .. } => "internal",
         }
     }
@@ -114,8 +112,7 @@ impl AppError {
                     "validation_error"
                 }
             }
-            AppError::UpstreamTimeout { .. } => "upstream_timeout",
-            AppError::Upstream { .. } => "upstream_error",
+            AppError::Upstream { kind, .. } => kind.as_str(),
             AppError::Internal { .. } => "internal_error",
         }
     }
@@ -123,8 +120,13 @@ impl AppError {
     pub fn status_code(&self) -> StatusCode {
         match self {
             AppError::Validation { status, .. } => *status,
-            AppError::UpstreamTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
-            AppError::Upstream { status, .. } => status.unwrap_or(StatusCode::BAD_GATEWAY),
+            AppError::Upstream { status, kind, .. } => {
+                if *kind == UpstreamErrorKind::Timeout {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    status.unwrap_or(StatusCode::BAD_GATEWAY)
+                }
+            }
             AppError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -132,9 +134,15 @@ impl AppError {
     pub fn message(&self) -> &str {
         match self {
             AppError::Validation { message, .. } => message,
-            AppError::UpstreamTimeout { message } => message,
             AppError::Upstream { message, .. } => message,
             AppError::Internal { message } => message,
+        }
+    }
+
+    pub fn hint(&self) -> Option<&str> {
+        match self {
+            AppError::Upstream { hint, .. } => hint.as_deref(),
+            _ => None,
         }
     }
 }
@@ -144,15 +152,22 @@ impl IntoResponse for AppError {
         let status = self.status_code();
         let error_type = self.error_type();
         let message = self.message().to_string();
+        let hint = self.hint().map(str::to_string);
+
+        let mut error = json!({
+            "code": status.as_u16(),
+            "message": message,
+            "type": error_type
+        });
+
+        if let Some(hint) = hint {
+            error["hint"] = json!(hint);
+        }
 
         (
             status,
             Json(json!({
-                "error": {
-                    "code": status.as_u16(),
-                    "message": message,
-                    "type": error_type
-                }
+                "error": error
             })),
         )
             .into_response()
