@@ -570,6 +570,10 @@ During shutdown:
 - Upstream requests are bounded by `request_timeout_seconds`
 - Timeouts are explicitly tracked and classified
 
+### Logging
+
+AI Cost Firewall writes logs to stdout/stderr by default and does not manage log files internally. See `docs/operate.md` for examples of collecting logs from Docker Compose or local binary runs.
+
 ---
 
 ## Metrics
