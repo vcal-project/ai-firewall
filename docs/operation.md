@@ -608,6 +608,132 @@ For larger deployments, run pruning periodically through:
 
 ---
 
+## Logging
+
+AI Cost Firewall writes runtime logs to stdout/stderr by default.
+
+It does not create, store, rotate, or manage log files internally. In production, logs should be collected by the runtime environment, such as Docker, Docker Compose, systemd, Kubernetes, or a centralized logging stack.
+
+### Default behavior
+
+When AI Cost Firewall is started from a terminal, logs are printed to the console:
+
+```bash
+./ai-firewall --config configs/ai-firewall.conf
+```
+
+When started in Docker or Docker Compose, logs are captured by the container runtime and can be viewed using standard Docker commands.
+
+### View logs with Docker Compose
+
+```bash
+docker compose logs -f firewall
+```
+
+### View logs from a Docker container
+
+```bash
+docker logs -f <container_name_or_id>
+```
+
+Example:
+
+```bash
+docker logs -f ai-firewall
+```
+
+### Save logs from a local binary run
+
+To save stdout and stderr to a file:
+
+```bash
+./ai-firewall --config configs/ai-firewall.conf > logs.txt 2>&1
+```
+
+To append logs instead of overwriting the file:
+
+```bash
+./ai-firewall --config configs/ai-firewall.conf >> logs.txt 2>&1
+```
+
+To view logs in the terminal and save them at the same time:
+
+```bash
+./ai-firewall --config configs/ai-firewall.conf 2>&1 | tee logs.txt
+```
+
+### Save logs from Docker Compose
+
+To save Docker Compose logs to a file:
+
+```bash
+docker compose logs -f firewall > logs.txt 2>&1
+```
+
+To view Docker Compose logs and save them at the same time:
+
+```bash
+docker compose logs -f firewall 2>&1 | tee logs.txt
+```
+
+### Save logs from Docker run
+
+If AI Cost Firewall is started with `docker run`, shell redirection can also be used:
+
+```bash
+docker run --rm \
+  -p 8080:8080 \
+  -v "$PWD/configs:/configs:ro" \
+  vcal/ai-cost-firewall:latest \
+  --config /configs/ai-firewall.conf > logs.txt 2>&1
+```
+
+To view and save at the same time:
+
+```bash
+docker run --rm \
+  -p 8080:8080 \
+  -v "$PWD/configs:/configs:ro" \
+  vcal/ai-cost-firewall:latest \
+  --config /configs/ai-firewall.conf 2>&1 | tee logs.txt
+```
+
+### Save logs with systemd
+
+When AI Cost Firewall runs as a systemd service, logs are usually available through `journalctl`:
+
+```bash
+journalctl -u ai-firewall -f
+```
+
+To export logs to a file:
+
+```bash
+journalctl -u ai-firewall > logs.txt
+```
+
+To follow logs and save them at the same time:
+
+```bash
+journalctl -u ai-firewall -f | tee logs.txt
+```
+
+### Log retention and rotation
+
+AI Cost Firewall does not rotate log files itself.
+
+Log retention, rotation, and forwarding should be handled by the runtime environment or logging platform, for example:
+
+- Docker logging drivers
+- systemd journald configuration
+- Kubernetes logging infrastructure
+- logrotate
+- centralized logging tools such as Loki, Elasticsearch, or OpenSearch
+
+For containerized deployments, prefer collecting stdout/stderr logs through the container runtime instead of writing application logs directly to files inside the container.
+
+---
+
 ## Troubleshooting
 
 ### Low cache hit rate
