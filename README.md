@@ -255,7 +255,6 @@ The stack includes:
 
 ``` bash
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer <your-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini-2024-07-18",
@@ -264,6 +263,10 @@ curl http://localhost:8080/v1/chat/completions \
     ]
   }'
 ```
+
+> By default, AI Cost Firewall does not require client-side authorization on incoming requests.
+> The `upstream_api_key` in the configuration is used by the firewall when calling the upstream LLM provider.
+> For production deployments, place the firewall behind an authenticated reverse proxy, API gateway, VPN, or private network boundary.
 
 ---
 
