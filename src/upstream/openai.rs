@@ -1,6 +1,8 @@
 use crate::error::AppError;
 use crate::metrics::{UPSTREAM_CALLS, UPSTREAM_REQUEST_DURATION_SECONDS, UPSTREAM_TIMEOUTS_TOTAL};
-use crate::types::openai::{ChatCompletionRequest, ChatCompletionResponse};
+use crate::types::openai::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatCompletionWireResponse,
+};
 use crate::upstream::llm::{LlmUpstream, UpstreamErrorKind};
 use crate::upstream::openai_compat::should_send_bearer_auth;
 
@@ -135,25 +137,46 @@ impl LlmUpstream for OpenAiUpstream {
             ));
         }
 
-        let parsed = serde_json::from_str::<ChatCompletionResponse>(&body).map_err(|e| {
-            tracing::error!(
-                error_class = UpstreamErrorKind::Other.as_str(),
-                upstream_base_url = %self.base_url,
-                model = %req.normalized_model(),
-                error = %e,
-                "failed to parse upstream response body"
-            );
+        let parsed = serde_json::from_str::<ChatCompletionWireResponse>(&body)
+            .map_err(|e| {
+                tracing::error!(
+                    error_class = UpstreamErrorKind::Other.as_str(),
+                    upstream_base_url = %self.base_url,
+                    model = %req.normalized_model(),
+                    error = %e,
+                    "failed to parse upstream response body"
+                );
 
-            AppError::upstream_kind(
-                UpstreamErrorKind::Other,
-                format!(
-                    "Failed to parse upstream response body for model '{}' at '{}': {e}; body: {}",
-                    req.normalized_model(),
-                    self.base_url,
-                    body
-                ),
-            )
-        })?;
+                AppError::upstream_kind(
+                    UpstreamErrorKind::Other,
+                    format!(
+                        "Failed to parse upstream response body for model '{}' at '{}': {e}; body: {}",
+                        req.normalized_model(),
+                        self.base_url,
+                        body
+                    ),
+                )
+            })?
+            .into_normalized(req.normalized_model(), &self.base_url)
+            .map_err(|e| {
+                tracing::error!(
+                    error_class = UpstreamErrorKind::Other.as_str(),
+                    upstream_base_url = %self.base_url,
+                    model = %req.normalized_model(),
+                    error = %e,
+                    "upstream response failed OpenAI-compatible normalization"
+                );
+
+                AppError::upstream_kind(
+                    UpstreamErrorKind::Other,
+                    format!(
+                        "Upstream response for model '{}' at '{}' is not a usable OpenAI-compatible chat response: {}",
+                        req.normalized_model(),
+                        self.base_url,
+                        e
+                    ),
+                )
+            })?;
 
         Ok(parsed)
     }

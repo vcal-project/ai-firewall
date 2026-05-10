@@ -278,9 +278,7 @@ fn semantic_cache_requires_embedding_api_key() {
 
     let err = cfg.validate().unwrap_err().to_string();
 
-    assert!(err.contains(
-        "embedding_api_key must not be empty when semantic_cache_enabled=true"
-    ));
+    assert!(err.contains("embedding_api_key must not be empty when semantic_cache_enabled=true"));
     assert!(err.contains("dummy"));
     assert!(err.contains("none"));
     assert!(err.contains("null"));
