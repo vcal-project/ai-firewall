@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use reqwest::Url;
 use std::{
     collections::{HashMap, HashSet},
     env, fmt, fs,
@@ -104,17 +105,17 @@ impl Config {
         }
 
         // ---- upstream
-        if self.upstream_base_url.trim().is_empty() {
-            errors.push("upstream_base_url must not be empty".into());
-        } else if !looks_like_http_url(&self.upstream_base_url) {
-            errors.push(format!(
-                "invalid upstream_base_url '{}': must start with http:// or https://",
-                self.upstream_base_url
-            ));
+        if let Some(err) =
+            validate_openai_compatible_base_url("upstream_base_url", &self.upstream_base_url)
+        {
+            errors.push(err);
         }
 
         if self.upstream_api_key.trim().is_empty() {
-            errors.push("upstream_api_key must not be empty".into());
+            errors.push(
+                "upstream_api_key must not be empty. For local providers without authentication, use dummy, none, null, or -"
+                    .into(),
+            );
         }
 
         // ---- upstream provider
@@ -173,9 +174,6 @@ impl Config {
             if self.embedding_base_url.trim().is_empty() {
                 missing.push("embedding_base_url");
             }
-            if self.embedding_api_key.trim().is_empty() {
-                missing.push("embedding_api_key");
-            }
             if self.embedding_model.trim().is_empty() {
                 missing.push("embedding_model");
             }
@@ -193,13 +191,17 @@ impl Config {
                 ));
             }
 
-            if !self.embedding_base_url.trim().is_empty()
-                && !looks_like_http_url(&self.embedding_base_url)
+            if self.embedding_api_key.trim().is_empty() {
+                errors.push(
+                    "embedding_api_key must not be empty when semantic_cache_enabled=true. For local embedding providers without authentication, use dummy, none, null, or -"
+                        .into(),
+                );
+            }
+
+            if let Some(err) =
+                validate_openai_compatible_base_url("embedding_base_url", &self.embedding_base_url)
             {
-                errors.push(format!(
-                    "invalid embedding_base_url '{}': must start with http:// or https://",
-                    self.embedding_base_url
-                ));
+                errors.push(err);
             }
 
             // ---- embedding provider
@@ -1066,6 +1068,60 @@ where
 fn looks_like_http_url(s: &str) -> bool {
     let s = s.trim();
     s.starts_with("http://") || s.starts_with("https://")
+}
+
+fn validate_openai_compatible_base_url(name: &str, value: &str) -> Option<String> {
+    let raw = value.trim();
+
+    if raw.is_empty() {
+        return Some(format!("{name} must not be empty"));
+    }
+
+    let parsed = match Url::parse(raw) {
+        Ok(url) => url,
+        Err(e) => {
+            return Some(format!(
+                "invalid {name} '{}': expected a full http:// or https:// base URL: {}",
+                value, e
+            ));
+        }
+    };
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Some(format!(
+                "invalid {name} '{}': unsupported scheme '{}'; use http:// or https://",
+                value, other
+            ));
+        }
+    }
+
+    if parsed.host_str().is_none() {
+        return Some(format!(
+            "invalid {name} '{}': URL must include a hostname",
+            value
+        ));
+    }
+
+    let path = parsed.path().trim_end_matches('/').to_ascii_lowercase();
+
+    if path.ends_with("/chat/completions") || path.ends_with("/embeddings") {
+        return Some(format!(
+            "invalid {name} '{}': configure a base URL, not a full endpoint path. Use the provider root URL or its /v1 base path.",
+            value
+        ));
+    }
+
+    if !path.is_empty() && path != "/" && path != "/v1" && !path.ends_with("/v1") {
+        return Some(format!(
+            "invalid {name} '{}': unsupported OpenAI-compatible base path '{}'. Use the provider root URL or its /v1 base path.",
+            value,
+            parsed.path()
+        ));
+    }
+
+    None
 }
 
 fn warn_if_suspicious(cfg: &Config) {

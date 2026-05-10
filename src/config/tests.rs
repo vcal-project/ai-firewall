@@ -277,8 +277,15 @@ fn semantic_cache_requires_embedding_api_key() {
     cfg.embedding_api_key = "".to_string();
 
     let err = cfg.validate().unwrap_err().to_string();
-    assert!(err.contains("semantic_cache_enabled=true requires:"));
-    assert!(err.contains("embedding_api_key"));
+
+    assert!(err.contains(
+        "embedding_api_key must not be empty when semantic_cache_enabled=true"
+    ));
+    assert!(err.contains("dummy"));
+    assert!(err.contains("none"));
+    assert!(err.contains("null"));
+    assert!(err.contains("-"));
+    assert!(!err.contains("semantic_cache_enabled=true requires: embedding_api_key"));
 }
 
 #[test]
@@ -603,4 +610,68 @@ model_price gpt-4o-mini-2024-07-18 0.15 0.60;
     fs::remove_file(&path).ok();
 
     assert_eq!(cfg.exact_cache_ttl_seconds, 86400);
+}
+
+#[test]
+fn openai_compatible_base_urls_accept_root_and_v1() {
+    for url in [
+        "https://api.openai.com",
+        "https://api.openai.com/v1",
+        "http://ollama:11434",
+        "http://ollama:11434/v1",
+        "http://lmstudio:1234/v1",
+        "http://vllm:8000/v1",
+        "http://litellm:4000/v1",
+    ] {
+        let mut cfg = minimal_valid_config();
+        cfg.upstream_base_url = url.to_string();
+        cfg.embedding_base_url = url.to_string();
+        cfg.semantic_cache_enabled = true;
+
+        assert!(
+            cfg.validate().is_ok(),
+            "expected valid OpenAI-compatible base URL: {url}"
+        );
+    }
+}
+
+#[test]
+fn openai_compatible_base_url_rejects_missing_scheme() {
+    let mut cfg = minimal_valid_config();
+    cfg.upstream_base_url = "localhost:11434/v1".to_string();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("upstream_base_url"));
+    assert!(err.contains("http:// or https://"));
+}
+
+#[test]
+fn openai_compatible_base_url_rejects_full_chat_endpoint() {
+    let mut cfg = minimal_valid_config();
+    cfg.upstream_base_url = "http://localhost:11434/v1/chat/completions".to_string();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("upstream_base_url"));
+    assert!(err.contains("not a full endpoint path"));
+}
+
+#[test]
+fn openai_compatible_base_url_rejects_full_embeddings_endpoint() {
+    let mut cfg = minimal_valid_config();
+    cfg.semantic_cache_enabled = true;
+    cfg.embedding_base_url = "http://localhost:11434/v1/embeddings".to_string();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("embedding_base_url"));
+    assert!(err.contains("not a full endpoint path"));
+}
+
+#[test]
+fn empty_upstream_api_key_suggests_placeholder_values() {
+    let mut cfg = minimal_valid_config();
+    cfg.upstream_api_key = "".to_string();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("upstream_api_key must not be empty"));
+    assert!(err.contains("dummy"));
 }

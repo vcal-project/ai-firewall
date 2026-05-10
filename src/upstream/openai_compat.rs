@@ -87,9 +87,8 @@ mod tests {
 
     #[test]
     fn builds_embeddings_url_from_root_base_url() {
-        let url =
-            build_openai_compat_url("http://ollama:11434", OpenAiCompatEndpoint::Embeddings)
-                .unwrap();
+        let url = build_openai_compat_url("http://ollama:11434", OpenAiCompatEndpoint::Embeddings)
+            .unwrap();
 
         assert_eq!(url, "http://ollama:11434/v1/embeddings");
     }
