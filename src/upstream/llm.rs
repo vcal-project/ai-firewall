@@ -9,6 +9,9 @@ pub enum UpstreamErrorKind {
     Tls,
     Dns,
     Connect,
+    Authentication,
+    NotFound,
+    RateLimited,
     HttpStatus,
     Other,
 }
@@ -22,6 +25,9 @@ impl UpstreamErrorKind {
             UpstreamErrorKind::Connect => "upstream_connect_error",
             UpstreamErrorKind::HttpStatus => "upstream_http_error",
             UpstreamErrorKind::Other => "upstream_error",
+            UpstreamErrorKind::Authentication => "upstream_authentication_error",
+            UpstreamErrorKind::NotFound => "upstream_not_found",
+            UpstreamErrorKind::RateLimited => "upstream_rate_limited",
         }
     }
 
@@ -35,6 +41,9 @@ impl UpstreamErrorKind {
             UpstreamErrorKind::Connect => "Failed to connect to upstream provider.",
             UpstreamErrorKind::HttpStatus => "The upstream provider returned an error response.",
             UpstreamErrorKind::Other => "The upstream provider request failed.",
+            UpstreamErrorKind::Authentication => "The upstream provider rejected authentication.",
+            UpstreamErrorKind::NotFound => "The upstream endpoint was not found.",
+            UpstreamErrorKind::RateLimited => "The upstream provider rate-limited the request.",
         }
     }
 
@@ -53,6 +62,15 @@ impl UpstreamErrorKind {
                 "Increase request_timeout_seconds or check upstream provider latency and availability.",
             ),
             UpstreamErrorKind::HttpStatus | UpstreamErrorKind::Other => None,
+            UpstreamErrorKind::Authentication => Some(
+                "Check upstream_api_key. For local providers without authentication, use dummy, none, null, or -.",
+            ),
+            UpstreamErrorKind::NotFound => Some(
+                "Check upstream_base_url. Configure the provider root URL or its /v1 base path, not the full /chat/completions endpoint.",
+            ),
+            UpstreamErrorKind::RateLimited => Some(
+                "The upstream provider returned 429. Reduce request rate or check provider quota.",
+            ),
         }
     }
 

@@ -125,10 +125,27 @@ impl LlmUpstream for OpenAiUpstream {
         UPSTREAM_REQUEST_DURATION_SECONDS.observe(elapsed);
 
         if !status.is_success() {
-            return Err(AppError::upstream_with_status(
+            let kind = classify_upstream_status(status);
+
+            if kind == UpstreamErrorKind::Timeout {
+                UPSTREAM_TIMEOUTS_TOTAL.inc();
+            }
+
+            tracing::error!(
+                error_class = kind.as_str(),
+                upstream_status = status.as_u16(),
+                upstream_base_url = %self.base_url,
+                model = %req.normalized_model(),
+                body = %body,
+                "upstream provider returned an error response"
+            );
+
+            return Err(AppError::upstream_kind_with_status(
                 status,
+                kind,
                 format!(
-                    "upstream provider returned {} for model '{}' at '{}': {}",
+                    "{} Status: {}. Model: '{}'. Upstream: '{}'. Body: {}",
+                    kind.default_message(),
                     status,
                     req.normalized_model(),
                     self.base_url,
@@ -231,6 +248,16 @@ fn classify_reqwest_error(err: &reqwest::Error) -> UpstreamErrorKind {
     }
 
     UpstreamErrorKind::Other
+}
+
+fn classify_upstream_status(status: reqwest::StatusCode) -> UpstreamErrorKind {
+    match status.as_u16() {
+        401 | 403 => UpstreamErrorKind::Authentication,
+        404 => UpstreamErrorKind::NotFound,
+        408 | 504 => UpstreamErrorKind::Timeout,
+        429 => UpstreamErrorKind::RateLimited,
+        _ => UpstreamErrorKind::HttpStatus,
+    }
 }
 
 fn error_chain_contains(err: &(dyn Error + 'static), needles: &[&str]) -> bool {

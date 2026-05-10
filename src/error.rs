@@ -46,18 +46,22 @@ impl AppError {
         }
     }
 
-    pub fn upstream_with_status(status: StatusCode, message: impl Into<String>) -> Self {
-        Self::Upstream {
-            status: Some(status),
-            kind: UpstreamErrorKind::HttpStatus,
-            message: message.into(),
-            hint: None,
-        }
-    }
-
     pub fn upstream_kind(kind: UpstreamErrorKind, message: impl Into<String>) -> Self {
         Self::Upstream {
             status: None,
+            kind,
+            message: message.into(),
+            hint: kind.default_hint().map(str::to_string),
+        }
+    }
+
+    pub fn upstream_kind_with_status(
+        status: StatusCode,
+        kind: UpstreamErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Upstream {
+            status: Some(status),
             kind,
             message: message.into(),
             hint: kind.default_hint().map(str::to_string),
@@ -120,13 +124,13 @@ impl AppError {
     pub fn status_code(&self) -> StatusCode {
         match self {
             AppError::Validation { status, .. } => *status,
-            AppError::Upstream { status, kind, .. } => {
-                if *kind == UpstreamErrorKind::Timeout {
-                    StatusCode::GATEWAY_TIMEOUT
-                } else {
-                    status.unwrap_or(StatusCode::BAD_GATEWAY)
-                }
-            }
+            AppError::Upstream { status, kind, .. } => match kind {
+                UpstreamErrorKind::Timeout => StatusCode::GATEWAY_TIMEOUT,
+                UpstreamErrorKind::Authentication => StatusCode::BAD_GATEWAY,
+                UpstreamErrorKind::NotFound => StatusCode::BAD_GATEWAY,
+                UpstreamErrorKind::RateLimited => StatusCode::BAD_GATEWAY,
+                _ => status.unwrap_or(StatusCode::BAD_GATEWAY),
+            },
             AppError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
