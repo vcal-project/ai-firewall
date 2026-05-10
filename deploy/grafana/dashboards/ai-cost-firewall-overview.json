@@ -830,33 +830,47 @@
         {
           "editorMode": "code",
           "expr": "rate(aif_upstream_timeouts_total[$__rate_interval])",
-          "legendFormat": "Timeouts/sec",
+          "legendFormat": "Upstream timeouts/sec",
           "range": true,
           "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_embedding_timeouts_total[$__rate_interval])",
+          "legendFormat": "Embedding timeouts/sec",
+          "range": true,
+          "refId": "C"
         },
         {
           "editorMode": "code",
           "expr": "rate(aif_errors_total{class=~\"validation|validation_error\"}[$__rate_interval])",
           "legendFormat": "Validation errors/sec",
           "range": true,
-          "refId": "C"
+          "refId": "D"
         },
         {
           "editorMode": "code",
           "expr": "rate(aif_errors_total{class=~\"upstream|upstream_error\"}[$__rate_interval])",
-          "legendFormat": "Upstream errors/sec",
+          "legendFormat": "Upstream generic errors/sec",
           "range": true,
-          "refId": "D"
+          "refId": "E"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=~\"upstream_authentication_error|upstream_not_found|upstream_rate_limited|upstream_tls_error|upstream_dns_error|upstream_connect_error\"}[$__rate_interval])",
+          "legendFormat": "Provider config/connectivity errors/sec",
+          "range": true,
+          "refId": "F"
         },
         {
           "editorMode": "code",
           "expr": "rate(aif_errors_total{class=~\"internal|internal_error\"}[$__rate_interval])",
           "legendFormat": "Internal errors/sec",
           "range": true,
-          "refId": "E"
+          "refId": "G"
         }
       ],
-      "title": "Runtime and Upstream Signals",
+      "title": "Runtime and Provider Signals",
       "type": "timeseries"
     },
     {
@@ -1121,6 +1135,242 @@
       ],
       "title": "Semantic Store Errors",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(aif_upstream_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "Upstream p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aif_upstream_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "Upstream p95",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(aif_embedding_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "Embedding p50",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aif_embedding_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "Embedding p95",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Provider Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=\"upstream_authentication_error\"}[$__rate_interval])",
+          "legendFormat": "Auth errors/sec",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=\"upstream_not_found\"}[$__rate_interval])",
+          "legendFormat": "Endpoint not found/sec",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=\"upstream_rate_limited\"}[$__rate_interval])",
+          "legendFormat": "Rate limited/sec",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=\"upstream_tls_error\"}[$__rate_interval])",
+          "legendFormat": "TLS errors/sec",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=\"upstream_dns_error\"}[$__rate_interval])",
+          "legendFormat": "DNS errors/sec",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_errors_total{class=\"upstream_connect_error\"}[$__rate_interval])",
+          "legendFormat": "Connect errors/sec",
+          "range": true,
+          "refId": "F"
+        }
+      ],
+      "title": "Provider Error Classes",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -1133,7 +1383,8 @@
     "prometheus",
     "runtime",
     "semantic-cache",
-    "v0.1.6"
+    "v0.1.7",
+    "openai-compatible"
   ],
   "templating": {
     "list": []
@@ -1146,7 +1397,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Overview",
   "uid": "ai-cost-firewall",
-  "version": 3,
+  "version": 4,
   "weekStart": "",
-  "description": "Overview dashboard for AI Cost Firewall v0.1.6: cache outcomes, upstream calls, net savings, embedding overhead, readiness, and semantic cache lifecycle signals."
+  "description": "Overview dashboard for AI Cost Firewall v0.1.7: cache outcomes, upstream calls, net savings, embedding overhead, provider diagnostics, readiness, and semantic cache lifecycle signals."
 }
