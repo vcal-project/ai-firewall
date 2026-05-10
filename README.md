@@ -64,7 +64,7 @@ Shows how the system balances reuse and precision while maintaining near-zero up
 
 # Key Features
 
-- OpenAI-compatible `/v1/chat/completions` endpoint
+- OpenAI-compatible `/v1/chat/completions` gateway endpoint
 - Exact request caching (Redis)
 - Semantic cache (Qdrant)
 - Token and cost savings metrics
@@ -75,6 +75,7 @@ Shows how the system balances reuse and precision while maintaining near-zero up
 - Docker deployment
 - nginx-style configuration
 - Strict startup validation with clear error messages
+- Hardened support for OpenAI-compatible providers and local model gateways
 - Hot configuration reload (`SIGHUP`)
 - Graceful shutdown with request draining (SIGTERM / SIGINT)
 - Readiness and liveness endpoints (`/readyz`, `/healthz`)
@@ -87,52 +88,92 @@ AI Cost Firewall is in an early production-ready stage: suitable for controlled 
 
 ---
 
-# What’s new in v0.1.6
+## OpenAI-compatible providers
 
-v0.1.6 focuses on release hardening, safer diagnostics, and more predictable semantic cache behavior.
+AI Cost Firewall supports practical OpenAI-compatible model and embedding endpoints while keeping the flat config model:
+
+```text
+upstream_provider openai_compatible;
+upstream_base_url <base-url>;
+upstream_api_key <key-or-placeholder>;
+
+embedding_provider openai_compatible;
+embedding_base_url <base-url>;
+embedding_api_key <key-or-placeholder>;
+```
+
+The base URL may be either the provider root URL or its `/v1` base path:
+
+```text
+https://api.openai.com
+https://api.openai.com/v1
+http://ollama:11434
+http://ollama:11434/v1
+http://lmstudio:1234/v1
+http://vllm:8000/v1
+http://litellm:4000/v1
+```
+
+Do not configure the full endpoint path:
+
+```text
+# Wrong
+upstream_base_url http://ollama:11434/v1/chat/completions;
+
+# Correct
+upstream_base_url http://ollama:11434/v1;
+```
+
+For local providers that do not require authentication, use a placeholder key:
+
+```text
+upstream_api_key dummy;
+embedding_api_key dummy;
+```
+
+Accepted placeholder values are `dummy`, `none`, `null`, and `-`.
+
+The main model upstream and embedding provider may use different base URLs. See `configs/examples/` for OpenAI, Ollama, LM Studio, vLLM, LiteLLM, and OpenRouter examples.
+
+This is useful when chat completions are served locally but embeddings are provided by a different OpenAI-compatible service.
+
+---
+
+# What’s new in v0.1.7
+
+v0.1.7 focuses on OpenAI-compatible provider hardening.
 
 ### Key improvements
 
-- `--test-config` remains a static validation command:
-  - parses the config file
-  - validates required directives, value ranges, semantic cache settings, and model validation configuration
-  - exits with `configuration OK`
-  - does not connect to Redis, Qdrant, embedding providers, or upstream LLM providers
-- `--print-config` now prints a masked configuration view instead of raw debug output
-- Startup diagnostics are clearer:
-  - Redis connection failures show the Redis endpoint being used, with credentials masked
-  - Qdrant initialization failures show the Qdrant endpoint, collection, and vector size
-  - startup and reload errors include more useful runtime initialization context
-- Semantic fail-open behavior is clearer:
-  - runtime semantic lookup failures can fail open and continue upstream
-  - startup dependency initialization remains strict
-- Existing Qdrant collections are validated against `qdrant_vector_size` during startup
-- Expired Qdrant semantic entries are filtered before similarity ranking, so expired entries cannot hide valid semantic hits
-- Semantic pruning consistently removes expired entries from Qdrant where `expires_at <= now`
-- OpenAI-compatible upstream and embedding providers skip bearer auth for placeholder keys:
+- More robust OpenAI-compatible endpoint handling for base URLs with or without `/v1`
+- Better support for practical local and self-hosted providers such as Ollama, LM Studio, vLLM, and LiteLLM
+- Separate base URLs for chat-completion upstreams and embedding providers
+- Placeholder API keys for local providers without authentication:
   - `dummy`
   - `none`
   - `null`
   - `-`
-  
-### Previous v0.1.5 improvements
+- Clearer diagnostics for:
+  - invalid base URLs
+  - unsupported endpoint paths
+  - upstream authentication failures
+  - upstream and embedding timeouts
+  - TLS/certificate failures
+  - missing or incomplete OpenAI-compatible response fields
+- More tolerant handling of OpenAI-compatible response quirks, including missing `model` and partial `usage` fields
+- Example configuration files for common OpenAI-compatible providers
 
-v0.1.5 introduced semantic cache lifecycle control:
+### Previous v0.1.6 improvements
 
-- Separate lifecycle controls:
-  - `exact_cache_ttl_seconds`
-  - `semantic_cache_retention_seconds`
-- `cache_ttl_seconds` remains as a backward-compatible default
-- Semantic cache entries include `inserted_at` and `expires_at`
-- Manual cleanup command:
-  ```bash
-  ./target/release/ai-firewall \
-    --config configs/ai-firewall.conf \
-    --prune-expired-semantic-cache
-  ```
-- Improved semantic store observability:
-  - `aif_semantic_store_total`
-  - `aif_semantic_store_errors_total`
+v0.1.6 focused on release hardening, safer diagnostics, and more predictable semantic cache behavior.
+
+- Static `--test-config` validation without connecting to runtime dependencies
+- Masked `--print-config` output
+- Clearer Redis and Qdrant startup diagnostics
+- Strict Qdrant vector-size validation
+- Clearer semantic fail-open behavior
+- Expired semantic entries filtered before similarity ranking
+- Semantic pruning for expired Qdrant entries
 
 ---
 
@@ -283,9 +324,11 @@ listen_addr 0.0.0.0:8080;
 
 redis_url redis://redis:6379;
 
+upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-api-key;
 
+embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
 embedding_api_key sk-your-api-key;
 embedding_model text-embedding-3-small;
@@ -334,7 +377,11 @@ AI Cost Firewall performs strict validation at startup.
 ### Example errors
 
 ```text
-configuration error: semantic_cache_enabled=true requires: embedding_api_key, embedding_model, qdrant_url
+configuration error: semantic_cache_enabled=true requires: embedding_model, qdrant_url
+```
+
+```text
+configuration error: embedding_api_key must not be empty when semantic_cache_enabled=true. For local embedding providers without authentication, use dummy, none, null, or -
 ```
 
 ```text
@@ -507,6 +554,9 @@ Startup behavior is strict: when `semantic_cache_enabled true;` is configured, Q
 
 `semantic_cache_fail_open true;` applies to runtime semantic lookup failures. It does not bypass startup dependency initialization.
 
+
+For local embedding providers that do not require authentication, set `embedding_api_key` to `dummy`, `none`, `null`, or `-`.
+
 ---
 
 ## Environment Variables
@@ -572,7 +622,7 @@ During shutdown:
 
 ### Logging
 
-AI Cost Firewall writes logs to stdout/stderr by default and does not manage log files internally. See `docs/operate.md` for examples of collecting logs from Docker Compose or local binary runs.
+AI Cost Firewall writes logs to stdout/stderr by default and does not manage log files internally. See `docs/operation.md` for examples of collecting logs from Docker Compose or local binary runs.
 
 ---
 
@@ -618,6 +668,8 @@ Metrics:
 - `aif_errors_total{class=...}` – classified errors
 - `aif_upstream_timeouts_total` – upstream timeout count
 - `aif_upstream_request_duration_seconds` – upstream latency
+- `aif_embedding_request_duration_seconds` – embedding provider request latency
+- `aif_embedding_timeouts_total` – embedding provider timeout count
 - `aif_readiness_state` – readiness (1/0)
 - `aif_shutdown_in_progress` – shutdown state
 - `aif_semantic_candidates_checked_total`
@@ -696,9 +748,15 @@ If cache performance is lower than expected:
    - Increasing latency may indicate provider issues
 
 4. Check error classification:
-   - `validation_error` → request issues
-   - `upstream_timeout` → provider slow
+   - `validation_error` → request or configuration issue
+   - `upstream_authentication_error` → provider rejected the configured API key
+   - `upstream_not_found` → wrong provider base URL or full endpoint path configured
+   - `upstream_timeout` → provider too slow
+   - `upstream_tls_error` → certificate or hostname validation issue
    - `internal_error` → system issue
+   - `upstream_dns_error` → provider hostname cannot be resolved
+   - `upstream_connect_error` → provider host or port is unreachable
+   - `aif_embedding_timeouts_total` increasing → embedding provider is slow or unreachable
 
 ---
 

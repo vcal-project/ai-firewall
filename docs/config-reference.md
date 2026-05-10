@@ -31,7 +31,26 @@ The configuration file is divided into the following logical sections:
 
 ---
 
-## v0.1.6 Notes
+## v0.1.7 Notes
+
+v0.1.7 hardens practical OpenAI-compatible provider support while keeping the flat configuration model.
+
+Key additions:
+
+- OpenAI-compatible base URLs may use either the provider root URL or its `/v1` base path
+- full endpoint paths such as `/v1/chat/completions` and `/v1/embeddings` are rejected during validation
+- upstream and embedding providers may use different base URLs
+- placeholder API keys are supported for local providers without authentication:
+  - `dummy`
+  - `none`
+  - `null`
+  - `-`
+- clearer diagnostics for invalid base URLs, authentication failures, unsupported endpoint paths, timeouts, and TLS/certificate failures
+- more tolerant handling of OpenAI-compatible response quirks, including missing `model` and partial `usage` fields
+
+---
+
+## Previous (v0.1.6)
 
 v0.1.6 hardens configuration diagnostics and semantic cache startup behavior.
 
@@ -47,8 +66,6 @@ Key additions:
   - `none`
   - `null`
   - `-`
-
----
 
 ## Previous (v0.1.5)
 
@@ -80,9 +97,11 @@ listen_addr 0.0.0.0:8080;
 
 redis_url redis://redis:6379;
 
+upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-xxxx;
 
+embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
 embedding_api_key sk-xxxx;
 embedding_model text-embedding-3-small;
@@ -118,6 +137,69 @@ model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 # Embedding pricing (optional, used for cost estimation only)
 embedding_price 0.020;
 ```
+
+## OpenAI-compatible providers
+
+AI Cost Firewall supports OpenAI-compatible model and embedding endpoints through the flat provider model:
+
+```text
+upstream_provider openai_compatible;
+upstream_base_url <base-url>;
+upstream_api_key <key-or-placeholder>;
+
+embedding_provider openai_compatible;
+embedding_base_url <base-url>;
+embedding_api_key <key-or-placeholder>;
+```
+
+The base URL may be either the provider root URL or its `/v1` base path:
+
+```text
+https://api.openai.com
+https://api.openai.com/v1
+http://ollama:11434
+http://ollama:11434/v1
+http://lmstudio:1234/v1
+http://vllm:8000/v1
+http://litellm:4000/v1
+```
+
+Do not configure the full endpoint path:
+
+```text
+# Wrong
+upstream_base_url http://ollama:11434/v1/chat/completions;
+
+# Correct
+upstream_base_url http://ollama:11434/v1;
+```
+
+For local providers that do not require authentication, use a placeholder key:
+
+```text
+upstream_api_key dummy;
+embedding_api_key dummy;
+```
+
+Accepted placeholder values are:
+
+```text
+dummy
+none
+null
+-
+```
+
+When a placeholder key is used, AI Cost Firewall does not send the `Authorization: Bearer ...` header upstream.
+
+The main model upstream and embedding provider may use different base URLs:
+
+```text
+upstream_base_url http://ollama:11434/v1;
+embedding_base_url https://api.openai.com;
+```
+
+This is useful when chat completions are served locally but embeddings are provided by a different OpenAI-compatible service.
 
 ## Model validation
 
@@ -315,6 +397,12 @@ Errors are categorized into:
 - `validation_error`
 - `upstream_error`
 - `upstream_timeout`
+- `upstream_authentication_error`
+- `upstream_not_found`
+- `upstream_rate_limited`
+- `upstream_tls_error`
+- `upstream_dns_error`
+- `upstream_connect_error`
 - `internal_error`
 
 Metric:
@@ -328,6 +416,10 @@ aif_errors_total{class=...}
 - `aif_upstream_request_duration_seconds`
 - `aif_upstream_timeouts_total`
 
+**Embedding provider diagnostics**
+
+- `aif_embedding_request_duration_seconds`
+- `aif_embedding_timeouts_total`
 
 **Semantic cache diagnostics**
 
@@ -337,11 +429,6 @@ aif_errors_total{class=...}
 - `aif_semantic_lookup_duration_seconds`
 - `aif_semantic_store_total`
 - `aif_semantic_store_errors_total`
-
-**Running with explicit config**
-
-- config definitions together
-- runtime behavior grouped logically
 
 ---
 
@@ -437,15 +524,28 @@ redis_url redis://redis:6379;
 These settings define the **LLM provider** the firewall forwards
 requests to.
 
+### upstream_provider
+
+Provider mode for the chat-completion upstream.
+
+Currently supported value:
+
+```text
+upstream_provider openai_compatible;
+```
+
 ### upstream_base_url
 
-Base URL of the upstream API.
+Base URL of the OpenAI-compatible chat-completion provider.
 
-Example:
+The value may be the provider root URL or its `/v1` base path.
+
+Examples:
 
 ```text
 upstream_base_url https://api.openai.com;
-```
+upstream_base_url http://ollama:11434/v1;
+upstream_base_url http://vllm:8000/v1;
 
 ### upstream_api_key
 
@@ -457,20 +557,57 @@ Example:
 upstream_api_key sk-xxxx;
 ```
 
+For local providers that do not require authentication, use `dummy`, `none`, `null`, or `-`. Placeholder keys do not create an upstream `Authorization: Bearer ...` header.
+
+Do not configure the full endpoint path.
+
+Wrong:
+
+```text
+upstream_base_url http://ollama:11434/v1/chat/completions;
+```
+
 ---
 
-## Embedding Settings
+## Embedding Provider Settings
 
 These settings are required when semantic caching is enabled, because prompt embeddings must be generated before performing semantic search.
 
+### embedding_provider
+
+Provider mode for the embedding endpoint.
+
+Currently supported value:
+
+```text
+embedding_provider openai_compatible;
+```
+
 ### embedding_base_url
 
-Base URL of the embedding API.
+Base URL of the OpenAI-compatible embedding provider.
+
+The value may be the provider root URL or its `/v1` base path.
+
+Examples:
+
+```text
+embedding_base_url https://api.openai.com;
+embedding_base_url http://ollama:11434/v1;
+embedding_base_url http://embedding-gateway:8080/v1;
 
 Example:
 
 ```text
 embedding_base_url https://api.openai.com;
+```
+
+Do not configure the full endpoint path
+
+Wrong:
+
+```text
+embedding_base_url http://ollama:11434/v1/embeddings;
 ```
 
 ### embedding_api_key
@@ -482,6 +619,8 @@ Example:
 ```text
 embedding_api_key sk-xxxx;
 ```
+
+For local embedding providers that do not require authentication, use `dummy`, `none`, `null`, or `-`.
 
 ### embedding_model
 
@@ -725,8 +864,6 @@ When started from the project root directory, the firewall automatically loads t
 ```text
 configs/ai-firewall.conf
 ```
-
-when started from the project root directory.
 
 ---
 

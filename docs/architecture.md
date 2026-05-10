@@ -19,7 +19,8 @@ flowchart LR
     Redis[Redis / Valkey<br/>Exact Cache]
     Qdrant[Qdrant<br/>Semantic Cache]
 
-    Upstream[Upstream LLM API<br/>OpenAI-compatible]
+    Upstream[Chat Upstream<br/>OpenAI-compatible]
+    Embedding[Embedding Provider<br/>OpenAI-compatible]
 
     Prom[Prometheus]
     Graf[Grafana]
@@ -29,12 +30,15 @@ flowchart LR
     Firewall --> Redis
     Firewall --> Qdrant
     Firewall --> Upstream
+    Firewall --> Embedding
 
     Firewall --> Prom
     Prom --> Graf
 ```
 
 AI Cost Firewall sits between client applications and LLM providers, reducing latency and cost through exact and semantic caching while exporting Prometheus metrics for observability.
+
+The chat-completion upstream and embedding provider can use the same base URL or different OpenAI-compatible base URLs.
 
 ---
 
@@ -57,6 +61,10 @@ Prometheus metrics provide insight into:
 - cache hit rates
 - token savings
 - API usage patterns
+
+### Provider Compatibility
+
+AI Cost Firewall uses a flat `openai_compatible` provider model so deployments can use OpenAI, local gateways, or self-hosted model servers without provider-specific config blocks.
 
 ---
 
@@ -110,14 +118,13 @@ Benefits:
 
 Qdrant stores embeddings of normalized prompt text in a **vector index**.
 
-Embeddings are generated using the configured embedding model
-(e.g. `text-embedding-3-small`) and stored in the Qdrant vector index.
+Embeddings are requested from the configured OpenAI-compatible embedding provider. The embedding provider may be the same service as the chat-completion upstream, or a separate endpoint configured through `embedding_base_url`.
 
-When an exact match is not found, the firewall performs a **semantic
-similarity search**.
+Embeddings are generated using the configured embedding model (e.g. `text-embedding-3-small`) and stored in the Qdrant vector index.
 
-If a similar prompt is found above the configured similarity threshold,
-the cached response is returned.
+When an exact match is not found, the firewall performs a **semantic similarity search**.
+
+If a similar prompt is found above the configured similarity threshold, the cached response is returned.
 
 Typical thresholds:
 
@@ -129,17 +136,42 @@ Typical thresholds:
 
 ---
 
-## Upstream LLM API
+## OpenAI-Compatible Chat Upstream
 
 If no cached response is found, the firewall forwards the request to the
 configured upstream provider.
 
-Supported providers include:
+Supported upstreams include OpenAI and practical OpenAI-compatible providers such as Ollama, LM Studio, vLLM, LiteLLM, and local or self-hosted gateways.
 
-- OpenAI
-- OpenAI-compatible APIs (e.g. Azure OpenAI, local proxies, etc.)
+The configured `upstream_base_url` may be either the provider root URL or its `/v1` base path. AI Cost Firewall builds the final `/v1/chat/completions` endpoint internally.
 
-The response is then stored in both caches.
+For local providers without authentication, placeholder API keys such as `dummy`, `none`, `null`, or `-` can be used.
+
+---
+
+## OpenAI-Compatible Embedding Provider
+
+Semantic caching requires embeddings for normalized prompt text.
+
+The embedding provider is configured separately from the chat upstream:
+
+```text
+embedding_provider openai_compatible;
+embedding_base_url <base-url>;
+embedding_api_key <key-or-placeholder>;
+embedding_model <embedding-model>;
+```
+
+This allows deployments where chat completions are served by one provider and embeddings are served by another.
+
+Examples:
+
+```text
+upstream_base_url http://ollama:11434/v1;
+embedding_base_url https://api.openai.com;
+```
+
+
 
 ---
 
@@ -152,10 +184,16 @@ Example metrics include:
 ```bash
 aif_requests_total
 aif_upstream_calls_total
+aif_upstream_request_duration_seconds
+aif_upstream_timeouts_total
+aif_embedding_request_duration_seconds
+aif_embedding_timeouts_total
 aif_cache_exact_hits
 aif_cache_semantic_hits
 aif_cache_misses
 aif_tokens_saved
+aif_chat_cost_saved_micro_usd
+aif_embedding_cost_micro_usd
 aif_cost_saved_micro_usd
 aif_semantic_store_total
 aif_semantic_store_errors_total
@@ -163,16 +201,18 @@ aif_semantic_store_errors_total
 
 ### Token and Cost Accounting
 
-AI Cost Firewall currently calculates token and cost savings only for chat-completion responses.
+AI Cost Firewall calculates savings for cached chat-completion responses.
 
-The following metrics reflect savings from cached chat-completion requests:
+The following metrics track gross and net savings:
 
-- aif_tokens_saved
-- aif_cost_saved_micro_usd
+- `aif_tokens_saved`
+- `aif_chat_cost_saved_micro_usd`
+- `aif_embedding_cost_micro_usd`
+- `aif_cost_saved_micro_usd`
 
-Embedding requests performed internally for semantic caching are not included in the accounting in the current version.
+For semantic cache hits, gross savings are based on avoided chat-completion tokens. Embedding lookup cost is deducted when `embedding_price` is configured, so `aif_cost_saved_micro_usd` represents net savings.
 
-Future versions may extend accounting to include embedding costs.
+If `embedding_price` is not configured, embedding cost is treated as zero and savings may be overestimated.
 
 ---
 
@@ -207,8 +247,7 @@ If a hit is found, the response is returned immediately.
 
 ### Stage 2 — Semantic Cache (Qdrant)
 
-If no exact match is found, the firewall searches the Qdrant vector
-database for **similar prompts**.
+If no exact match is found, the firewall searches the Qdrant vector database for **similar prompts**.
 
 If similarity exceeds the configured threshold:
 
@@ -222,8 +261,7 @@ the cached response is returned.
 
 ### Stage 3 — Upstream Request
 
-If neither cache contains a match, the firewall forwards the request to
-the upstream LLM provider.
+If neither cache contains a match, the firewall forwards the request to the upstream LLM provider.
 
 The result is then stored in both caches.
 
@@ -274,7 +312,7 @@ flowchart LR
     Firewall[AI Cost Firewall]
     Redis[Redis / Valkey<br/>Exact Cache]
     Qdrant[Qdrant<br/>Semantic Cache]
-    Upstream[LLM Provider<br/>OpenAI API]
+    Upstream[Chat Upstream<br/>OpenAI-compatible]
 
     Client --> Firewall
 
@@ -307,7 +345,7 @@ Typical performance characteristics on a small cloud instance (4 vCPU):
 | Semantic cache hit | 50–300 req/sec | 50–150 ms |
 | Upstream request | depends on LLM | 0.5–5 s |
 
-In most deployments the firewall is not the bottleneck; latency and throughput are dominated by embedding APIs and upstream LLM providers.
+In most deployments the firewall is not the bottleneck; latency and throughput are dominated by embedding providers, vector search, and upstream chat model latency.
 
 Actual performance depends on infrastructure, network latency, and model latency.
 

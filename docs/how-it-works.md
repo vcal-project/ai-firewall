@@ -7,7 +7,7 @@ The firewall sits between client applications and LLM providers and implements a
 1. Exact cache (Redis)
 2. Semantic cache (Qdrant)
 
-Only if both caches miss does the firewall forward the request to the upstream LLM API.
+Only if both caches miss does the firewall forward the request to the configured OpenAI-compatible upstream.
 
 ## Request Lifecycle Diagram
 
@@ -26,7 +26,7 @@ flowchart TD
 
     E2{Candidate Valid?<br/>similarity &gt; threshold<br/>AND not expired}
 
-    F[Forward Request<br/>to Upstream LLM]
+    F[Forward Request<br/>to OpenAI-compatible Upstream]
 
     G[Receive Upstream Response]
 
@@ -67,14 +67,13 @@ Example request:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer <your-key>" \
   -d '{
     "model": "gpt-4o-mini-2024-07-18",
     "messages": [
       {"role":"user","content":"Explain Redis briefly"}
     ]
   }'
-  ```
+```
 
 > By default, AI Cost Firewall does not require client-side authorization on incoming requests.
 > The `upstream_api_key` in the configuration is used by the firewall when calling the upstream LLM provider.
@@ -157,6 +156,8 @@ The firewall proceeds to semantic search.
 
 The firewall generates an embedding for the normalized prompt text.
 
+Embeddings are generated through the configured OpenAI-compatible embedding provider. The embedding provider may use a different `embedding_base_url` from the main chat upstream.
+
 Example embedding model:
 
 ```
@@ -198,7 +199,7 @@ Cached prompt: "What is Redis used for?"
 Similarity score: 0.94
 ```
 
-In v0.1.6, expired semantic entries are filtered before similarity ranking.
+Expired semantic entries are filtered before similarity ranking.
 
 The lookup flow is:
 
@@ -263,7 +264,7 @@ Example:
 semantic MISS
 ```
 
-In this case, the firewall forwards the request to the upstream LLM API.
+the firewall forwards the request to the configured OpenAI-compatible upstream.
 
 ---
 
@@ -277,15 +278,27 @@ In this case, the firewall forwards the request to the upstream LLM API.
 
 ---
 
-# Step 5 — Upstream LLM Request
+# Step 5 — OpenAI-Compatible Upstream Request
 
-The firewall forwards the request to the configured upstream provider.
+The firewall forwards cache misses to the configured OpenAI-compatible upstream.
 
-Example upstream endpoint:
+The configured `upstream_base_url` may be the provider root URL or its `/v1` base path:
 
-```bash
-https://api.openai.com/v1/chat/completions
+```text
+https://api.openai.com
+http://ollama:11434/v1
+http://vllm:8000/v1
 ```
+
+AI Cost Firewall builds the final chat-completions endpoint internally:
+
+```text
+/v1/chat/completions
+```
+
+Do not configure the full endpoint path as `upstream_base_url`.
+
+For local providers without authentication, `upstream_api_key` may be set to `dummy`, `none`, `null`, or `-`. In that case, AI Cost Firewall does not send an upstream `Authorization: Bearer ...` header.
 
 The upstream response is then returned to the firewall.
 
@@ -314,7 +327,7 @@ Stored data includes:
 - `inserted_at`
 - `expires_at`
 
-The expiration timestamp is calculated using: semantic_cache_retention_seconds
+The expiration timestamp is calculated using `semantic_cache_retention_seconds`.
 
 ---
 
@@ -430,5 +443,10 @@ aif_cache_exact_hits
 aif_cache_semantic_hits
 aif_cache_misses
 aif_upstream_calls_total
+aif_upstream_request_duration_seconds
+aif_upstream_timeouts_total
+aif_embedding_request_duration_seconds
+aif_embedding_timeouts_total
+aif_semantic_lookup_duration_seconds
 ```
 These show whether requests are served from cache or forwarded upstream.

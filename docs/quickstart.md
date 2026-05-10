@@ -2,7 +2,7 @@
 
 This guide explains how to prepare the configuration file and run the **AI Cost Firewall** locally.
 
-The firewall acts as an **OpenAI-compatible API gateway*** that sits between applications and LLM providers to reduce cost and latency through caching.
+The firewall acts as an **OpenAI-compatible API gateway** that sits between applications and LLM providers to reduce cost and latency through caching.
 
 ```text
 Client
@@ -14,7 +14,7 @@ AI Cost Firewall
    ├── Qdrant (semantic cache)
    │
    ▼
-OpenAI API
+OpenAI-compatible upstream
 ```
 
 ## Quickest Start (Docker)
@@ -28,6 +28,7 @@ git clone https://github.com/vcal-project/ai-firewall.git
 cd ai-firewall
 cp configs/ai-firewall.conf.example configs/ai-firewall.conf
 ```
+Provider-specific examples are available under `configs/examples/` for OpenAI, Ollama, LM Studio, vLLM, LiteLLM, and OpenRouter.
 
 Edit the configuration file and add your API keys:
 
@@ -87,11 +88,11 @@ https://raw.githubusercontent.com/vcal-project/ai-firewall/main/security/cosign.
 Example:
 
 ```bash
-docker pull vcalproject/ai-firewall:v0.1.6
+docker pull vcalproject/ai-firewall:v0.1.7
 
 cosign verify \
   --key cosign.pub \
-  vcalproject/ai-firewall:v0.1.6
+  vcalproject/ai-firewall:v0.1.7
 ```
 
 If the verification succeeds, the image was produced and signed by the project maintainers and has not been tampered with.
@@ -109,7 +110,11 @@ Fix: define at least one `model_price` or enable pass-through.
 ### Semantic cache misconfigured
 
 ```text
-configuration error: semantic_cache_enabled=true requires: embedding_api_key, embedding_model, qdrant_url
+configuration error: semantic_cache_enabled=true requires: embedding_model, qdrant_url
+```
+
+```text
+configuration error: embedding_api_key must not be empty when semantic_cache_enabled=true. For local embedding providers without authentication, use dummy, none, null, or -
 ```
 
 Fix: add required fields or disable semantic cache.
@@ -252,7 +257,7 @@ curl http://127.0.0.1:6333/healthz
 
 For MVP testing you can disable semantic cache.
 
-> In v0.1.6, semantic cache entries are not automatically deleted.  
+> Semantic cache entries are not automatically deleted.  
 > Expired entries are filtered during lookup and remain stored until manually pruned.
 
 ---
@@ -297,9 +302,11 @@ listen_addr 0.0.0.0:8080;
 
 redis_url redis://127.0.0.1:6379;
 
+upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-openai-key;
 
+embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
 embedding_api_key sk-your-openai-key;
 embedding_model text-embedding-3-small;
@@ -334,7 +341,38 @@ model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 embedding_price 0.020;
 ```
 
-### Semantic cache lifecycle (v0.1.6)
+### OpenAI-compatible provider URLs
+
+For OpenAI-compatible local providers, `upstream_base_url` and `embedding_base_url` may use either the provider root URL or its `/v1` base path:
+
+```text
+http://ollama:11434
+http://ollama:11434/v1
+http://lmstudio:1234/v1
+http://vllm:8000/v1
+http://litellm:4000/v1
+```
+
+Do not configure the full endpoint path:
+
+```text
+# Wrong
+upstream_base_url http://ollama:11434/v1/chat/completions;
+
+# Correct
+upstream_base_url http://ollama:11434/v1;
+```
+
+For local providers without authentication, use placeholder keys:
+
+```text
+upstream_api_key dummy;
+embedding_api_key dummy;
+```
+
+The main model upstream and embedding provider may use different base URLs.
+
+### Semantic cache lifecycle
 
 Semantic cache entries now include lifecycle metadata:
 
@@ -507,8 +545,6 @@ Or, if the release binary has not been built yet:
 cargo run -- --config configs/ai-firewall.conf --test-config
 ```
 
-if the release binary has not been built yet.
-
 Expected output:
 
 ```text
@@ -636,7 +672,7 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-The firewall will forward the request to the upstream OpenAI API.
+The firewall will forward the request to the configured OpenAI-compatible upstream.
 
 ---
 
@@ -661,6 +697,8 @@ Example metrics:
     aif_cost_saved_micro_usd
     aif_semantic_store_total
     aif_semantic_store_errors_total
+    aif_embedding_request_duration_seconds
+    aif_embedding_timeouts_total
 
 This endpoint works without Prometheus or Grafana. Prometheus and Grafana are included in the Docker Compose stack for scraping, dashboards, and visualization.
 

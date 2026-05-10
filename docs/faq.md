@@ -22,7 +22,7 @@ AI Cost Firewall uses two caching layers:
 Request flow:
 
 ```text
-Client → AI Cost Firewall → Redis → Qdrant → Upstream LLM
+Client → AI Cost Firewall → Redis → Qdrant → OpenAI-compatible upstream
 ```
 
 Only cache misses reach the upstream provider.
@@ -57,11 +57,13 @@ Key metrics include:
 - `aif_cache_exact_hits`
 - `aif_cache_semantic_hits`
 - `aif_cache_misses`
-- `aif_upstream_calls`
+- `aif_upstream_calls_total`
 - `aif_tokens_saved`
 - `aif_cost_saved_micro_usd`
 - `aif_semantic_store_total`
 - `aif_semantic_store_errors_total`
+- `aif_embedding_request_duration_seconds`
+- `aif_embedding_timeouts_total`
 
 
 These metrics can be visualized using **Grafana dashboards**.
@@ -89,13 +91,21 @@ This defines:
 - input token price (USD per 1M tokens)
 - output token price (USD per 1M tokens)
 
-Embedding requests used internally for semantic caching are **not included in cost accounting** in the current version.
+Embedding lookup cost can be included in net savings when `embedding_price` is configured.
+
+Related metrics:
+
+- `aif_chat_cost_saved_micro_usd` — gross avoided chat-completion cost
+- `aif_embedding_cost_micro_usd` — embedding lookup cost
+- `aif_cost_saved_micro_usd` — net savings after embedding cost
+
+If `embedding_price` is not configured, embedding cost is treated as zero and savings may be overestimated.
 
 ---
 
 ## Why does Total Cost Saved show zero?
 
-In v0.1.0, `model_price` matching is exact.
+`model_price` matching is exact.
 
 If the upstream API returns a versioned model name such as:
 
@@ -134,23 +144,126 @@ If semantic caching is disabled, the firewall still works using exact request ca
 
 Yes.
 
-Any provider exposing an **OpenAI-compatible API** can work with the firewall.
+AI Cost Firewall supports practical OpenAI-compatible upstream and embedding endpoints while keeping the flat provider model.
 
 Examples include:
 
 - OpenAI
-- Azure OpenAI
-- local OpenAI-compatible gateways
+- Ollama OpenAI-compatible endpoint
+- LM Studio
+- vLLM
+- LiteLLM
+- other local or self-hosted OpenAI-compatible gateways
 
-You only need to configure:
+Configure the upstream provider with:
 
+```text
+upstream_provider openai_compatible;
+upstream_base_url <base-url>;
+upstream_api_key <key-or-placeholder>;
 ```
-upstream_base_url
-upstream_api_key
+
+The base URL may be either the provider root URL or its /v1 base path:
+
+```text
+https://api.openai.com
+http://ollama:11434
+http://ollama:11434/v1
+http://lmstudio:1234/v1
+http://vllm:8000/v1
+```
+
+Do not configure the full endpoint path:
+
+```text
+# Wrong
+upstream_base_url http://ollama:11434/v1/chat/completions;
+
+# Correct
+upstream_base_url http://ollama:11434/v1;
 ```
 
 ---
 
+## What API key should I use for local providers?
+
+For local OpenAI-compatible providers that do not require authentication, use a placeholder key:
+
+```text
+upstream_api_key dummy;
+embedding_api_key dummy;
+```
+
+Accepted placeholder values are:
+
+```text
+dummy
+none
+null
+-
+```
+
+When a placeholder key is used, AI Cost Firewall does not send the upstream `Authorization: Bearer ...` header.
+
+---
+
+## Can the chat model and embedding model use different providers?
+
+Yes.
+
+The main model upstream and embedding provider can use different base URLs:
+
+```text
+upstream_base_url http://ollama:11434/v1;
+embedding_base_url https://api.openai.com;
+```
+
+This is useful when chat completions are served locally but embeddings are provided by another OpenAI-compatible service.
+
+---
+
+## Why do I get an upstream_not_found error?
+
+`upstream_not_found` usually means the provider returned `404`.
+
+Common causes:
+
+- `upstream_base_url` points to the wrong host or port
+- a full endpoint path was configured instead of a base URL
+- the provider does not expose an OpenAI-compatible `/v1/chat/completions` endpoint
+
+Correct:
+
+```text
+upstream_base_url http://ollama:11434/v1;
+```
+
+Wrong:
+
+```text
+upstream_base_url http://ollama:11434/v1/chat/completions;
+```
+
+---
+
+## Why do I get an upstream_tls_error?
+
+`upstream_tls_error` means TLS certificate verification failed.
+
+Common causes:
+
+- self-signed certificate
+- certificate hostname does not match the configured host
+- missing or invalid Subject Alternative Name
+- corporate proxy or gateway replacing certificates
+
+Fix options:
+
+- use a trusted certificate
+- configure the provider URL with a hostname that matches the certificate
+- use HTTP only inside a trusted private network for local testing
+
+---
 
 ## Which Qdrant port should be used?
 
@@ -176,8 +289,8 @@ No.
 
 The firewall:
 
-- forwards requests unchanged
-- returns responses unchanged
+- forwards compatible chat-completion requests to the configured upstream
+- returns OpenAI-compatible responses to the client
 
 It only performs:
 
@@ -211,10 +324,11 @@ Expected output:
 
 ```text
 configuration OK
-runtime dependencies initialized successfully
 ```
 
-This command verifies configuration syntax and runtime dependencies without starting the HTTP server.
+This command validates the configuration file only. It checks syntax, required directives, value ranges, semantic cache settings, and model validation configuration.
+
+It does not connect to Redis, Qdrant, embedding providers, or upstream LLM providers.
 
 ---
 
@@ -240,12 +354,12 @@ AI Cost Firewall is in an early production-ready stage.
 
 It is designed with production-grade components:
 
-Rust async runtime
-Redis exact cache
-Qdrant semantic cache
-Prometheus + Grafana observability
-Docker deployment
-graceful shutdown and readiness checks
+- Rust async runtime
+- Redis exact cache
+- Qdrant semantic cache
+- Prometheus + Grafana observability
+- Docker deployment
+- graceful shutdown and readiness checks
 
 Recent releases improved:
 
@@ -289,7 +403,7 @@ semantic_similarity_threshold 0.92
 
 Higher → fewer matches.
 
-### 4. Entries expired (v0.1.5)
+### 4. Entries expired
 
 Expired entries are skipped automatically.
 

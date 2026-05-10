@@ -10,7 +10,7 @@ AI Cost Firewall is designed to behave predictably in production environments.
 
 Key capabilities:
 
-- explicit error classification: validation, upstream, timeout, internal
+- explicit error classification: validation, upstream, timeout, authentication, DNS/connect, TLS, and internal errors
 - upstream latency and timeout visibility
 - readiness and liveness separation
 - graceful shutdown with request draining
@@ -19,6 +19,7 @@ Key capabilities:
 - semantic cache lifecycle control
 - strict startup dependency initialization
 - runtime semantic cache fail-open behavior
+- OpenAI-compatible provider diagnostics for upstream and embedding endpoints
 
 ---
 
@@ -204,6 +205,38 @@ This helps distinguish provider slowness from local firewall errors.
 
 ---
 
+## OpenAI-Compatible Provider Diagnostics
+
+AI Cost Firewall classifies common OpenAI-compatible provider failures to make configuration and runtime issues easier to diagnose.
+
+Common upstream error classes include:
+
+```text
+upstream_authentication_error
+upstream_not_found
+upstream_rate_limited
+upstream_timeout
+upstream_tls_error
+upstream_dns_error
+upstream_connect_error
+```
+
+Typical causes:
+
+| Error class | Common cause |
+|---|---|
+| `upstream_authentication_error` | Provider rejected the configured API key |
+| `upstream_not_found` | Wrong `upstream_base_url` or full endpoint path configured |
+| `upstream_rate_limited` | Provider quota or rate limit reached |
+| `upstream_timeout` | Provider did not respond before `request_timeout_seconds` |
+| `upstream_tls_error` | Certificate validation or hostname mismatch |
+| `upstream_dns_error` | Provider hostname cannot be resolved |
+| `upstream_connect_error` | Provider host or port is unreachable |
+
+For local OpenAI-compatible providers without authentication, use a placeholder API key such as `dummy`, `none`, `null`, or `-``.
+
+---
+
 ## Configuration Reload
 
 AI Cost Firewall supports nginx-style hot reload using `SIGHUP`.
@@ -352,12 +385,21 @@ Errors are categorized as:
 - `validation_error`
 - `upstream_error`
 - `upstream_timeout`
+- `upstream_authentication_error`
+- `upstream_not_found`
+- `upstream_rate_limited`
+- `upstream_tls_error`
+- `upstream_dns_error`
+- `upstream_connect_error`
 - `internal_error`
 
 Metric:
 
 ```text
-aif_errors_total{class="..."}
+aif_errors_total{class="validation_error"}
+aif_errors_total{class="upstream_authentication_error"}
+aif_errors_total{class="upstream_timeout"}
+aif_errors_total{class="upstream_tls_error"}
 ```
 
 Examples:
@@ -378,6 +420,17 @@ aif_upstream_calls_total
 ```
 
 These help diagnose provider latency, timeout behavior, and upstream usage.
+
+---
+
+### Embedding Provider Metrics
+
+```text
+aif_embedding_request_duration_seconds
+aif_embedding_timeouts_total
+```
+
+These help diagnose slow or unavailable embedding providers used by semantic cache lookup and storage.
 
 ---
 
@@ -429,7 +482,7 @@ These metrics help tune:
 
 - `semantic_similarity_threshold`
 - `semantic_cache_retention_seconds`
-- embedding provider performance
+- embedding provider performance, together with `aif_embedding_request_duration_seconds` and `aif_embedding_timeouts_total`
 - Qdrant behavior
 
 ---
@@ -684,7 +737,7 @@ If AI Cost Firewall is started with `docker run`, shell redirection can also be 
 docker run --rm \
   -p 8080:8080 \
   -v "$PWD/configs:/configs:ro" \
-  vcal/ai-cost-firewall:latest \
+  vcalproject/ai-cost-firewall:latest \
   --config /configs/ai-firewall.conf > logs.txt 2>&1
 ```
 
@@ -694,7 +747,7 @@ To view and save at the same time:
 docker run --rm \
   -p 8080:8080 \
   -v "$PWD/configs:/configs:ro" \
-  vcal/ai-cost-firewall:latest \
+  vcalproject/ai-cost-firewall:latest \
   --config /configs/ai-firewall.conf 2>&1 | tee logs.txt
 ```
 
@@ -756,6 +809,47 @@ Common causes:
 
 ---
 
+### Upstream provider configuration errors
+
+Check:
+
+```text
+aif_errors_total{class="upstream_authentication_error"}
+aif_errors_total{class="upstream_not_found"}
+aif_errors_total{class="upstream_tls_error"}
+aif_errors_total{class="upstream_dns_error"}
+aif_errors_total{class="upstream_connect_error"}
+```
+
+Common causes:
+
+- wrong `upstream_api_key`
+- local provider configured with a real key requirement but no valid key
+- full endpoint path configured instead of base URL
+- provider hostname cannot be resolved from the firewall container
+- provider port is not reachable
+- self-signed or hostname-mismatched TLS certificate
+
+For local providers without authentication, use:
+
+```text
+upstream_api_key dummy;
+```
+
+For OpenAI-compatible providers, configure the base URL, not the full endpoint:
+
+```test
+# Correct
+upstream_base_url http://ollama:11434/v1;
+
+# Wrong
+upstream_base_url http://ollama:11434/v1/chat/completions;
+```
+
+
+
+---
+
 ### High upstream latency
 
 Check:
@@ -789,6 +883,32 @@ Possible actions:
 - reduce prompt size
 - check network connectivity
 - use a faster model/provider
+
+---
+
+### Frequent embedding timeouts
+
+Check:
+
+```text
+aif_embedding_timeouts_total
+aif_embedding_request_duration_seconds
+```
+
+Common causes:
+
+- embedding provider is slow or overloaded
+- wrong embedding_base_url
+- embedding provider is not reachable from the firewall container
+- embedding model is too slow for the configured timeout
+- semantic cache is enabled but embedding endpoint is misconfigured
+
+Possible actions:
+
+- increase request_timeout_seconds
+- verify embedding_base_url
+- use a faster embedding model/provider
+- disable semantic cache for basic local testing
 
 ---
 
