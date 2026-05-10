@@ -130,6 +130,26 @@ pub static UPSTREAM_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 });
 
 // -----------------------------
+// Embedding provider diagnostics
+// -----------------------------
+
+pub static EMBEDDING_TIMEOUTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_embedding_timeouts_total",
+        "Embedding provider requests that timed out",
+    )
+    .expect("metric aif_embedding_timeouts_total must be valid")
+});
+
+pub static EMBEDDING_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_embedding_request_duration_seconds",
+        "Duration of embedding provider requests in seconds",
+    ))
+    .expect("metric aif_embedding_request_duration_seconds must be valid")
+});
+
+// -----------------------------
 // Semantic diagnostics metrics
 // -----------------------------
 
@@ -221,6 +241,8 @@ pub fn init() {
     Lazy::force(&SEMANTIC_THRESHOLD_RESULTS_TOTAL);
     Lazy::force(&SEMANTIC_LOOKUP_DURATION_SECONDS);
     Lazy::force(&SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL);
+    Lazy::force(&EMBEDDING_TIMEOUTS_TOTAL);
+    Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
 
     INIT.call_once(|| {
         let collectors: Vec<Box<dyn Collector>> = vec![
@@ -249,6 +271,8 @@ pub fn init() {
             Box::new(SEMANTIC_THRESHOLD_RESULTS_TOTAL.clone()),
             Box::new(SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL.clone()),
             Box::new(SEMANTIC_LOOKUP_DURATION_SECONDS.clone()),
+            Box::new(EMBEDDING_TIMEOUTS_TOTAL.clone()),
+            Box::new(EMBEDDING_REQUEST_DURATION_SECONDS.clone()),
         ];
 
         for c in collectors {
