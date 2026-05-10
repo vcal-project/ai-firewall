@@ -125,6 +125,50 @@ mod tests {
     }
 
     #[test]
+    fn builds_urls_for_common_openai_compatible_providers() {
+        let cases = [
+            (
+                "https://api.openai.com",
+                "https://api.openai.com/v1/chat/completions",
+            ),
+            (
+                "https://api.openai.com/v1",
+                "https://api.openai.com/v1/chat/completions",
+            ),
+            (
+                "http://ollama:11434",
+                "http://ollama:11434/v1/chat/completions",
+            ),
+            (
+                "http://ollama:11434/v1",
+                "http://ollama:11434/v1/chat/completions",
+            ),
+            (
+                "http://host.docker.internal:1234/v1",
+                "http://host.docker.internal:1234/v1/chat/completions",
+            ),
+            (
+                "http://vllm:8000/v1",
+                "http://vllm:8000/v1/chat/completions",
+            ),
+            (
+                "http://litellm:4000/v1",
+                "http://litellm:4000/v1/chat/completions",
+            ),
+            (
+                "https://openrouter.ai/api/v1",
+                "https://openrouter.ai/api/v1/chat/completions",
+            ),
+        ];
+
+        for (base, expected) in cases {
+            let actual =
+                build_openai_compat_url(base, OpenAiCompatEndpoint::ChatCompletions).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn placeholder_keys_do_not_send_auth() {
         assert!(!should_send_bearer_auth(""));
         assert!(!should_send_bearer_auth("dummy"));

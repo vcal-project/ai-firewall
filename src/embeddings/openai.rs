@@ -280,3 +280,49 @@ fn embedding_status_message(kind: UpstreamErrorKind) -> &'static str {
         _ => "The embedding provider request failed.",
     }
 }
+
+#[test]
+fn parses_embedding_response_with_missing_usage() {
+    let body = r#"
+    {
+      "object": "list",
+      "data": [
+        {
+          "object": "embedding",
+          "index": 0,
+          "embedding": [0.1, 0.2, 0.3]
+        }
+      ]
+    }
+    "#;
+
+    let parsed: EmbeddingResponse = serde_json::from_str(body).unwrap();
+
+    assert_eq!(parsed.data.len(), 1);
+    assert!(parsed.usage.is_none());
+}
+
+#[test]
+fn parses_embedding_response_with_partial_usage() {
+    let body = r#"
+    {
+      "object": "list",
+      "data": [
+        {
+          "object": "embedding",
+          "index": 0,
+          "embedding": [0.1, 0.2, 0.3]
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 5
+      }
+    }
+    "#;
+
+    let parsed: EmbeddingResponse = serde_json::from_str(body).unwrap();
+
+    let usage = parsed.usage.unwrap();
+    assert_eq!(usage.prompt_tokens, 5);
+    assert_eq!(usage.total_tokens, 0);
+}

@@ -275,3 +275,36 @@ fn error_chain_contains(err: &(dyn Error + 'static), needles: &[&str]) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_common_upstream_http_statuses() {
+        assert_eq!(
+            classify_upstream_status(reqwest::StatusCode::UNAUTHORIZED),
+            UpstreamErrorKind::Authentication
+        );
+        assert_eq!(
+            classify_upstream_status(reqwest::StatusCode::FORBIDDEN),
+            UpstreamErrorKind::Authentication
+        );
+        assert_eq!(
+            classify_upstream_status(reqwest::StatusCode::NOT_FOUND),
+            UpstreamErrorKind::NotFound
+        );
+        assert_eq!(
+            classify_upstream_status(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            UpstreamErrorKind::RateLimited
+        );
+        assert_eq!(
+            classify_upstream_status(reqwest::StatusCode::GATEWAY_TIMEOUT),
+            UpstreamErrorKind::Timeout
+        );
+        assert_eq!(
+            classify_upstream_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            UpstreamErrorKind::HttpStatus
+        );
+    }
+}

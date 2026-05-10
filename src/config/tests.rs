@@ -673,3 +673,46 @@ fn empty_upstream_api_key_suggests_placeholder_values() {
     assert!(err.contains("upstream_api_key must not be empty"));
     assert!(err.contains("dummy"));
 }
+
+#[test]
+fn parses_local_openai_compatible_provider_with_dummy_keys() {
+    let path = temp_config_path("local_openai_compatible");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+
+upstream_provider openai_compatible;
+upstream_base_url http://ollama:11434/v1;
+upstream_api_key dummy;
+
+embedding_provider openai_compatible;
+embedding_base_url http://ollama:11434/v1;
+embedding_api_key dummy;
+embedding_model nomic-embed-text;
+
+qdrant_url http://127.0.0.1:6334;
+qdrant_collection aif_semantic_cache;
+qdrant_vector_size 768;
+
+cache_ttl_seconds 86400;
+request_timeout_seconds 120;
+semantic_cache_enabled true;
+semantic_similarity_threshold 0.92;
+
+allow_unknown_models_pass_through true;
+"#;
+
+    fs::write(&path, text).unwrap();
+
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(cfg.upstream_provider, ProviderKind::OpenAiCompatible);
+    assert_eq!(cfg.upstream_base_url, "http://ollama:11434/v1");
+    assert_eq!(cfg.upstream_api_key, "dummy");
+    assert_eq!(cfg.embedding_base_url, "http://ollama:11434/v1");
+    assert_eq!(cfg.embedding_api_key, "dummy");
+    assert_eq!(cfg.qdrant_vector_size, 768);
+    assert!(cfg.semantic_cache_enabled);
+}

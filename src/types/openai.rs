@@ -143,3 +143,94 @@ impl ChatCompletionRequest {
         self.model.trim()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_response_missing_model() {
+        let body = r#"
+        {
+          "id": "abc",
+          "object": "chat.completion",
+          "created": 123,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "hello",
+                "name": null
+              },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+        "#;
+
+        let wire: ChatCompletionWireResponse = serde_json::from_str(body).unwrap();
+        let normalized = wire
+            .into_normalized("local-model", "http://localhost:11434/v1")
+            .unwrap();
+
+        assert_eq!(normalized.model, "local-model");
+        assert_eq!(normalized.choices.len(), 1);
+    }
+
+    #[test]
+    fn normalizes_partial_usage() {
+        let body = r#"
+        {
+          "id": "abc",
+          "object": "chat.completion",
+          "created": 123,
+          "model": "local-model",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "hello",
+                "name": null
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 10
+          }
+        }
+        "#;
+
+        let wire: ChatCompletionWireResponse = serde_json::from_str(body).unwrap();
+        let normalized = wire
+            .into_normalized("local-model", "http://localhost:11434/v1")
+            .unwrap();
+
+        let usage = normalized.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 10);
+    }
+
+    #[test]
+    fn rejects_response_without_choices() {
+        let body = r#"
+        {
+          "id": "abc",
+          "object": "chat.completion",
+          "created": 123,
+          "model": "local-model",
+          "choices": []
+        }
+        "#;
+
+        let wire: ChatCompletionWireResponse = serde_json::from_str(body).unwrap();
+        let err = wire
+            .into_normalized("local-model", "http://localhost:11434/v1")
+            .unwrap_err();
+
+        assert!(err.contains("no choices"));
+    }
+}
