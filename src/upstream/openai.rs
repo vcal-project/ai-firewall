@@ -2,6 +2,7 @@ use crate::error::AppError;
 use crate::metrics::{UPSTREAM_CALLS, UPSTREAM_REQUEST_DURATION_SECONDS, UPSTREAM_TIMEOUTS_TOTAL};
 use crate::types::openai::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::upstream::llm::{LlmUpstream, UpstreamErrorKind};
+use crate::upstream::openai_compat::should_send_bearer_auth;
 
 use async_trait::async_trait;
 use reqwest::{header, Client};
@@ -43,10 +44,10 @@ impl LlmUpstream for OpenAiUpstream {
         &self,
         req: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, AppError> {
-        let url = format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = crate::upstream::openai_compat::build_openai_compat_url(
+            &self.base_url,
+            crate::upstream::openai_compat::OpenAiCompatEndpoint::ChatCompletions,
+        )?;
 
         let start = Instant::now();
 
@@ -223,31 +224,4 @@ fn error_chain_contains(err: &(dyn Error + 'static), needles: &[&str]) -> bool {
     }
 
     false
-}
-
-fn should_send_bearer_auth(api_key: &str) -> bool {
-    let key = api_key.trim();
-
-    !key.is_empty()
-        && !matches!(
-            key.to_ascii_lowercase().as_str(),
-            "dummy" | "none" | "null" | "-"
-        )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_upstream_keys_do_not_send_auth() {
-        assert!(!should_send_bearer_auth(""));
-        assert!(!should_send_bearer_auth("dummy"));
-        assert!(!should_send_bearer_auth("none"));
-        assert!(!should_send_bearer_auth("null"));
-        assert!(!should_send_bearer_auth("-"));
-        assert!(!should_send_bearer_auth(" DUMMY "));
-        assert!(!should_send_bearer_auth(" None "));
-        assert!(should_send_bearer_auth("sk-real-key"));
-    }
 }

@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::embeddings::provider::{EmbeddingProvider, EmbeddingResult, EmbeddingUsage};
+use crate::upstream::openai_compat::{
+    build_openai_compat_url, should_send_bearer_auth, OpenAiCompatEndpoint,
+};
 
 #[derive(Clone)]
 pub struct OpenAiEmbeddingProvider {
@@ -71,7 +74,8 @@ struct EmbeddingItem {
 #[async_trait]
 impl EmbeddingProvider for OpenAiEmbeddingProvider {
     async fn embed_text(&self, input: &str) -> Result<EmbeddingResult> {
-        let url = format!("{}/v1/embeddings", self.base_url.trim_end_matches('/'));
+        let url = build_openai_compat_url(&self.base_url, OpenAiCompatEndpoint::Embeddings)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         let req = EmbeddingRequest {
             model: &self.model,
@@ -128,25 +132,4 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             model: parsed.model.or_else(|| Some(self.model.clone())),
         })
     }
-}
-
-fn should_send_bearer_auth(api_key: &str) -> bool {
-    let key = api_key.trim();
-
-    !key.is_empty()
-        && !matches!(
-            key.to_ascii_lowercase().as_str(),
-            "dummy" | "none" | "null" | "-"
-        )
-}
-
-#[test]
-fn placeholder_embedding_keys_do_not_send_auth() {
-    assert!(!should_send_bearer_auth(""));
-    assert!(!should_send_bearer_auth("dummy"));
-    assert!(!should_send_bearer_auth("none"));
-    assert!(!should_send_bearer_auth("null"));
-    assert!(!should_send_bearer_auth("-"));
-    assert!(!should_send_bearer_auth(" DUMMY "));
-    assert!(should_send_bearer_auth("sk-real-key"));
 }

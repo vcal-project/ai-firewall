@@ -1,5 +1,6 @@
 pub mod llm;
 pub mod openai;
+pub mod openai_compat;
 
 use std::sync::Arc;
 use std::time::Duration;
