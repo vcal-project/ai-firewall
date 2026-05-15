@@ -737,8 +737,7 @@ If cache performance is lower than expected:
 
 Contributions are welcome.
 
-If you would like to contribute to AI Cost Firewall — whether through bug reports, feature suggestions, documentation improvements, or code —
-please see:
+If you would like to contribute to AI Cost Firewall — whether through bug reports, feature suggestions, documentation improvements, or code — please see:
 
 [CONTRIBUTING.md](CONTRIBUTING.md)
 
