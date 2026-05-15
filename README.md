@@ -11,9 +11,7 @@ AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM
 
 It sits between applications and LLM providers and forwards only necessary requests to the upstream API.
 
-AI Cost Firewall is developed and maintained by VCAL Labs, Inc., the team behind VCAL Server.
-
-https://vcal-project.com
+AI Cost Firewall is developed and maintained by [VCAL Labs, Inc.](https://vcal-project.com), the team behind VCAL Project.
 
 ---
 
@@ -58,7 +56,7 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 Demonstrates semantic cache behavior under realistic conditions: high pass rate (~99%), non-zero threshold failures (boundary cases), and continuous candidate evaluation.
 Shows how the system balances reuse and precision while maintaining near-zero upstream calls and stable latency.*
 
-> Both dashboards are pre-configured and included in the default `docker-compose.yml`. See **Quick Start (Docker)** to run the stack locally.
+> Both dashboards are pre-configured and included in the default `docker-compose.yml`. See [**Quick Start (Docker)**](#quick-start-docker) to run the stack locally.
 
 ---
 
@@ -136,44 +134,6 @@ Accepted placeholder values are `dummy`, `none`, `null`, and `-`.
 The main model upstream and embedding provider may use different base URLs. See `configs/examples/` for OpenAI, Ollama, LM Studio, vLLM, LiteLLM, and OpenRouter examples.
 
 This is useful when chat completions are served locally but embeddings are provided by a different OpenAI-compatible service.
-
----
-
-# What’s new in v0.1.7
-
-v0.1.7 focuses on OpenAI-compatible provider hardening.
-
-### Key improvements
-
-- More robust OpenAI-compatible endpoint handling for base URLs with or without `/v1`
-- Better support for practical local and self-hosted providers such as Ollama, LM Studio, vLLM, and LiteLLM
-- Separate base URLs for chat-completion upstreams and embedding providers
-- Placeholder API keys for local providers without authentication:
-  - `dummy`
-  - `none`
-  - `null`
-  - `-`
-- Clearer diagnostics for:
-  - invalid base URLs
-  - unsupported endpoint paths
-  - upstream authentication failures
-  - upstream and embedding timeouts
-  - TLS/certificate failures
-  - missing or incomplete OpenAI-compatible response fields
-- More tolerant handling of OpenAI-compatible response quirks, including missing `model` and partial `usage` fields
-- Example configuration files for common OpenAI-compatible providers
-
-### Previous v0.1.6 improvements
-
-v0.1.6 focused on release hardening, safer diagnostics, and more predictable semantic cache behavior.
-
-- Static `--test-config` validation without connecting to runtime dependencies
-- Masked `--print-config` output
-- Clearer Redis and Qdrant startup diagnostics
-- Strict Qdrant vector-size validation
-- Clearer semantic fail-open behavior
-- Expired semantic entries filtered before similarity ranking
-- Semantic pruning for expired Qdrant entries
 
 ---
 
@@ -796,12 +756,14 @@ We welcome improvements in:
 
 # Integration with VCAL Server
 
-AI Cost Firewall can optionally integrate with **VCAL Server** for
+AI Cost Firewall can optionally integrate with [**VCAL Server**](https://vcal-project.com/vcal-server) for
 advanced semantic caching and distributed vector storage.
 
-VCAL Server project:
+---
 
-https://vcal-project.com
+# Full documentation
+
+[AI Cost Firewall Docs](https://ai-firewall.docs.vcal-project.com/)
 
 ---
 
