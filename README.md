@@ -74,7 +74,7 @@ Shows how the system balances reuse and precision while maintaining near-zero up
 - nginx-style configuration
 - Strict startup validation with clear error messages
 - Hardened support for OpenAI-compatible providers and local model gateways
-- Hot configuration reload (`SIGHUP`)
+- Signal-driven operations (SIGHUP reload, SIGTERM graceful shutdown)
 - Graceful shutdown with request draining (SIGTERM / SIGINT)
 - Readiness and liveness endpoints (`/readyz`, `/healthz`)
 - Request size protection (`max_request_body_bytes`)
@@ -189,8 +189,6 @@ You should also specify the exact model names returned by your LLM provider (use
 gpt-4o-mini-2024-07-18
 ```
 
-> The repository already includes all required Prometheus and Grafana configuration 
-
 ## Start the stack
 
 This will start the full stack (Firewall, Redis, Qdrant, Prometheus, Grafana):
@@ -250,6 +248,8 @@ The stack includes:
 -   Prometheus
 -   Grafana
 
+> The repository already includes all required Prometheus and Grafana configuration 
+
 ---
 
 # Example Request
@@ -274,8 +274,6 @@ curl http://localhost:8080/v1/chat/completions \
 # Configuration
 
 AI Cost Firewall uses a simple nginx-style configuration format.
-
-- Signal-driven operations (SIGHUP reload, SIGTERM graceful shutdown)
 
 Example configuration:
 
@@ -414,25 +412,29 @@ This ensures consistent and predictable cache behavior across both layers.
 
 Expired semantic cache entries are ignored automatically during lookup, but they are not physically deleted from Qdrant.
 
-To remove expired entries manually, use the same binary and config path as your deployment.
+To remove expired entries manually, run the pruning command with the same configuration file used by your deployment.
+
+Recommended usage depends on how AI Cost Firewall is deployed.
 
 #### Local release binary
+
+Use this when running AI Cost Firewall directly from the source tree:
 
 ```bash
 ./target/release/ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
 ```
 
-Recommended usage depends on how AI Firewall is deployed.
-
 #### Installed binary / systemd deployment
 
-For conservative maintenance windows, stop the service before pruning.
+For conservative maintenance windows, stop the service before pruning:
 
 ```bash
 systemctl stop ai-firewall
 ./target/release/ai-firewall --config configs/ai-firewall.conf --prune-expired-semantic-cache
 systemctl start ai-firewall
 ```
+
+Adjust the config path if your systemd service uses a different --config value.
 
 #### Docker Compose deployment
 
@@ -450,6 +452,14 @@ This command does not stop or modify the running AI Firewall container. It start
 
 The running AI Firewall service continues handling traffic during pruning.
 
+If your Compose service has a different name, replace firewall with the output of:
+
+```bash
+docker compose ps --services
+```
+
+##### Verify Qdrant collection size
+
 To verify the Qdrant collection size before or after pruning:
 
 ```bash
@@ -458,11 +468,7 @@ curl -s http://127.0.0.1:6333/collections/aif_semantic_cache/points/count \
   -d '{"exact": true}'
 ```
 
-> If your Compose service has a different name, replace firewall with the output of:
-
-```bash
-docker compose ps --services
-```
+Replace aif_semantic_cache if your qdrant_collection uses a different name.
 
 ---
 
