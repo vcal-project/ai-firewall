@@ -28,7 +28,7 @@ Without caching, every request results in:
 
 AI Cost Firewall solves this by introducing a two-layer cache:
 
-1.  Exact cache (Redis) -- instant responses for identical prompts\
+1.  Exact cache (Redis) -- instant responses for identical prompts
 2.  Semantic cache (Qdrant) -- reuse answers for similar prompts
 
 Only cache misses are forwarded to the upstream LLM provider.
@@ -44,7 +44,7 @@ The firewall behaves similarly to "nginx for LLM APIs".
 [![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard2.png)](assets/grafana/dashboard2.png)
 
 *Local synthetic workload simulating enterprise support queries (VPN, onboarding, access requests).  
-Demonstrates real-time cost reduction using exact and semantic caching, with full cost breakdown (gross savings, embedding cost, and net savings).*
+Demonstrates real-time cost reduction using exact and semantic caching, with full cost breakdown (gross savings, embedding overhead, and net savings).*
 
 ## Example 2: Semantic Decision Quality & Runtime Behavior
 
@@ -53,7 +53,7 @@ Demonstrates real-time cost reduction using exact and semantic caching, with ful
 [![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics.png)](assets/grafana/ai-firewall-diagnostics.png)
 
 *Mixed synthetic workload simulating enterprise support traffic with both similar and divergent queries.
-Demonstrates semantic cache behavior under realistic conditions: high pass rate (~99%), non-zero threshold failures (boundary cases), and continuous candidate evaluation.
+Demonstrates semantic cache behavior under realistic conditions: high semantic pass rate, non-zero threshold failures (boundary cases), and continuous candidate evaluation.
 Shows how the system balances reuse and precision while maintaining near-zero upstream calls and stable latency.*
 
 > Both dashboards are pre-configured and included in the default `docker-compose.yml`. See [**Quick Start (Docker)**](#quick-start-docker) to run the stack locally.
@@ -65,7 +65,7 @@ Shows how the system balances reuse and precision while maintaining near-zero up
 - OpenAI-compatible `/v1/chat/completions` gateway endpoint
 - Exact request caching (Redis)
 - Semantic cache (Qdrant)
-- Token and cost savings metrics
+- Token, cost, and savings metrics by model and cache type
 - Prometheus observability (cost, cache, errors, runtime behavior)
 - Error classification (validation / upstream / timeout / internal)
 - Upstream latency and timeout tracking
@@ -606,10 +606,11 @@ aif_cache_exact_hits
 aif_cache_semantic_hits
 aif_cache_misses
 aif_tokens_saved
-aif_cost_saved_micro_usd
-aif_inflight_requests
-aif_shutdown_in_progress
-aif_shutdown_rejections_total
+aif_model_cost_micro_usd_total
+aif_gross_saved_micro_usd_total
+aif_net_saved_micro_usd_total
+aif_embedding_overhead_micro_usd_total
+aif_request_cost_micro_usd_total
 ```
 
 ### Note
@@ -623,31 +624,92 @@ Token and cost savings are calculated for:
 For semantic cache hits:
 
 - Gross savings are based on avoided chat-completion tokens
-- Embedding lookup costs are included and deducted
+- Embedding overhead is tracked separately and deducted from net savings
 - Reported savings represent net savings
 
-Metrics:
+Metrics include:
 
-- `aif_chat_cost_saved_micro_usd` – gross chat-completion savings
-- `aif_embedding_cost_micro_usd` – embedding lookup cost
-- `aif_cost_saved_micro_usd` – net savings (gross − embedding cost)
-- `aif_errors_total{class=...}` – classified errors
-- `aif_upstream_timeouts_total` – upstream timeout count
-- `aif_upstream_request_duration_seconds` – upstream latency
-- `aif_embedding_request_duration_seconds` – embedding provider request latency
-- `aif_embedding_timeouts_total` – embedding provider timeout count
-- `aif_readiness_state` – readiness (1/0)
-- `aif_shutdown_in_progress` – shutdown state
+- `aif_requests_total`
+- `aif_cache_exact_hits`
+- `aif_cache_semantic_hits`
+- `aif_cache_misses`
+- `aif_tokens_saved`
+- `aif_inflight_requests`
+- `aif_shutdown_in_progress`
+- `aif_shutdown_rejections_total`
+- `aif_errors_total{class=...}`
+- `aif_upstream_timeouts_total`
+- `aif_upstream_request_duration_seconds`
+- `aif_embedding_request_duration_seconds`
+- `aif_embedding_timeouts_total`
+- `aif_readiness_state`
 - `aif_semantic_candidates_checked_total`
 - `aif_semantic_threshold_results_total{result="pass|fail"}`
 - `aif_semantic_expired_entries_skipped_total`
 - `aif_semantic_lookup_duration_seconds`
-- `aif_semantic_store_total` – semantic cache store attempts
-- `aif_semantic_store_errors_total` – semantic cache store failures
+- `aif_semantic_store_total`
+- `aif_semantic_store_errors_total`
+
+Backward-compatible aggregate cost metrics:
+
+- `aif_chat_cost_saved_micro_usd` – aggregate gross chat-completion savings
+- `aif_embedding_cost_micro_usd` – aggregate embedding overhead
+- `aif_cost_saved_micro_usd` – aggregate net savings
+
+Structured cost intelligence metrics:
+
+- `aif_model_cost_micro_usd_total{model="..."}`
+- `aif_model_requests_total{model="..."}`
+- `aif_model_input_tokens_total{model="..."}`
+- `aif_model_output_tokens_total{model="..."}`
+- `aif_gross_saved_micro_usd_total{model="...", cache_type="exact|semantic"}`
+- `aif_net_saved_micro_usd_total{model="...", cache_type="exact|semantic"}`
+- `aif_embedding_overhead_micro_usd_total{model="...", operation="lookup|store"}`
+- `aif_request_cost_micro_usd_total{model="...", cost_type="chat|embedding"}`
+- `aif_cache_hits_total{model="...", cache_type="exact|semantic"}`
 
 Exact cache hits have no embedding cost.
 
-If embedding_price is not configured, embedding cost is treated as 0 and savings may be overestimated.
+If `embedding_price` is not configured, embedding cost is treated as `0` and savings may be overestimated.
+
+## Understanding cost and savings metrics
+
+AI Cost Firewall reports cost and savings metrics to show where value comes from.
+
+There are two types of cache savings:
+
+- **Exact cache savings**: the request matches a cached request exactly, so the upstream chat call is avoided.
+- **Semantic cache savings**: the request is matched by meaning, so the upstream chat call is avoided, but an embedding lookup is required.
+
+The main accounting model is:
+
+```text
+gross savings = avoided upstream chat completion cost
+embedding overhead = cost of semantic lookup/store embedding calls
+net savings = gross savings - embedding overhead
+```
+
+For exact cache hits, there is no embedding lookup, so:
+
+```text
+net savings ≈ gross savings
+```
+
+For semantic cache hits:
+
+```text
+net savings = avoided chat cost - embedding overhead
+```
+
+This means exact and semantic cache savings should be evaluated separately. Semantic caching is usually most valuable for expensive models, repeated questions, and workloads with many similar prompts. For very cheap models or low-repeat workloads, semantic caching may show lower net savings because embedding overhead can reduce the benefit.
+
+All cost values are reported in micro-USD:
+
+```text
+1 USD = 1,000,000 micro-USD
+```
+
+The Grafana dashboards use these metrics to show estimated chat cost, gross savings, embedding overhead, net savings, per-model cost, and savings by cache type.
 
 ---
 
