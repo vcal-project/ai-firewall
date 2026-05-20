@@ -9,7 +9,7 @@ use crate::{
         pricing::{estimate_embedding_micro_usd, estimate_micro_usd_saved},
     },
     error::AppError,
-    metrics::{self, COST_TYPE_CHAT},
+    metrics::{self, CACHE_TYPE_EXACT, CACHE_TYPE_SEMANTIC, COST_TYPE_CHAT},
     semantic::semantic_cache::SemanticCache,
     types::openai::{ChatCompletionRequest, ChatCompletionResponse},
     upstream::llm::LlmUpstream,
@@ -280,6 +280,10 @@ impl ChatService {
         metrics::CHAT_COST_SAVED_MICRO_USD.inc_by(saved);
         metrics::COST_SAVED_MICRO_USD.inc_by(saved);
 
+        metrics::GROSS_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
+            .inc_by(saved);
+
         if saved == 0 {
             tracing::debug!(
                 "no configured model_price for model '{}'; exact-hit cost_saved not incremented",
@@ -307,6 +311,10 @@ impl ChatService {
         metrics::CHAT_COST_SAVED_MICRO_USD.inc_by(gross_saved);
         metrics::EMBEDDING_COST_MICRO_USD.inc_by(embedding_cost);
         metrics::COST_SAVED_MICRO_USD.inc_by(net_saved);
+
+        metrics::GROSS_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
+            .inc_by(gross_saved);
 
         if gross_saved == 0 {
             tracing::debug!(
