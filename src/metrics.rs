@@ -92,6 +92,17 @@ pub static COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
 // -----------------------------
 
 /// Prompt/input tokens returned by upstream chat completions, grouped by model.
+pub static MODEL_REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_model_requests_total",
+            "Total upstream chat completion requests by model",
+        ),
+        &["model"],
+    )
+    .expect("metric aif_model_requests_total must be valid")
+});
+
 pub static MODEL_INPUT_TOKENS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new(
@@ -125,6 +136,14 @@ pub static MODEL_COST_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
         &["model"],
     )
     .expect("metric aif_model_cost_micro_usd_total must be valid")
+});
+
+pub static CACHE_HITS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new("aif_cache_hits_total", "Cache hits by model and cache type"),
+        &["model", "cache_type"],
+    )
+    .expect("metric aif_cache_hits_total must be valid")
 });
 
 pub static REQUEST_COST_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -342,9 +361,11 @@ pub fn init() {
     Lazy::force(&SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL);
     Lazy::force(&EMBEDDING_TIMEOUTS_TOTAL);
     Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
+    Lazy::force(&MODEL_REQUESTS_TOTAL);
     Lazy::force(&MODEL_INPUT_TOKENS_TOTAL);
     Lazy::force(&MODEL_OUTPUT_TOKENS_TOTAL);
     Lazy::force(&MODEL_COST_MICRO_USD_TOTAL);
+    Lazy::force(&CACHE_HITS_TOTAL);
     Lazy::force(&REQUEST_COST_MICRO_USD_TOTAL);
     Lazy::force(&GROSS_SAVED_MICRO_USD_TOTAL);
     Lazy::force(&NET_SAVED_MICRO_USD_TOTAL);
@@ -366,9 +387,11 @@ pub fn init() {
             Box::new(CHAT_COST_SAVED_MICRO_USD.clone()),
             Box::new(EMBEDDING_COST_MICRO_USD.clone()),
             Box::new(COST_SAVED_MICRO_USD.clone()),
+            Box::new(MODEL_REQUESTS_TOTAL.clone()),
             Box::new(MODEL_INPUT_TOKENS_TOTAL.clone()),
             Box::new(MODEL_OUTPUT_TOKENS_TOTAL.clone()),
             Box::new(MODEL_COST_MICRO_USD_TOTAL.clone()),
+            Box::new(CACHE_HITS_TOTAL.clone()),
             Box::new(REQUEST_COST_MICRO_USD_TOTAL.clone()),
             Box::new(GROSS_SAVED_MICRO_USD_TOTAL.clone()),
             Box::new(NET_SAVED_MICRO_USD_TOTAL.clone()),

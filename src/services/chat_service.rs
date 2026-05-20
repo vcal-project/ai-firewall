@@ -251,6 +251,10 @@ impl ChatService {
 
         let model = response.model.as_str();
 
+        metrics::MODEL_REQUESTS_TOTAL
+            .with_label_values(&[model])
+            .inc();
+
         metrics::MODEL_INPUT_TOKENS_TOTAL
             .with_label_values(&[model])
             .inc_by(usage.prompt_tokens as u64);
@@ -284,6 +288,10 @@ impl ChatService {
     }
 
     fn record_exact_hit_savings(&self, response: &ChatCompletionResponse) {
+        metrics::CACHE_HITS_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
+            .inc();
+
         let Some(usage) = &response.usage else {
             return;
         };
@@ -316,6 +324,10 @@ impl ChatService {
         response: &ChatCompletionResponse,
         embedding_prompt_tokens: u32,
     ) {
+        metrics::CACHE_HITS_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
+            .inc();
+
         let Some(usage) = &response.usage else {
             return;
         };
@@ -327,11 +339,9 @@ impl ChatService {
 
         metrics::TOKENS_SAVED.inc_by(usage.total_tokens as u64);
 
-        // Backward-compatible aggregate metrics.
         metrics::CHAT_COST_SAVED_MICRO_USD.inc_by(gross_saved);
         metrics::COST_SAVED_MICRO_USD.inc_by(net_saved);
 
-        // v0.1.8 structured savings metrics.
         metrics::GROSS_SAVED_MICRO_USD_TOTAL
             .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
             .inc_by(gross_saved);
@@ -340,7 +350,6 @@ impl ChatService {
             .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
             .inc_by(net_saved);
 
-        // v0.1.8 structured overhead metrics.
         self.record_embedding_overhead(
             response.model.as_str(),
             EMBEDDING_OPERATION_LOOKUP,
