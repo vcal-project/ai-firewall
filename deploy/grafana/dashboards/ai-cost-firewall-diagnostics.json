@@ -102,14 +102,11 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
               }
             ]
           },
-          "unit": "bool"
+          "unit": "ops",
+          "decimals": 2
         },
         "overrides": []
       },
@@ -120,64 +117,6 @@
         "y": 0
       },
       "id": 2,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.4.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "aif_shutdown_in_progress",
-          "legendFormat": "",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Shutdown In Progress",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 8,
-        "y": 0
-      },
-      "id": 3,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -196,13 +135,80 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_inflight_requests",
+          "expr": "sum(rate(aif_semantic_candidates_checked_total[$__rate_interval]))",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "In-Flight Requests",
+      "title": "Semantic Lookup Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "green",
+                "value": 60
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "100 * increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range]) / clamp_min(increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range]) + increase(aif_semantic_threshold_results_total{result=\"fail\"}[$__range]), 1)",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Threshold Pass Share",
       "type": "stat"
     },
     {
@@ -222,10 +228,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
               }
             ]
           },
@@ -258,13 +260,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_upstream_timeouts_total[$__range]) + increase(aif_embedding_timeouts_total[$__range])",
+          "expr": "increase(aif_semantic_expired_entries_skipped_total[$__range])",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Provider Timeouts",
+      "title": "Expired Entries Skipped",
       "type": "stat"
     },
     {
@@ -284,14 +286,11 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
               }
             ]
           },
-          "unit": "short"
+          "unit": "currencyUSD",
+          "decimals": 4
         },
         "overrides": []
       },
@@ -320,13 +319,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_shutdown_rejections_total[$__range])",
+          "expr": "sum(increase(aif_embedding_overhead_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Shutdown Rejections",
+      "title": "Embedding Overhead",
       "type": "stat"
     },
     {
@@ -346,14 +345,11 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
               }
             ]
           },
-          "unit": "short"
+          "unit": "currencyUSD",
+          "decimals": 4
         },
         "overrides": []
       },
@@ -382,13 +378,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_semantic_store_errors_total[$__range])",
+          "expr": "sum(increase(aif_net_saved_micro_usd_total{cache_type=\"semantic\"}[$__range])) / 1000000",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Semantic Store Errors",
+      "title": "Semantic Net Savings",
       "type": "stat"
     },
     {
@@ -443,7 +439,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -472,76 +468,20 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=~\"validation|validation_error\"}[$__rate_interval]))",
-          "legendFormat": "Validation/sec",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(aif_semantic_lookup_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "Semantic lookup p50",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream_timeout\"}[$__rate_interval]))",
-          "legendFormat": "Upstream timeout/sec",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aif_semantic_lookup_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "Semantic lookup p95",
           "range": true,
           "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=~\"upstream|upstream_error\"}[$__rate_interval]))",
-          "legendFormat": "Upstream generic/sec",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream_authentication_error\"}[$__rate_interval]))",
-          "legendFormat": "Auth/sec",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream_not_found\"}[$__rate_interval]))",
-          "legendFormat": "Endpoint not found/sec",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream_rate_limited\"}[$__rate_interval]))",
-          "legendFormat": "Rate limited/sec",
-          "range": true,
-          "refId": "F"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream_tls_error\"}[$__rate_interval]))",
-          "legendFormat": "TLS/sec",
-          "range": true,
-          "refId": "G"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream_dns_error\"}[$__rate_interval]))",
-          "legendFormat": "DNS/sec",
-          "range": true,
-          "refId": "H"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=\"upstream_connect_error\"}[$__rate_interval]))",
-          "legendFormat": "Connect/sec",
-          "range": true,
-          "refId": "I"
-        },
-        {
-          "editorMode": "code",
-          "expr": "sum(rate(aif_errors_total{class=~\"internal|internal_error\"}[$__rate_interval]))",
-          "legendFormat": "Internal/sec",
-          "range": true,
-          "refId": "J"
         }
       ],
-      "title": "Error Classification Rate",
+      "title": "Semantic Lookup Latency",
       "type": "timeseries"
     },
     {
@@ -650,23 +590,9 @@
           "legendFormat": "Embedding p95",
           "range": true,
           "refId": "D"
-        },
-        {
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(aif_semantic_lookup_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "Semantic lookup p50",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(aif_semantic_lookup_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "Semantic lookup p95",
-          "range": true,
-          "refId": "F"
         }
       ],
-      "title": "Provider and Semantic Latency Diagnostics",
+      "title": "Provider and Embedding Latency",
       "type": "timeseries"
     },
     {
@@ -777,7 +703,7 @@
           "refId": "D"
         }
       ],
-      "title": "Semantic Threshold and Expiration Decisions",
+      "title": "Semantic Decisions and Expiration",
       "type": "timeseries"
     },
     {
@@ -832,7 +758,8 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "currencyUSD",
+          "decimals": 6
         },
         "overrides": []
       },
@@ -861,27 +788,20 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(aif_semantic_store_total[$__rate_interval])",
-          "legendFormat": "Store attempts/sec",
+          "expr": "sum by (operation) (rate(aif_embedding_overhead_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "{{operation}} overhead/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "rate(aif_semantic_store_errors_total[$__rate_interval])",
-          "legendFormat": "Store errors/sec",
+          "expr": "sum by (cost_type) (rate(aif_request_cost_micro_usd_total{cost_type=\"embedding\"}[$__rate_interval])) / 1000000",
+          "legendFormat": "{{cost_type}} request cost/sec",
           "range": true,
           "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "100 * rate(aif_semantic_store_errors_total[$__rate_interval]) / clamp_min(rate(aif_semantic_store_total[$__rate_interval]), 1)",
-          "legendFormat": "Store error %",
-          "range": true,
-          "refId": "C"
         }
       ],
-      "title": "Semantic Store Health",
+      "title": "Embedding Overhead Over Time",
       "type": "timeseries"
     },
     {
@@ -892,64 +812,95 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 20
-              },
-              {
                 "color": "green",
-                "value": 60
+                "value": null
               }
             ]
           },
-          "unit": "percent",
-          "decimals": 1
+          "unit": "currencyUSD",
+          "decimals": 4
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 6,
+        "h": 8,
+        "w": 12,
         "x": 0,
         "y": 21
       },
       "id": 11,
       "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
+        "legend": {
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
-          "values": false
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "textMode": "value"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "pluginVersion": "12.4.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range]) / clamp_min(increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range]) + increase(aif_semantic_threshold_results_total{result=\"fail\"}[$__range]), 1)",
-          "legendFormat": "",
+          "expr": "sum by (model) (aif_gross_saved_micro_usd_total{cache_type=\"semantic\"}) / 1000000",
+          "legendFormat": "Gross {{model}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (model) (aif_net_saved_micro_usd_total{cache_type=\"semantic\"}) / 1000000",
+          "legendFormat": "Net {{model}}",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Semantic Threshold Pass Share",
-      "type": "stat"
+      "title": "Gross vs Net Semantic Savings",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -959,7 +910,39 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "thresholds": {
@@ -971,43 +954,51 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "currencyUSD",
+          "decimals": 4
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 6,
+        "h": 8,
+        "w": 12,
+        "x": 12,
         "y": 21
       },
       "id": 12,
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
+        "legend": {
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
-          "values": false
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "textMode": "auto"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "pluginVersion": "12.4.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_semantic_expired_entries_skipped_total[$__range])",
-          "legendFormat": "",
+          "expr": "sum by (cache_type) (aif_gross_saved_micro_usd_total) / 1000000",
+          "legendFormat": "Gross {{cache_type}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (cache_type) (aif_net_saved_micro_usd_total) / 1000000",
+          "legendFormat": "Net {{cache_type}}",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Expired Entries Skipped",
-      "type": "stat"
+      "title": "Exact vs Semantic Savings",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -1017,7 +1008,39 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "thresholds": {
@@ -1029,110 +1052,64 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 12,
-        "y": 21
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 29
       },
       "id": 13,
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
+        "legend": {
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
-          "values": false
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "textMode": "auto"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "pluginVersion": "12.4.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(aif_semantic_store_total[$__range])",
-          "legendFormat": "",
+          "expr": "rate(aif_cache_misses[$__rate_interval])",
+          "legendFormat": "Cache misses/sec",
           "range": true,
           "refId": "A"
-        }
-      ],
-      "title": "Semantic Store Attempts",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 5
-              }
-            ]
-          },
-          "unit": "percent",
-          "decimals": 2
         },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 18,
-        "y": 21
-      },
-      "id": 14,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.4.0",
-      "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * increase(aif_semantic_store_errors_total[$__range]) / clamp_min(increase(aif_semantic_store_total[$__range]), 1)",
-          "legendFormat": "",
+          "expr": "rate(aif_cache_hits_total{cache_type=\"semantic\"}[$__rate_interval])",
+          "legendFormat": "Semantic hits/sec",
           "range": true,
-          "refId": "A"
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_threshold_results_total{result=\"pass\"}[$__rate_interval])",
+          "legendFormat": "Threshold passes/sec",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_threshold_results_total{result=\"fail\"}[$__rate_interval])",
+          "legendFormat": "Threshold fails/sec",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Semantic Store Error Rate",
-      "type": "stat"
+      "title": "Semantic Cache Misses vs Passes",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -1193,10 +1170,242 @@
       "gridPos": {
         "h": 7,
         "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_store_total[$__rate_interval])",
+          "legendFormat": "Store attempts/sec",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_semantic_store_errors_total[$__rate_interval])",
+          "legendFormat": "Store errors/sec",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "100 * rate(aif_semantic_store_errors_total[$__rate_interval]) / clamp_min(rate(aif_semantic_store_total[$__rate_interval]), 1)",
+          "legendFormat": "Store error %",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Semantic Store Health",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
         "x": 0,
-        "y": 27
+        "y": 36
       },
       "id": 15,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, sum by (model) (aif_net_saved_micro_usd_total{cache_type=\"semantic\"}) / 1000000)",
+          "legendFormat": "{{model}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Semantic Net Savings by Model",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 16,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "bottomk(10, sum by (model) (aif_net_saved_micro_usd_total{cache_type=\"semantic\"}) / clamp_min(sum by (model) (aif_gross_saved_micro_usd_total{cache_type=\"semantic\"}), 1))",
+          "legendFormat": "{{model}} net/gross ratio",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Potentially Low-Value Semantic Models",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 43
+      },
+      "id": 17,
       "options": {
         "legend": {
           "calcs": [
@@ -1260,25 +1469,51 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "min": 0,
-          "max": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
                 "color": "green",
-                "value": 1
+                "value": null
               }
             ]
           },
-          "unit": "bool"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -1286,87 +1521,84 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 27
+        "y": 43
       },
-      "id": 16,
+      "id": 18,
       "options": {
-        "displayMode": "basic",
-        "minVizHeight": 10,
-        "minVizWidth": 0,
-        "namePlacement": "auto",
-        "orientation": "horizontal",
-        "reduceOptions": {
+        "legend": {
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
-          "values": false
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "showUnfilled": true,
-        "sizing": "auto",
-        "valueMode": "color"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "pluginVersion": "12.4.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(aif_readiness_state == bool 1)",
-          "legendFormat": "Ready",
+          "expr": "sum(rate(aif_errors_total{class=~\"validation|validation_error\"}[$__rate_interval]))",
+          "legendFormat": "Validation/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "(aif_shutdown_in_progress == bool 1)",
-          "legendFormat": "Shutdown active",
+          "expr": "sum(rate(aif_errors_total{class=\"upstream_authentication_error\"}[$__rate_interval]))",
+          "legendFormat": "Auth/sec",
           "range": true,
           "refId": "B"
         },
         {
           "editorMode": "code",
-          "expr": "(aif_inflight_requests >= bool 0)",
-          "legendFormat": "In-flight metric present",
+          "expr": "sum(rate(aif_errors_total{class=\"upstream_not_found\"}[$__rate_interval]))",
+          "legendFormat": "Endpoint not found/sec",
           "range": true,
           "refId": "C"
         },
         {
           "editorMode": "code",
-          "expr": "(aif_semantic_expired_entries_skipped_total >= bool 0)",
-          "legendFormat": "TTL visibility present",
+          "expr": "sum(rate(aif_errors_total{class=\"upstream_rate_limited\"}[$__rate_interval]))",
+          "legendFormat": "Rate limited/sec",
           "range": true,
           "refId": "D"
         },
         {
           "editorMode": "code",
-          "expr": "(aif_semantic_store_total >= bool 0)",
-          "legendFormat": "Semantic store metric present",
+          "expr": "sum(rate(aif_errors_total{class=\"upstream_tls_error\"}[$__rate_interval]))",
+          "legendFormat": "TLS/sec",
           "range": true,
           "refId": "E"
         },
         {
           "editorMode": "code",
-          "expr": "(aif_cost_saved_micro_usd >= bool 0)",
-          "legendFormat": "Cost metric present",
+          "expr": "sum(rate(aif_errors_total{class=\"upstream_dns_error\"}[$__rate_interval]))",
+          "legendFormat": "DNS/sec",
           "range": true,
           "refId": "F"
         },
         {
           "editorMode": "code",
-          "expr": "(aif_embedding_request_duration_seconds_count >= bool 0)",
-          "legendFormat": "Embedding latency metric present",
+          "expr": "sum(rate(aif_errors_total{class=\"upstream_connect_error\"}[$__rate_interval]))",
+          "legendFormat": "Connect/sec",
           "range": true,
           "refId": "G"
         },
         {
           "editorMode": "code",
-          "expr": "(aif_embedding_timeouts_total >= bool 0)",
-          "legendFormat": "Embedding timeout metric present",
+          "expr": "sum(rate(aif_errors_total{class=~\"internal|internal_error\"}[$__rate_interval]))",
+          "legendFormat": "Internal/sec",
           "range": true,
           "refId": "H"
         }
       ],
-      "title": "Operational Signals",
-      "type": "bargauge"
+      "title": "Provider Error Classes",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -1378,8 +1610,8 @@
     "operations",
     "prometheus",
     "semantic-cache",
-    "v0.1.7",
-    "openai-compatible"
+    "cost-intelligence",
+    "v0.1.8"
   ],
   "templating": {
     "list": []
@@ -1392,7 +1624,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Diagnostics",
   "uid": "ai-cost-firewall-diagnostics",
-  "version": 4,
+  "version": 5,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall v0.1.7 including runtime health, expanded provider error classes, upstream and embedding latency/timeouts, semantic threshold decisions, expiration filtering, store errors, and startup/runtime signals."
+  "description": "Diagnostics dashboard for AI Cost Firewall v0.1.8 including semantic lookup behavior, threshold decisions, embedding overhead, gross vs net savings, cache-type savings, provider latency/errors, and operational health."
 }
