@@ -9,7 +9,10 @@ use crate::{
         pricing::{estimate_embedding_micro_usd, estimate_micro_usd_saved},
     },
     error::AppError,
-    metrics::{self, CACHE_TYPE_EXACT, CACHE_TYPE_SEMANTIC, COST_TYPE_CHAT},
+    metrics::{
+        self, CACHE_TYPE_EXACT, CACHE_TYPE_SEMANTIC, COST_TYPE_CHAT, COST_TYPE_EMBEDDING,
+        EMBEDDING_OPERATION_LOOKUP, EMBEDDING_OPERATION_STORE,
+    },
     semantic::semantic_cache::SemanticCache,
     types::openai::{ChatCompletionRequest, ChatCompletionResponse},
     upstream::llm::LlmUpstream,
@@ -166,18 +169,30 @@ impl ChatService {
             .map_err(|e| AppError::internal(format!("exact cache set failed: {e}")))?;
 
         if self.semantic_cache_enabled && self.semantic_eligible(&req) {
-            if let Err(e) = self
+            match self
                 .semantic_cache
                 .store(req.normalized_model(), &semantic_text, &response)
                 .await
             {
-                self.record_semantic_skip("store_error");
+                Ok(embedding_usage) => {
+                    if let Some(usage) = embedding_usage {
+                        self.record_embedding_overhead(
+                            req.normalized_model(),
+                            EMBEDDING_OPERATION_STORE,
+                            usage.prompt_tokens,
+                        );
+                    }
+                }
 
-                tracing::warn!(
-                    model = %req.normalized_model(),
-                    error = %e,
-                    "semantic store failed; response returned without semantic cache write"
-                );
+                Err(e) => {
+                    self.record_semantic_skip("store_error");
+
+                    tracing::warn!(
+                        model = %req.normalized_model(),
+                        error = %e,
+                        "semantic store failed; response returned without semantic cache write"
+                    );
+                }
             }
         }
 
@@ -284,6 +299,10 @@ impl ChatService {
             .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
             .inc_by(saved);
 
+        metrics::NET_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
+            .inc_by(saved);
+
         if saved == 0 {
             tracing::debug!(
                 "no configured model_price for model '{}'; exact-hit cost_saved not incremented",
@@ -301,20 +320,32 @@ impl ChatService {
             return;
         };
 
-        metrics::TOKENS_SAVED.inc_by(usage.total_tokens as u64);
-
         let gross_saved = estimate_micro_usd_saved(&response.model, usage, &self.model_prices);
         let embedding_cost =
             estimate_embedding_micro_usd(embedding_prompt_tokens, self.embedding_price.as_ref());
         let net_saved = gross_saved.saturating_sub(embedding_cost);
 
+        metrics::TOKENS_SAVED.inc_by(usage.total_tokens as u64);
+
+        // Backward-compatible aggregate metrics.
         metrics::CHAT_COST_SAVED_MICRO_USD.inc_by(gross_saved);
-        metrics::EMBEDDING_COST_MICRO_USD.inc_by(embedding_cost);
         metrics::COST_SAVED_MICRO_USD.inc_by(net_saved);
 
+        // v0.1.8 structured savings metrics.
         metrics::GROSS_SAVED_MICRO_USD_TOTAL
             .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
             .inc_by(gross_saved);
+
+        metrics::NET_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
+            .inc_by(net_saved);
+
+        // v0.1.8 structured overhead metrics.
+        self.record_embedding_overhead(
+            response.model.as_str(),
+            EMBEDDING_OPERATION_LOOKUP,
+            embedding_prompt_tokens,
+        );
 
         if gross_saved == 0 {
             tracing::debug!(
@@ -328,6 +359,35 @@ impl ChatService {
                 embedding_cost_micro_usd = embedding_cost,
                 net_saved_micro_usd = net_saved,
                 "recorded semantic-hit net savings"
+            );
+        }
+    }
+
+    fn record_embedding_overhead(
+        &self,
+        chat_model: &str,
+        operation: &'static str,
+        embedding_prompt_tokens: u32,
+    ) {
+        let embedding_cost =
+            estimate_embedding_micro_usd(embedding_prompt_tokens, self.embedding_price.as_ref());
+
+        metrics::EMBEDDING_COST_MICRO_USD.inc_by(embedding_cost);
+
+        metrics::EMBEDDING_OVERHEAD_MICRO_USD_TOTAL
+            .with_label_values(&[chat_model, operation])
+            .inc_by(embedding_cost);
+
+        metrics::REQUEST_COST_MICRO_USD_TOTAL
+            .with_label_values(&[chat_model, COST_TYPE_EMBEDDING])
+            .inc_by(embedding_cost);
+
+        if embedding_cost == 0 && embedding_prompt_tokens > 0 {
+            tracing::debug!(
+                model = %chat_model,
+                operation = operation,
+                embedding_prompt_tokens = embedding_prompt_tokens,
+                "no configured embedding_price; embedding overhead metrics recorded zero cost"
             );
         }
     }
@@ -483,7 +543,7 @@ mod tests {
             model: &str,
             normalized_prompt: &str,
             response: &ChatCompletionResponse,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<Option<EmbeddingUsage>> {
             let mut state = self.state.lock().unwrap();
             state.store_calls += 1;
 
@@ -494,7 +554,8 @@ mod tests {
             state.last_store_model = Some(model.to_string());
             state.last_store_prompt = Some(normalized_prompt.to_string());
             state.last_store_response = Some(response.clone());
-            Ok(())
+
+            Ok(None)
         }
     }
 

@@ -16,7 +16,7 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 // -----------------------------
 
 pub const COST_TYPE_CHAT: &str = "chat";
-// pub const COST_TYPE_EMBEDDING: &str = "embedding";
+pub const COST_TYPE_EMBEDDING: &str = "embedding";
 
 pub const CACHE_TYPE_EXACT: &str = "exact";
 pub const CACHE_TYPE_SEMANTIC: &str = "semantic";

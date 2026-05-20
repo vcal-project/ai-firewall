@@ -21,5 +21,5 @@ pub trait SemanticCache: Send + Sync {
         model: &str,
         normalized_prompt: &str,
         response: &ChatCompletionResponse,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<Option<EmbeddingUsage>>;
 }

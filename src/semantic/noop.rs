@@ -24,7 +24,7 @@ impl SemanticCache for NoopSemanticCache {
         _model: &str,
         _normalized_prompt: &str,
         _response: &ChatCompletionResponse,
-    ) -> anyhow::Result<()> {
-        Ok(())
+    ) -> anyhow::Result<Option<crate::embeddings::provider::EmbeddingUsage>> {
+        Ok(None)
     }
 }

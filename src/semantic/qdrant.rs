@@ -317,7 +317,7 @@ impl SemanticCache for QdrantSemanticCache {
         model: &str,
         normalized_prompt: &str,
         response: &ChatCompletionResponse,
-    ) -> Result<()> {
+    ) -> Result<Option<crate::embeddings::provider::EmbeddingUsage>> {
         metrics::SEMANTIC_STORE_TOTAL.inc();
 
         let result = async {
@@ -338,6 +338,7 @@ impl SemanticCache for QdrantSemanticCache {
                 }
             };
 
+            let embedding_usage = embedding_result.usage.clone();
             let vector = embedding_result.embedding;
 
             let request_hash = sha256_hex(normalized_prompt);
@@ -403,7 +404,7 @@ impl SemanticCache for QdrantSemanticCache {
                     )
                 })?;
 
-            Ok(())
+            Ok(embedding_usage)
         }
         .await;
 
