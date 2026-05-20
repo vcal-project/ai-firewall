@@ -9,10 +9,7 @@ use crate::{
         pricing::{estimate_embedding_micro_usd, estimate_micro_usd_saved},
     },
     error::AppError,
-    metrics::{
-        self, CACHE_TYPE_EXACT, CACHE_TYPE_SEMANTIC, COST_TYPE_CHAT, COST_TYPE_EMBEDDING,
-        EMBEDDING_OPERATION_LOOKUP,
-    },
+    metrics::{self, COST_TYPE_CHAT},
     semantic::semantic_cache::SemanticCache,
     types::openai::{ChatCompletionRequest, ChatCompletionResponse},
     upstream::llm::LlmUpstream,
@@ -158,7 +155,7 @@ impl ChatService {
 
         let response = self.upstream.chat_completion(&req).await?;
 
-        self.record_upstream_request_cost(&response);
+        self.record_upstream_model_cost(&response);
 
         let raw = serde_json::to_string(&response)
             .map_err(|e| AppError::internal(format!("response encode failed: {e}")))?;
@@ -219,11 +216,50 @@ impl ChatService {
         &self,
         req: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, AppError> {
-        self.upstream.chat_completion(&req).await
+        let response = self.upstream.chat_completion(&req).await?;
+        self.record_upstream_model_cost(&response);
+        Ok(response)
     }
 
     fn exact_cache_key(&self, normalized: &str) -> String {
         format!("chatcmpl:v1:{}", sha256_hex(normalized))
+    }
+
+    fn record_upstream_model_cost(&self, response: &ChatCompletionResponse) {
+        let Some(usage) = &response.usage else {
+            tracing::debug!(
+                model = %response.model,
+                "upstream response has no usage; per-model cost metrics not incremented"
+            );
+            return;
+        };
+
+        let model = response.model.as_str();
+
+        metrics::MODEL_INPUT_TOKENS_TOTAL
+            .with_label_values(&[model])
+            .inc_by(usage.prompt_tokens as u64);
+
+        metrics::MODEL_OUTPUT_TOKENS_TOTAL
+            .with_label_values(&[model])
+            .inc_by(usage.completion_tokens as u64);
+
+        let cost = estimate_micro_usd_saved(&response.model, usage, &self.model_prices);
+
+        metrics::MODEL_COST_MICRO_USD_TOTAL
+            .with_label_values(&[model])
+            .inc_by(cost);
+
+        metrics::REQUEST_COST_MICRO_USD_TOTAL
+            .with_label_values(&[model, COST_TYPE_CHAT])
+            .inc_by(cost);
+
+        if cost == 0 {
+            tracing::debug!(
+                "no configured model_price for model '{}'; per-model cost metrics recorded tokens only",
+                response.model
+            );
+        }
     }
 
     fn record_semantic_skip(&self, reason: &'static str) {
@@ -241,18 +277,8 @@ impl ChatService {
 
         let saved = estimate_micro_usd_saved(&response.model, usage, &self.model_prices);
 
-        // Backward-compatible aggregate metrics.
         metrics::CHAT_COST_SAVED_MICRO_USD.inc_by(saved);
         metrics::COST_SAVED_MICRO_USD.inc_by(saved);
-
-        // v0.1.8 structured metrics.
-        metrics::GROSS_SAVED_MICRO_USD_TOTAL
-            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
-            .inc_by(saved);
-
-        metrics::NET_SAVED_MICRO_USD_TOTAL
-            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
-            .inc_by(saved);
 
         if saved == 0 {
             tracing::debug!(
@@ -278,28 +304,9 @@ impl ChatService {
             estimate_embedding_micro_usd(embedding_prompt_tokens, self.embedding_price.as_ref());
         let net_saved = gross_saved.saturating_sub(embedding_cost);
 
-        // Backward-compatible aggregate metrics.
         metrics::CHAT_COST_SAVED_MICRO_USD.inc_by(gross_saved);
         metrics::EMBEDDING_COST_MICRO_USD.inc_by(embedding_cost);
         metrics::COST_SAVED_MICRO_USD.inc_by(net_saved);
-
-        // v0.1.8 structured savings metrics.
-        metrics::GROSS_SAVED_MICRO_USD_TOTAL
-            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
-            .inc_by(gross_saved);
-
-        metrics::NET_SAVED_MICRO_USD_TOTAL
-            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
-            .inc_by(net_saved);
-
-        // v0.1.8 structured request-cost metrics.
-        metrics::REQUEST_COST_MICRO_USD_TOTAL
-            .with_label_values(&[response.model.as_str(), COST_TYPE_EMBEDDING])
-            .inc_by(embedding_cost);
-
-        metrics::EMBEDDING_OVERHEAD_MICRO_USD_TOTAL
-            .with_label_values(&[response.model.as_str(), EMBEDDING_OPERATION_LOOKUP])
-            .inc_by(embedding_cost);
 
         if gross_saved == 0 {
             tracing::debug!(
@@ -313,25 +320,6 @@ impl ChatService {
                 embedding_cost_micro_usd = embedding_cost,
                 net_saved_micro_usd = net_saved,
                 "recorded semantic-hit net savings"
-            );
-        }
-    }
-
-    fn record_upstream_request_cost(&self, response: &ChatCompletionResponse) {
-        let Some(usage) = &response.usage else {
-            return;
-        };
-
-        let cost = estimate_micro_usd_saved(&response.model, usage, &self.model_prices);
-
-        metrics::REQUEST_COST_MICRO_USD_TOTAL
-            .with_label_values(&[response.model.as_str(), COST_TYPE_CHAT])
-            .inc_by(cost);
-
-        if cost == 0 {
-            tracing::debug!(
-                "no configured model_price for model '{}'; request cost not incremented",
-                response.model
             );
         }
     }
