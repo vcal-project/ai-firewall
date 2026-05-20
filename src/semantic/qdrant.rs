@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{
     core::hashing::sha256_hex,
     embeddings::provider::EmbeddingProvider,
-    metrics,
+    metrics::{self, EMBEDDING_OPERATION_LOOKUP, EMBEDDING_OPERATION_STORE},
     semantic::semantic_cache::{SemanticCache, SemanticLookupHit},
     types::{openai::ChatCompletionResponse, semantic::SemanticCacheRecord},
 };
@@ -159,7 +159,7 @@ impl SemanticCache for QdrantSemanticCache {
                 Ok(result) => result,
                 Err(err) => {
                     metrics::SEMANTIC_PROVIDER_ERRORS_TOTAL
-                        .with_label_values(&["embedding", "lookup"])
+                        .with_label_values(&["embedding", EMBEDDING_OPERATION_LOOKUP])
                         .inc();
 
                     tracing::warn!(
@@ -325,7 +325,7 @@ impl SemanticCache for QdrantSemanticCache {
                 Ok(result) => result,
                 Err(err) => {
                     metrics::SEMANTIC_PROVIDER_ERRORS_TOTAL
-                        .with_label_values(&["embedding", "store"])
+                        .with_label_values(&["embedding", EMBEDDING_OPERATION_STORE])
                         .inc();
 
                     tracing::warn!(

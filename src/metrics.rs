@@ -12,6 +12,19 @@ static INIT: Once = Once::new();
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 
 // -----------------------------
+// Cost and savings metric labels
+// -----------------------------
+
+pub const COST_TYPE_CHAT: &str = "chat";
+pub const COST_TYPE_EMBEDDING: &str = "embedding";
+
+pub const CACHE_TYPE_EXACT: &str = "exact";
+pub const CACHE_TYPE_SEMANTIC: &str = "semantic";
+
+pub const EMBEDDING_OPERATION_LOOKUP: &str = "lookup";
+pub const EMBEDDING_OPERATION_STORE: &str = "store";
+
+// -----------------------------
 // Overview metrics
 // -----------------------------
 
@@ -48,10 +61,12 @@ pub static TOKENS_SAVED: Lazy<IntCounter> = Lazy::new(|| {
         .expect("metric aif_tokens_saved must be valid")
 });
 
+// Backward-compatible aggregate cost/savings metrics.
+// Prefer the labeled v0.1.8 metrics below for new dashboards and accounting logic.
 pub static CHAT_COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_chat_cost_saved_micro_usd",
-        "Estimated gross chat-completion cost saved in micro-USD",
+        "Deprecated aggregate: estimated gross chat-completion cost saved in micro-USD",
     )
     .expect("metric aif_chat_cost_saved_micro_usd must be valid")
 });
@@ -59,7 +74,7 @@ pub static CHAT_COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
 pub static EMBEDDING_COST_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_embedding_cost_micro_usd",
-        "Estimated embedding cost in micro-USD",
+        "Deprecated aggregate: estimated embedding cost in micro-USD",
     )
     .expect("metric aif_embedding_cost_micro_usd must be valid")
 });
@@ -67,9 +82,57 @@ pub static EMBEDDING_COST_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
 pub static COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_cost_saved_micro_usd",
-        "Estimated net cost saved in micro-USD",
+        "Deprecated aggregate: estimated net cost saved in micro-USD",
     )
     .expect("metric aif_cost_saved_micro_usd must be valid")
+});
+
+// -----------------------------
+// Cost and savings intelligence metrics
+// -----------------------------
+
+pub static REQUEST_COST_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_request_cost_micro_usd_total",
+            "Estimated request-related cost in micro-USD by model and cost type",
+        ),
+        &["model", "cost_type"],
+    )
+    .expect("metric aif_request_cost_micro_usd_total must be valid")
+});
+
+pub static GROSS_SAVED_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_gross_saved_micro_usd_total",
+            "Gross avoided upstream chat-completion cost in micro-USD by model and cache type",
+        ),
+        &["model", "cache_type"],
+    )
+    .expect("metric aif_gross_saved_micro_usd_total must be valid")
+});
+
+pub static NET_SAVED_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_net_saved_micro_usd_total",
+            "Net saved cost in micro-USD by model and cache type after accounting for overhead",
+        ),
+        &["model", "cache_type"],
+    )
+    .expect("metric aif_net_saved_micro_usd_total must be valid")
+});
+
+pub static EMBEDDING_OVERHEAD_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_embedding_overhead_micro_usd_total",
+            "Estimated embedding overhead in micro-USD by model and operation",
+        ),
+        &["model", "operation"],
+    )
+    .expect("metric aif_embedding_overhead_micro_usd_total must be valid")
 });
 
 pub static INFLIGHT_REQUESTS: Lazy<IntGauge> = Lazy::new(|| {
@@ -243,6 +306,10 @@ pub fn init() {
     Lazy::force(&SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL);
     Lazy::force(&EMBEDDING_TIMEOUTS_TOTAL);
     Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
+    Lazy::force(&REQUEST_COST_MICRO_USD_TOTAL);
+    Lazy::force(&GROSS_SAVED_MICRO_USD_TOTAL);
+    Lazy::force(&NET_SAVED_MICRO_USD_TOTAL);
+    Lazy::force(&EMBEDDING_OVERHEAD_MICRO_USD_TOTAL);
 
     INIT.call_once(|| {
         let collectors: Vec<Box<dyn Collector>> = vec![
@@ -260,6 +327,10 @@ pub fn init() {
             Box::new(CHAT_COST_SAVED_MICRO_USD.clone()),
             Box::new(EMBEDDING_COST_MICRO_USD.clone()),
             Box::new(COST_SAVED_MICRO_USD.clone()),
+            Box::new(REQUEST_COST_MICRO_USD_TOTAL.clone()),
+            Box::new(GROSS_SAVED_MICRO_USD_TOTAL.clone()),
+            Box::new(NET_SAVED_MICRO_USD_TOTAL.clone()),
+            Box::new(EMBEDDING_OVERHEAD_MICRO_USD_TOTAL.clone()),
             Box::new(INFLIGHT_REQUESTS.clone()),
             Box::new(ERRORS_TOTAL.clone()),
             Box::new(READINESS_STATE.clone()),
