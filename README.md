@@ -41,7 +41,7 @@ The firewall behaves similarly to "nginx for LLM APIs".
 
 **cache hit rate • net savings after embedding overhead • real-time cost reduction**
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/dashboard2.png)](assets/grafana/dashboard2.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-overview-018.png)](assets/grafana/dashboard2.ai-firewall-overview-018.png)
 
 *Local synthetic workload simulating enterprise support queries (VPN, onboarding, access requests).  
 Demonstrates real-time cost reduction using exact and semantic caching, with full cost breakdown (gross savings, embedding overhead, and net savings).*
