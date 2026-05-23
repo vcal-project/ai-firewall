@@ -1,10 +1,71 @@
+
 # AI Cost Firewall Architecture
 
-AI Cost Firewall is designed as a lightweight LLM infrastructure component. It acts as a smart gateway between client applications and OpenAI-compatible APIs, providing caching, cost accounting, and observability. Instead of applications calling LLM providers directly, they send requests through the firewall.
+AI Cost Firewall is a lightweight OpenAI-compatible gateway for LLM cost reduction, semantic caching, operational control, and observability.
 
-The firewall reduces **API costs, latency, and token usage** by caching responses using both **exact matching** and **semantic similarity**.
+Instead of applications calling LLM providers directly, requests pass through AI Cost Firewall first.
 
-The firewall combines **Redis / Valkey exact caching** and **Qdrant semantic caching** to maximize cache hit rates while maintaining response quality.
+The firewall reduces:
+
+- API cost
+- latency
+- repeated token usage
+
+using a two-layer caching strategy:
+
+1. exact cache (Redis / Valkey)
+2. semantic cache (Qdrant)
+
+Only cache misses are forwarded upstream.
+
+---
+
+# Architectural Goals
+
+AI Cost Firewall is designed around four primary goals.
+
+---
+
+## Cost Reduction
+
+Repeated prompts and semantically similar requests are reused from cache instead of repeatedly calling upstream providers.
+
+---
+
+## Latency Reduction
+
+Cache hits avoid upstream model latency and return immediately.
+
+---
+
+## OpenAI-Compatible Flexibility
+
+The firewall uses a flat OpenAI-compatible provider model.
+
+Supported deployment patterns include:
+
+- OpenAI
+- Ollama
+- LM Studio
+- vLLM
+- LiteLLM
+- OpenRouter
+
+without requiring provider-specific configuration blocks.
+
+---
+
+## Operational Visibility
+
+Prometheus metrics and Grafana dashboards provide visibility into:
+
+- request traffic
+- cache reuse
+- semantic behavior
+- latency
+- timeout behavior
+- cost savings
+- embedding overhead
 
 ---
 
@@ -12,23 +73,28 @@ The firewall combines **Redis / Valkey exact caching** and **Qdrant semantic cac
 
 ```mermaid
 flowchart LR
-    Client[Client Application / SDK]
 
-    Firewall[AI Cost Firewall<br/>Rust + Axum Gateway]
+    Client[Client Applications]
+
+    Firewall[AI Cost Firewall<br/>Rust + Axum]
 
     Redis[Redis / Valkey<br/>Exact Cache]
+
     Qdrant[Qdrant<br/>Semantic Cache]
 
     Upstream[Chat Upstream<br/>OpenAI-compatible]
+
     Embedding[Embedding Provider<br/>OpenAI-compatible]
 
     Prom[Prometheus]
+
     Graf[Grafana]
 
     Client --> Firewall
 
     Firewall --> Redis
     Firewall --> Qdrant
+
     Firewall --> Upstream
     Firewall --> Embedding
 
@@ -36,57 +102,111 @@ flowchart LR
     Prom --> Graf
 ```
 
-AI Cost Firewall sits between client applications and LLM providers, reducing latency and cost through exact and semantic caching while exporting Prometheus metrics for observability.
+AI Cost Firewall sits between applications and LLM providers while exposing standard OpenAI-compatible APIs.
 
-The chat-completion upstream and embedding provider can use the same base URL or different OpenAI-compatible base URLs.
-
----
-
-# Core Design Principles
-
-AI Cost Firewall is built around three goals:
-
-### Cost Reduction
-
-Repeated prompts are served from cache, avoiding expensive API calls.
-
-### Latency Reduction
-
-Cached responses are returned instantly without contacting upstream providers.
-
-### Observability
-
-Prometheus metrics provide insight into:
-
-- cache hit rates
-- token savings
-- API usage patterns
-
-### Provider Compatibility
-
-AI Cost Firewall uses a flat `openai_compatible` provider model so deployments can use OpenAI, local gateways, or self-hosted model servers without provider-specific config blocks.
+Applications typically require no SDK changes.
 
 ---
 
-# Components
+# Request Lifecycle
 
-## AI Cost Firewall
+Every request follows a staged pipeline.
 
-The firewall is a **Rust-based HTTP gateway** built with **Axum**.
+```text
+normalize request
+→ exact cache lookup
+→ semantic cache lookup
+→ upstream request
+→ cache storage
+→ response return
+```
+
+---
+
+# Request Flow
+
+```mermaid
+flowchart TD
+
+    A[Client Request]
+
+    B[Normalize Request]
+
+    C{Exact Cache Lookup<br/>Redis}
+
+    D[Return Cached Response]
+
+    E[Generate Embedding]
+
+    F{Semantic Search<br/>Qdrant}
+
+    G{Candidate Valid?<br/>similarity + freshness}
+
+    H[Forward to Upstream]
+
+    I[Receive Upstream Response]
+
+    J[Store Exact Cache]
+
+    K[Store Semantic Cache]
+
+    L[Return Response]
+
+    A --> B
+
+    B --> C
+
+    C -->|HIT| D
+
+    D --> L
+
+    C -->|MISS| E
+
+    E --> F
+
+    F --> G
+
+    G -->|YES| D
+
+    G -->|NO| H
+
+    H --> I
+
+    I --> J
+    I --> K
+
+    J --> L
+    K --> L
+```
+
+---
+
+# Core Components
+
+---
+
+# AI Cost Firewall
+
+AI Cost Firewall is implemented in Rust using:
+
+- Axum
+- Tokio
+- Reqwest
+- Redis
+- Qdrant gRPC
+- Prometheus
 
 Responsibilities include:
 
 - request normalization
-- cache lookup
-- semantic similarity checks
-- upstream API forwarding
-- cache storage
+- cache orchestration
+- semantic similarity evaluation
+- upstream forwarding
 - metrics generation
+- operational diagnostics
+- lifecycle management
 
-The firewall exposes an **OpenAI-compatible API**, allowing existing
-applications to use it without modification.
-
-Example endpoint:
+The firewall exposes OpenAI-compatible endpoints such as:
 
 ```text
 POST /v1/chat/completions
@@ -94,276 +214,559 @@ POST /v1/chat/completions
 
 ---
 
-## Redis / Valkey (Exact Cache)
+# Redis / Valkey — Exact Cache
 
-Redis stores cached responses using an **exact hash of the normalized
-request**.
+Redis stores exact request-response matches.
 
-Example cache key:
+The firewall hashes normalized request payloads:
 
-```bash
+```text
 aif:exact:<sha256>
 ```
 
-
 Benefits:
 
+- extremely low latency
 - constant-time lookup
-- extremely fast responses
-- zero embedding cost
+- zero embedding overhead
+- high throughput
 
----
-
-## Qdrant (Semantic Cache)
-
-Qdrant stores embeddings of normalized prompt text in a **vector index**.
-
-Embeddings are requested from the configured OpenAI-compatible embedding provider. The embedding provider may be the same service as the chat-completion upstream, or a separate endpoint configured through `embedding_base_url`.
-
-Embeddings are generated using the configured embedding model (e.g. `text-embedding-3-small`) and stored in the Qdrant vector index.
-
-When an exact match is not found, the firewall performs a **semantic similarity search**.
-
-If a similar prompt is found above the configured similarity threshold, the cached response is returned.
-
-Typical thresholds:
+Typical exact cache flow:
 
 ```text
-0.85 aggressive caching
-0.92 balanced
-0.97 strict matching
+hash(normalized request)
+→ Redis lookup
+→ cached response
 ```
 
 ---
 
-## OpenAI-Compatible Chat Upstream
+# Qdrant — Semantic Cache
 
-If no cached response is found, the firewall forwards the request to the
-configured upstream provider.
+Qdrant stores semantic embeddings of normalized prompt text.
 
-Supported upstreams include OpenAI and practical OpenAI-compatible providers such as Ollama, LM Studio, vLLM, LiteLLM, and local or self-hosted gateways.
+Semantic cache enables reuse across:
 
-The configured `upstream_base_url` may be either the provider root URL or its `/v1` base path. AI Cost Firewall builds the final `/v1/chat/completions` endpoint internally.
+- paraphrased prompts
+- similar requests
+- recurring support questions
+- repeated agent workflows
 
-For local providers without authentication, placeholder API keys such as `dummy`, `none`, `null`, or `-` can be used.
+Each semantic entry contains:
+
+- embedding vector
+- normalized prompt text
+- cached response payload
+- inserted_at
+- expires_at
+- model metadata
 
 ---
 
-## OpenAI-Compatible Embedding Provider
+# Embedding Providers
 
-Semantic caching requires embeddings for normalized prompt text.
+Embeddings are generated through OpenAI-compatible embedding providers.
 
-The embedding provider is configured separately from the chat upstream:
-
-```text
-embedding_provider openai_compatible;
-embedding_base_url <base-url>;
-embedding_api_key <key-or-placeholder>;
-embedding_model <embedding-model>;
-```
-
-This allows deployments where chat completions are served by one provider and embeddings are served by another.
+The embedding provider may differ from the chat provider.
 
 Examples:
 
+| Chat Provider | Embedding Provider |
+|---|---|
+| OpenAI | OpenAI |
+| OpenAI | Ollama |
+| OpenRouter | OpenAI |
+| Ollama | Ollama |
+
+Typical embedding models:
+
+| Model | Vector Size |
+|---|---|
+| text-embedding-3-small | 1536 |
+| nomic-embed-text | 768 |
+
+---
+
+# Vector Size Validation
+
+The configured vector size must match the embedding model dimension.
+
+Example:
+
+```conf
+embedding_model text-embedding-3-small;
+qdrant_vector_size 1536;
+```
+
+If the Qdrant collection already exists, AI Cost Firewall validates vector compatibility during startup.
+
+Mismatch example:
+
 ```text
+existing collection vector size does not match qdrant_vector_size
+```
+
+---
+
+# Semantic Similarity Evaluation
+
+Qdrant returns semantically similar candidates.
+
+AI Cost Firewall evaluates each candidate using:
+
+```text
+similarity_score >= semantic_similarity_threshold
+AND
+expires_at > now
+```
+
+Typical thresholds:
+
+| Threshold | Behavior |
+|---|---|
+| 0.85 | Aggressive reuse |
+| 0.92 | Balanced |
+| 0.97 | Strict reuse |
+
+Lower thresholds:
+
+- increase semantic reuse
+- increase mismatch risk
+
+Higher thresholds:
+
+- reduce mismatch risk
+- reduce semantic hit rate
+
+---
+
+# Semantic Cache Lifecycle
+
+Semantic entries contain lifecycle metadata:
+
+- inserted_at
+- expires_at
+
+Expiration derives from:
+
+```conf
+semantic_cache_retention_seconds
+```
+
+Expired entries:
+
+- are skipped during lookup
+- are never reused
+- may remain stored until pruned
+
+Semantic correctness does not depend on cleanup.
+
+---
+
+# semantic_cache_fail_open
+
+Optional runtime behavior:
+
+```conf
+semantic_cache_fail_open true;
+```
+
+When enabled:
+
+- semantic lookup failures behave like cache misses
+- requests continue upstream normally
+
+This prevents semantic infrastructure failures from blocking traffic.
+
+It does not bypass startup validation.
+
+---
+
+# OpenAI-Compatible Upstream Providers
+
+When no cache match exists, requests are forwarded upstream.
+
+Supported practical providers include:
+
+- OpenAI
+- Ollama
+- LM Studio
+- vLLM
+- LiteLLM
+- OpenRouter
+
+Example configuration:
+
+```conf
+upstream_provider openai_compatible;
+upstream_base_url https://api.openai.com;
+```
+
+or:
+
+```conf
 upstream_base_url http://ollama:11434/v1;
-embedding_base_url https://api.openai.com;
 ```
 
+AI Cost Firewall internally appends:
 
+```text
+/v1/chat/completions
+```
+
+Do not configure full endpoint paths directly.
 
 ---
 
-## Prometheus Metrics
+# Placeholder Authentication
 
-The firewall exports metrics for monitoring and observability.
+Local providers may not require authentication.
 
-Example metrics include:
+Accepted placeholders:
 
-```bash
-aif_requests_total
-aif_upstream_calls_total
-aif_upstream_request_duration_seconds
-aif_upstream_timeouts_total
-aif_embedding_request_duration_seconds
-aif_embedding_timeouts_total
-aif_cache_exact_hits
-aif_cache_semantic_hits
-aif_cache_misses
-aif_tokens_saved
-aif_chat_cost_saved_micro_usd
-aif_embedding_cost_micro_usd
-aif_cost_saved_micro_usd
-aif_semantic_store_total
-aif_semantic_store_errors_total
+```text
+dummy
+none
+null
+-
 ```
 
-### Token and Cost Accounting
+Example:
 
-AI Cost Firewall calculates savings for cached chat-completion responses.
+```conf
+upstream_api_key dummy;
+embedding_api_key dummy;
+```
 
-The following metrics track gross and net savings:
-
-- `aif_tokens_saved`
-- `aif_chat_cost_saved_micro_usd`
-- `aif_embedding_cost_micro_usd`
-- `aif_cost_saved_micro_usd`
-
-For semantic cache hits, gross savings are based on avoided chat-completion tokens. Embedding lookup cost is deducted when `embedding_price` is configured, so `aif_cost_saved_micro_usd` represents net savings.
-
-If `embedding_price` is not configured, embedding cost is treated as zero and savings may be overestimated.
-
----
-
-## Grafana
-
-Grafana can visualize Prometheus metrics using dashboards.
-
-Typical dashboards include:
-
-- request throughput
-- cache hit ratios
-- token savings
-- estimated cost savings
+When placeholders are used, Authorization headers are not forwarded upstream.
 
 ---
 
 # Two-Layer Cache Strategy
 
-AI Cost Firewall uses a **two-stage caching strategy**.
+AI Cost Firewall uses a staged cache pipeline.
 
-### Stage 1 — Exact Cache (Redis / Valkey)
+---
 
-The firewall first checks Redis for an exact match.
+## Stage 1 — Exact Cache
 
-```bash
-hash(normalized request) -> cached response
+Redis exact cache lookup:
+
+```text
+hash(normalized request)
+→ cached response
 ```
 
-If a hit is found, the response is returned immediately.
+Fastest possible path.
 
 ---
 
-### Stage 2 — Semantic Cache (Qdrant)
+## Stage 2 — Semantic Cache
 
-If no exact match is found, the firewall searches the Qdrant vector database for **similar prompts**.
+Qdrant semantic similarity search:
 
-If similarity exceeds the configured threshold:
-
-```bash
-similar_prompt → cached_response
+```text
+similar_prompt
+→ cached response
 ```
 
-the cached response is returned.
+Used when exact matching fails.
 
 ---
 
-### Stage 3 — Upstream Request
+## Stage 3 — Upstream Request
 
-If neither cache contains a match, the firewall forwards the request to the upstream LLM provider.
+Only requests missing both cache layers reach upstream providers.
 
-The result is then stored in both caches.
+Returned responses are then stored in both caches.
 
 ---
 
-# Request Flow
+# Cache Flow Examples
 
-## Exact Cache Hit (Redis / Valkey)
+---
+
+## Exact Cache Hit
 
 ```mermaid
 flowchart LR
 
-    Client[Client Application]
-    Firewall[AI Cost Firewall]
-    Redis[Redis / Valkey<br/>Exact Cache]
-
     Client --> Firewall
+
     Firewall --> Redis
-    Redis -->|Exact hit| Firewall
+
+    Redis -->|Exact Hit| Firewall
+
     Firewall --> Client
 ```
 
-## Semantic Cache Hit (Qdrant)
+---
+
+## Semantic Cache Hit
 
 ```mermaid
 flowchart LR
 
-    Client[Client Application]
-    Firewall[AI Cost Firewall]
-    Redis[Redis / Valkey<br/>Exact Cache]
-    Qdrant[Qdrant<br/>Semantic Cache]
-
     Client --> Firewall
+
     Firewall --> Redis
+
     Redis -->|Miss| Firewall
 
     Firewall --> Qdrant
-    Qdrant -->|Semantic hit| Firewall
+
+    Qdrant -->|Semantic Hit| Firewall
 
     Firewall --> Client
 ```
-## Cache Miss (Upstream LLM)
+
+---
+
+## Full Upstream Request
 
 ```mermaid
 flowchart LR
 
-    Client[Client Application]
-    Firewall[AI Cost Firewall]
-    Redis[Redis / Valkey<br/>Exact Cache]
-    Qdrant[Qdrant<br/>Semantic Cache]
-    Upstream[Chat Upstream<br/>OpenAI-compatible]
-
     Client --> Firewall
 
     Firewall --> Redis
+
     Redis -->|Miss| Firewall
 
     Firewall --> Qdrant
+
     Qdrant -->|Miss| Firewall
 
     Firewall --> Upstream
-    Upstream -->|Response| Firewall
 
-    Firewall -->|Store exact response| Redis
-    Firewall -->|Store embedding + response| Qdrant
+    Upstream --> Firewall
+
+    Firewall --> Redis
+
+    Firewall --> Qdrant
 
     Firewall --> Client
 ```
 
 ---
 
-# Expected Performance
+# Streaming Behavior
 
-AI Cost Firewall is designed to introduce minimal overhead to LLM API requests.
+Streaming requests are forwarded upstream normally.
 
-Typical performance characteristics on a small cloud instance (4 vCPU):
+Example:
 
-| Scenario | Approx throughput | Typical latency |
-|--------|--------|--------|
-| Exact cache hit | 5k–20k req/sec | 1–3 ms |
-| Semantic cache hit | 50–300 req/sec | 50–150 ms |
-| Upstream request | depends on LLM | 0.5–5 s |
+```json
+{
+  "stream": true
+}
+```
 
-In most deployments the firewall is not the bottleneck; latency and throughput are dominated by embedding providers, vector search, and upstream chat model latency.
+Current behavior:
 
-Actual performance depends on infrastructure, network latency, and model latency.
+- streaming requests bypass semantic cache
+- streaming responses are not stored in semantic cache
 
 ---
 
-## Important Disclaimer
+# Structured Outputs and Tools
 
-These values are architectural estimates and may vary by deployment.
+Semantic cache may also be skipped for:
+
+- tool-calling requests
+- function-calling requests
+- structured output requests
+
+These request types often reduce safe semantic reuse.
+
+---
+
+# Metrics & Observability
+
+AI Cost Firewall exports Prometheus metrics:
+
+```text
+/metrics
+```
+
+---
+
+# Core Metrics
+
+```text
+aif_requests_total
+aif_upstream_calls_total
+aif_cache_exact_hits
+aif_cache_semantic_hits
+aif_cache_misses
+```
+
+---
+
+# Semantic Diagnostics
+
+```text
+aif_semantic_candidates_checked_total
+aif_semantic_threshold_results_total
+aif_semantic_lookup_duration_seconds
+aif_semantic_expired_entries_skipped_total
+```
+
+Useful for tuning:
+
+- semantic thresholds
+- embedding quality
+- retention windows
+
+---
+
+# Runtime Metrics
+
+```text
+aif_inflight_requests
+aif_shutdown_in_progress
+aif_readiness_state
+```
+
+---
+
+# Timeout Metrics
+
+```text
+aif_upstream_timeouts_total
+aif_embedding_timeouts_total
+aif_upstream_request_duration_seconds
+aif_embedding_request_duration_seconds
+```
+
+---
+
+# Cost Metrics
+
+```text
+aif_model_cost_micro_usd_total
+aif_gross_saved_micro_usd_total
+aif_embedding_overhead_micro_usd_total
+aif_net_saved_micro_usd_total
+```
+
+These distinguish:
+
+- gross chat savings
+- embedding overhead
+- net savings
+
+---
+
+# Included Dashboards
+
+AI Cost Firewall includes pre-configured Grafana dashboards.
+
+---
+
+## Overview Dashboard
+
+Shows:
+
+- cache hit rates
+- cost savings
+- embedding overhead
+- request traffic
+- net savings
+
+---
+
+## Diagnostics Dashboard
+
+Shows:
+
+- semantic threshold pass/fail behavior
+- semantic lookup latency
+- runtime cache diagnostics
+- semantic candidate activity
+
+Dashboards are provisioned automatically in Docker deployments.
+
+---
+
+# Deployment Patterns
+
+AI Cost Firewall supports:
+
+| Pattern | Example |
+|---|---|
+| Cloud provider | OpenAI |
+| Fully local | Ollama |
+| Hybrid deployment | OpenAI + local embeddings |
+| Routing layer | OpenRouter |
+| Self-hosted GPU inference | vLLM |
+
+Deployment examples:
+
+```text
+deploy/examples/
+```
+
+---
+
+# Typical Performance Characteristics
+
+Approximate behavior on a small cloud instance:
+
+| Scenario | Approx Throughput | Typical Latency |
+|---|---|---|
+| Exact cache hit | 5k–20k req/sec | 1–3 ms |
+| Semantic cache hit | 50–300 req/sec | 50–150 ms |
+| Upstream request | depends on provider | 0.5–5 s |
+
+Actual performance depends on:
+
+- embedding provider latency
+- vector search latency
+- upstream model latency
+- infrastructure
+- network topology
+
+---
+
+# Operational Notes
+
+- Redis always required
+- Qdrant required only when semantic cache enabled
+- vector dimensions must match embedding model
+- expired semantic entries filtered during lookup
+- semantic correctness independent of pruning
+- fail-open affects runtime semantic lookups only
+- providers accessed through OpenAI-compatible APIs
 
 ---
 
 # Summary
 
-AI Cost Firewall provides a lightweight **LLM caching gateway** that:
+AI Cost Firewall acts as a lightweight LLM gateway that:
 
-- reduces LLM API costs
+- reduces API cost
 - improves latency
-- provides observability
-- integrates with existing OpenAI-compatible clients
+- increases effective cache reuse
+- provides operational visibility
+- supports OpenAI-compatible deployments
 
-By combining exact caching (Redis) and semantic caching (Qdrant), the firewall maximizes cache hit rates while maintaining response quality.
+By combining:
+
+- exact caching (Redis / Valkey)
+- semantic caching (Qdrant)
+
+the firewall maximizes reusable responses while maintaining operational simplicity.
+
+---
+
+# Additional Documentation
+
+See also:
+
+- `docs/how-it-works.md`
+- `docs/quickstart.md`
+- `docs/config-reference.md`
+- `docs/provider-compatibility.md`
+- `docs/operation.md`
+- `docs/troubleshooting.md`

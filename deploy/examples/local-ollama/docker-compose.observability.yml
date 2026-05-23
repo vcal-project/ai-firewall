@@ -1,0 +1,26 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.10.0
+    depends_on:
+      - firewall
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.4.2
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../../grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
+      - ../../grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ../../grafana/provisioning/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+    restart: unless-stopped
+
+volumes:
+  grafana_data:

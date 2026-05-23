@@ -1,45 +1,123 @@
+
 # AI Cost Firewall — FAQ
 
 ## What is AI Cost Firewall?
 
-AI Cost Firewall is an **OpenAI-compatible API gateway** that sits between client applications and LLM providers.
-It reduces cost and latency by caching responses and avoiding unnecessary API calls.
+AI Cost Firewall is an OpenAI-compatible gateway for reducing LLM API cost and latency.
 
-The firewall behaves similarly to **nginx for LLM APIs**, forwarding requests when necessary and serving cached responses when possible.
+It sits between applications and LLM providers and uses:
+
+- exact cache (Redis / Valkey)
+- semantic cache (Qdrant)
+
+to avoid unnecessary upstream requests.
+
+Only cache misses are forwarded upstream.
+
+The firewall behaves similarly to:
+
+```text
+nginx for LLM APIs
+```
 
 ---
 
 ## How does caching work?
 
-AI Cost Firewall uses two caching layers:
+AI Cost Firewall uses a two-layer cache strategy.
 
-1. Exact cache (Redis / Valkey) 
-   Stores responses for identical requests using a normalized request hash.
+### Exact Cache
 
-2. Semantic cache (Qdrant)  
-   Uses embeddings to detect semantically similar requests and reuse previous responses.
+Redis stores responses for identical normalized requests.
 
-Request flow:
+Example flow:
 
 ```text
-Client → AI Cost Firewall → Redis → Qdrant → OpenAI-compatible upstream
+request hash → Redis → cached response
 ```
-
-Only cache misses reach the upstream provider.
 
 ---
 
-## Which endpoints are supported?
+### Semantic Cache
 
-Currently the firewall supports:
+Qdrant stores embeddings of normalized prompt text.
 
+If prompts are semantically similar, cached responses may be reused even when prompts are not identical.
+
+Example flow:
+
+```text
+prompt embedding → Qdrant similarity search → cached response
 ```
+
+---
+
+## What is the request flow?
+
+Typical request flow:
+
+```text
+Client
+→ AI Cost Firewall
+→ Redis exact cache
+→ Qdrant semantic cache
+→ OpenAI-compatible upstream
+```
+
+Only cache misses reach upstream providers.
+
+---
+
+## Which endpoints are currently supported?
+
+Currently supported:
+
+```text
 /v1/chat/completions
 ```
 
-The endpoint is **OpenAI-compatible**, allowing existing OpenAI SDKs to work without modification.
+The API is OpenAI-compatible, allowing existing SDKs and applications to work without modification.
 
-Future versions may add support for additional endpoints.
+---
+
+## Which providers are supported?
+
+AI Cost Firewall supports practical OpenAI-compatible providers including:
+
+- OpenAI
+- Ollama
+- LM Studio
+- vLLM
+- LiteLLM
+- OpenRouter
+
+The firewall uses a flat provider model without provider-specific configuration blocks.
+
+---
+
+## Can the chat provider and embedding provider differ?
+
+Yes.
+
+Examples:
+
+```text
+upstream_base_url https://api.openai.com;
+embedding_base_url http://ollama:11434/v1;
+```
+
+or:
+
+```text
+upstream_base_url http://ollama:11434/v1;
+embedding_base_url https://api.openai.com;
+```
+
+This is useful for:
+
+- reducing embedding cost
+- local semantic caching
+- hybrid deployments
 
 ---
 
@@ -47,79 +125,105 @@ Future versions may add support for additional endpoints.
 
 Prometheus metrics are available at:
 
-```
+```text
 /metrics
 ```
 
-Key metrics include:
+Example metrics:
 
-- `aif_requests_total`
-- `aif_cache_exact_hits`
-- `aif_cache_semantic_hits`
-- `aif_cache_misses`
-- `aif_upstream_calls_total`
-- `aif_tokens_saved`
-- `aif_cost_saved_micro_usd`
-- `aif_semantic_store_total`
-- `aif_semantic_store_errors_total`
-- `aif_embedding_request_duration_seconds`
-- `aif_embedding_timeouts_total`
+```text
+aif_requests_total
+aif_cache_exact_hits
+aif_cache_semantic_hits
+aif_cache_misses
+aif_upstream_calls_total
+aif_model_cost_micro_usd_total
+aif_gross_saved_micro_usd_total
+aif_embedding_overhead_micro_usd_total
+aif_net_saved_micro_usd_total
+```
 
+AI Cost Firewall also exports:
 
-These metrics can be visualized using **Grafana dashboards**.
+- semantic diagnostics
+- runtime health metrics
+- timeout metrics
+- embedding metrics
 
 ---
 
-## How are token and cost savings calculated?
+## How are cost savings calculated?
 
-Token and cost savings are currently calculated **only for chat-completion responses**.
+Cost savings are calculated for cached chat-completion responses.
 
-The following values are used:
+Inputs include:
 
-- `prompt_tokens`
-- `completion_tokens`
-- configured `model_price` values
-
-Example configuration:
-
-```
-model_price gpt-4o-mini-2024-07-18 0.15 0.60;
-```
-
-This defines:
-
-- input token price (USD per 1M tokens)
-- output token price (USD per 1M tokens)
-
-Embedding lookup cost can be included in net savings when `embedding_price` is configured.
-
-Related metrics:
-
-- `aif_chat_cost_saved_micro_usd` — gross avoided chat-completion cost
-- `aif_embedding_cost_micro_usd` — embedding lookup cost
-- `aif_cost_saved_micro_usd` — net savings after embedding cost
-
-If `embedding_price` is not configured, embedding cost is treated as zero and savings may be overestimated.
+- prompt tokens
+- completion tokens
+- configured `model_price`
+- optional `embedding_price`
 
 ---
 
-## Why does Total Cost Saved show zero?
+## What is gross vs net savings?
 
-`model_price` matching is exact.
+### Gross Savings
 
-If the upstream API returns a versioned model name such as:
+Avoided chat-completion cost.
+
+Metric:
+
+```text
+aif_gross_saved_micro_usd_total
+```
+
+---
+
+### Embedding Overhead
+
+Embedding generation cost for semantic lookup.
+
+Metric:
+
+```text
+aif_embedding_overhead_micro_usd_total
+```
+
+---
+
+### Net Savings
+
+Gross savings minus embedding overhead.
+
+Metric:
+
+```text
+aif_net_saved_micro_usd_total
+```
+
+---
+
+## Why do cost metrics show zero?
+
+Most common reason:
+
+```text
+model_price
+```
+
+does not exactly match the upstream model name.
+
+Example upstream model:
 
 ```text
 gpt-4o-mini-2024-07-18
 ```
 
-the same name must appear in the configuration:
+Matching configuration required:
 
 ```text
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 ```
-
-If the names do not match exactly, cost savings cannot be calculated and `aif_cost_saved_micro_usd` will remain zero.
 
 ---
 
@@ -127,74 +231,83 @@ If the names do not match exactly, cost savings cannot be calculated and `aif_co
 
 No.
 
-Minimum setup:
+Minimum deployment:
 
-- Redis (or a Redis-compatible server such as Valkey)
 - AI Cost Firewall
+- Redis / Valkey
 
-Optional:
-
-- Qdrant for semantic caching.
-
-If semantic caching is disabled, the firewall still works using exact request caching.
+Qdrant is required only when semantic caching is enabled.
 
 ---
 
-## Can the firewall work with providers other than OpenAI?
+## Can semantic cache be disabled?
 
 Yes.
 
-AI Cost Firewall supports practical OpenAI-compatible upstream and embedding endpoints while keeping the flat provider model.
+Example:
 
-Examples include:
-
-- OpenAI
-- Ollama OpenAI-compatible endpoint
-- LM Studio
-- vLLM
-- LiteLLM
-- other local or self-hosted OpenAI-compatible gateways
-
-Configure the upstream provider with:
-
-```text
-upstream_provider openai_compatible;
-upstream_base_url <base-url>;
-upstream_api_key <key-or-placeholder>;
+```conf
+semantic_cache_enabled false;
 ```
 
-The base URL may be either the provider root URL or its /v1 base path:
+When disabled:
+
+- embeddings skipped
+- Qdrant not required
+- exact cache still active
+
+---
+
+## Which Qdrant port should be used?
+
+AI Cost Firewall uses Qdrant gRPC on:
 
 ```text
-https://api.openai.com
-http://ollama:11434
-http://ollama:11434/v1
-http://lmstudio:1234/v1
-http://vllm:8000/v1
+6334
 ```
 
-Do not configure the full endpoint path:
+REST API typically runs on:
 
 ```text
-# Wrong
-upstream_base_url http://ollama:11434/v1/chat/completions;
+6333
+```
 
-# Correct
-upstream_base_url http://ollama:11434/v1;
+Example:
+
+```conf
+qdrant_url http://qdrant:6334;
 ```
 
 ---
 
-## What API key should I use for local providers?
+## Why does startup fail with vector-size mismatch?
 
-For local OpenAI-compatible providers that do not require authentication, use a placeholder key:
+The embedding dimension must match:
 
-```text
-upstream_api_key dummy;
-embedding_api_key dummy;
+```conf
+qdrant_vector_size
 ```
 
-Accepted placeholder values are:
+Example:
+
+| Embedding Model | Vector Size |
+|---|---|
+| text-embedding-3-small | 1536 |
+| nomic-embed-text | 768 |
+
+Mismatch example:
+
+```text
+existing collection vector size does not match qdrant_vector_size
+```
+
+---
+
+## What API key should be used for local providers?
+
+Local providers often do not require authentication.
+
+Accepted placeholders:
 
 ```text
 dummy
@@ -203,116 +316,102 @@ null
 -
 ```
 
-When a placeholder key is used, AI Cost Firewall does not send the upstream `Authorization: Bearer ...` header.
+Example:
+
+```conf
+upstream_api_key dummy;
+embedding_api_key dummy;
+```
+
+When placeholders are used, Authorization headers are not forwarded upstream.
 
 ---
 
-## Can the chat model and embedding model use different providers?
+## Why do I get upstream_not_found?
 
-Yes.
-
-The main model upstream and embedding provider can use different base URLs:
+Usually means the provider returned:
 
 ```text
-upstream_base_url http://ollama:11434/v1;
-embedding_base_url https://api.openai.com;
+404
 ```
 
-This is useful when chat completions are served locally but embeddings are provided by another OpenAI-compatible service.
+Most common cause:
+
+wrong base URL.
 
 ---
 
-## Why do I get an upstream_not_found error?
-
-`upstream_not_found` usually means the provider returned `404`.
-
-Common causes:
-
-- `upstream_base_url` points to the wrong host or port
-- a full endpoint path was configured instead of a base URL
-- the provider does not expose an OpenAI-compatible `/v1/chat/completions` endpoint
-
-Correct:
+## Correct
 
 ```text
-upstream_base_url http://ollama:11434/v1;
-```
-
-Wrong:
-
-```text
-upstream_base_url http://ollama:11434/v1/chat/completions;
+http://ollama:11434/v1
 ```
 
 ---
 
-## Why do I get an upstream_tls_error?
+## Wrong
 
-`upstream_tls_error` means TLS certificate verification failed.
+```text
+http://ollama:11434/v1/chat/completions
+```
 
-Common causes:
+AI Cost Firewall automatically appends OpenAI-compatible endpoint paths internally.
+
+---
+
+## Why do I get upstream_tls_error?
+
+TLS verification failed.
+
+Typical causes:
 
 - self-signed certificate
-- certificate hostname does not match the configured host
-- missing or invalid Subject Alternative Name
-- corporate proxy or gateway replacing certificates
+- hostname mismatch
+- invalid SAN
+- corporate TLS interception
 
-Fix options:
-
-- use a trusted certificate
-- configure the provider URL with a hostname that matches the certificate
-- use HTTP only inside a trusted private network for local testing
-
----
-
-## Which Qdrant port should be used?
-
-AI Cost Firewall uses the **Qdrant gRPC** interface, which runs on port:
+For trusted local networks, local providers often work more reliably using:
 
 ```text
-6334
+http://
 ```
-
-The REST API port (`6333`) is not used by the firewall.
-
-Example configuration:
-
-```text
-qdrant_url http://qdrant:6334;
-```
-
----
-
-## Does the firewall modify requests or responses?
-
-No.
-
-The firewall:
-
-- forwards compatible chat-completion requests to the configured upstream
-- returns OpenAI-compatible responses to the client
-
-It only performs:
-
-- request normalization for hashing
-- caching
-- metrics collection
 
 ---
 
 ## Is streaming supported?
 
-Yes, but streaming responses are **not cached**.
+Yes.
 
-Streaming requests are forwarded directly to the upstream provider.
+Streaming requests are forwarded upstream normally.
+
+Current behavior:
+
+- streaming responses are not stored in semantic cache
+- semantic cache may be bypassed for streaming requests
 
 ---
 
-## Can the configuration be validated before starting the server?
+## Are tool-calling and structured outputs cached?
+
+Semantic cache may be skipped for:
+
+- tool-calling requests
+- function-calling requests
+- structured outputs
+
+because these request types often contain non-deterministic structures.
+
+---
+
+## Can configuration be validated before startup?
 
 Yes.
 
-AI Cost Firewall provides a configuration validation command similar to `nginx -t`.
+AI Cost Firewall supports validation similar to:
+
+```text
+nginx -t
+```
 
 Example:
 
@@ -320,31 +419,153 @@ Example:
 cargo run -- --config configs/ai-firewall.conf --test-config
 ```
 
-Expected output:
+Expected:
 
 ```text
 configuration OK
 ```
 
-This command validates the configuration file only. It checks syntax, required directives, value ranges, semantic cache settings, and model validation configuration.
+Static validation checks:
 
-It does not connect to Redis, Qdrant, embedding providers, or upstream LLM providers.
+- syntax
+- required directives
+- semantic cache configuration
+- request-size parsing
+- model validation rules
+
+It does not contact runtime dependencies.
 
 ---
 
-## Can the configuration be reloaded without restarting the service?
+## Can the loaded configuration be inspected?
 
 Yes.
 
-AI Cost Firewall supports **nginx-style hot reload**.
+Example:
 
-Reload configuration:
-
-```
-kill -HUP <firewall_pid>
+```bash
+cargo run -- --config configs/ai-firewall.conf --print-config
 ```
 
-The service will reload configuration without dropping connections.
+Sensitive values are masked automatically.
+
+---
+
+## Can configuration be reloaded without restart?
+
+Yes.
+
+AI Cost Firewall supports nginx-style reloads using:
+
+```text
+SIGHUP
+```
+
+Docker Compose:
+
+```bash
+docker compose kill -s HUP firewall
+```
+
+Binary deployment:
+
+```bash
+kill -HUP $(pgrep ai-firewall)
+```
+
+---
+
+## What happens during graceful shutdown?
+
+Shutdown sequence:
+
+1. readiness disabled
+2. new requests rejected
+3. in-flight requests continue
+4. process exits after timeout
+
+Configured by:
+
+```conf
+graceful_shutdown_timeout_seconds 10;
+```
+
+---
+
+## Why is semantic cache not producing hits?
+
+Common causes:
+
+- prompts insufficiently similar
+- threshold too strict
+- embeddings unavailable
+- semantic cache disabled
+- entries expired
+
+Inspect metrics:
+
+```text
+aif_cache_semantic_hits
+aif_semantic_candidates_checked_total
+aif_semantic_threshold_results_total
+```
+
+Typical starting threshold:
+
+```conf
+semantic_similarity_threshold 0.92;
+```
+
+---
+
+## Why are requests still reaching upstream providers?
+
+Common causes:
+
+- first request not cached yet
+- prompt changed
+- parameters changed
+- semantic similarity below threshold
+- streaming enabled
+
+Important request fields include:
+
+- model
+- temperature
+- top_p
+- max_tokens
+
+---
+
+## Why can’t the firewall connect to Redis or Qdrant?
+
+Inside Docker Compose:
+
+```text
+localhost
+```
+
+refers to the container itself.
+
+Use Docker service names instead.
+
+---
+
+## Correct
+
+```conf
+redis_url redis://redis:6379;
+qdrant_url http://qdrant:6334;
+```
+
+---
+
+## Wrong
+
+```conf
+redis_url redis://127.0.0.1:6379;
+qdrant_url http://127.0.0.1:6334;
+```
 
 ---
 
@@ -352,129 +573,73 @@ The service will reload configuration without dropping connections.
 
 AI Cost Firewall is in an early production-ready stage.
 
-It is designed with production-grade components:
+The project includes:
 
 - Rust async runtime
 - Redis exact cache
 - Qdrant semantic cache
-- Prometheus + Grafana observability
-- Docker deployment
-- graceful shutdown and readiness checks
+- Prometheus metrics
+- Grafana dashboards
+- graceful shutdown
+- readiness handling
+- configuration reload
+- runtime diagnostics
 
-Recent releases improved:
+v0.1.x releases focus on:
 
-- runtime stability and error handling
-- observability and diagnostics
-- semantic cache lifecycle control (expiration and pruning)
-
-The system is stable to run, with further improvements planned.
-
----
-
-## Why is the semantic cache not being used?
-
-Most common reasons:
-
-### 1. Not configured
-
-Semantic cache requires:
-
-```text
-semantic_cache_enabled true;
-
-embedding_base_url https://api.openai.com;
-embedding_api_key sk-xxxx;
-embedding_model text-embedding-3-small;
-
-qdrant_url http://qdrant:6334;
-qdrant_collection aif_semantic_cache;
-qdrant_vector_size 1536;
-```
-
-### 2. No similar requests
-
-Semantic cache only works if **similar prompts repeat**.
-
-### 3. Threshold too strict
-
-```text
-semantic_similarity_threshold 0.92
-```
-
-Higher → fewer matches.
-
-### 4. Entries expired
-
-Expired entries are skipped automatically.
-
-If retention is too short:
-
-```text
-semantic_cache_retention_seconds
-```
-
-→ no reuse happens.
-
-### Quick check
-
-```text
-aif_cache_semantic_hits
-```
-
-If this stays `0`, semantic cache is not being used.
+- operational polish
+- provider compatibility
+- observability
+- deployment simplicity
 
 ---
 
-## Why does the firewall fail to connect to Redis or Qdrant?
+## What deployment examples are included?
 
-Connection errors usually occur when the service hostname is incorrect.
-
-When running via **Docker Compose**, services must be addressed using their **service names**, not `localhost`.
-
-Correct configuration:
+Ready-to-run deployment examples are available under:
 
 ```text
-redis_url redis://redis:6379;
-qdrant_url http://qdrant:6334;
+deploy/examples/
 ```
 
-Incorrect configuration (common mistake):
+Included patterns:
 
 ```text
-redis_url redis://127.0.0.1:6379;
-qdrant_url http://127.0.0.1:6334;
+openai-cloud/
+local-ollama/
+hybrid-openai-local-embeddings/
+openrouter/
+local-full-stack/
 ```
 
-Inside Docker containers, `localhost` refers to the container itself, not other services.
+Each example includes:
 
-Using the correct service names ensures the firewall can reach Redis and Qdrant through the Docker network.
-
----
-
-## Why do cached responses still call the upstream API?
-
-A request is served from cache only if it matches an existing cached entry.
-
-Common reasons the upstream API is still called:
-
-- Prompt changed – even small differences in text or message history create a new cache key.
-- Request parameters differ – values like `model`, `temperature`, `top_p`, or `max_tokens` are part of the cache key.
-- First request – the initial request must reach the upstream provider before it can be cached.
-- Semantic similarity too low – when semantic caching is enabled, prompts must exceed the configured similarity threshold (e.g. `0.92`).
-- Streaming requests – responses with `stream=true` are not cached.
-
-You can monitor cache behavior using Prometheus metrics:
-
-```text
-aif_cache_exact_hits
-aif_cache_semantic_hits
-aif_cache_misses
-```
+- docker-compose deployment
+- minimal configuration
+- example requests
+- expected behavior
+- expected metrics
 
 ---
 
 ## Where can I learn more?
 
-Source code and documentation:
+Documentation:
 
+```text
+docs/
+```
+
+Important documents:
+
+- `docs/quickstart.md`
+- `docs/config-reference.md`
+- `docs/provider-compatibility.md`
+- `docs/operation.md`
+- `docs/troubleshooting.md`
+
+Source code:
+
+```text
 https://github.com/vcal-project/ai-firewall
+```

@@ -1,72 +1,119 @@
+
 # How AI Cost Firewall Works
 
-This document explains how AI Cost Firewall processes requests and how the caching system reduces LLM API costs and latency.
+This document explains how AI Cost Firewall processes requests, evaluates cache reuse, communicates with OpenAI-compatible providers, and reduces LLM API cost and latency.
 
-The firewall sits between client applications and LLM providers and implements a two-layer caching strategy:
+AI Cost Firewall sits between client applications and LLM providers and applies a two-layer cache strategy:
 
-1. Exact cache (Redis)
-2. Semantic cache (Qdrant)
+1. exact cache (Redis)
+2. semantic cache (Qdrant)
 
-Only if both caches miss does the firewall forward the request to the configured OpenAI-compatible upstream.
+Only cache misses are forwarded upstream.
 
-## Request Lifecycle Diagram
+---
+
+# High-Level Architecture
+
+```text
+Client Applications
+        │
+        ▼
+AI Cost Firewall
+        │
+        ├── Redis (exact cache)
+        ├── Qdrant (semantic cache)
+        │
+        ▼
+OpenAI-compatible provider
+```
+
+Supported OpenAI-compatible providers include:
+
+- OpenAI
+- Ollama
+- LM Studio
+- vLLM
+- LiteLLM
+- OpenRouter
+
+---
+
+# Request Lifecycle
+
+AI Cost Firewall evaluates requests in stages:
+
+1. normalize request
+2. exact cache lookup
+3. semantic cache lookup
+4. upstream request
+5. cache storage
+6. response return
+
+---
+
+# Request Flow Diagram
 
 ```mermaid
 flowchart TD
 
-    A[Client Request<br/>POST /v1/chat/completions]
+    A[Client Request]
 
-    B[Normalize Request<br/>remove non-deterministic fields]
+    B[Normalize Request]
 
-    C{Exact Cache Lookup<br/>Redis / Valkey}
+    C{Exact Cache Lookup<br/>Redis}
 
     D[Return Cached Response]
 
-    E{Semantic Search<br/>Qdrant}
+    E[Generate Embedding]
 
-    E2{Candidate Valid?<br/>similarity &gt; threshold<br/>AND not expired}
+    F{Semantic Search<br/>Qdrant}
 
-    F[Forward Request<br/>to OpenAI-compatible Upstream]
+    G{Candidate Valid?<br/>similarity + freshness}
 
-    G[Receive Upstream Response]
+    H[Forward to OpenAI-compatible Upstream]
 
-    H[Store in Exact Cache<br/>Redis]
+    I[Receive Upstream Response]
 
-    I[Store in Semantic Cache<br/>Qdrant<br/>embedding + expires_at]
+    J[Store Exact Cache]
 
-    J[Return Response<br/>to Client]
+    K[Store Semantic Cache]
+
+    L[Return Response]
 
     A --> B
     B --> C
 
     C -->|HIT| D
-    D --> J
+    D --> L
 
     C -->|MISS| E
-
-    E --> E2
-
-    E2 -->|YES| D
-    E2 -->|NO| F
+    E --> F
 
     F --> G
-    G --> H
-    G --> I
 
-    H --> J
+    G -->|YES| D
+    G -->|NO| H
+
+    H --> I
+
     I --> J
+    I --> K
+
+    J --> L
+    K --> L
 ```
 
 ---
 
 # Example Request
 
-A client sends a request to the firewall using the OpenAI-compatible API.
+Client applications use the standard OpenAI-compatible API.
 
-Example request:
+Example:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini-2024-07-18",
     "messages": [
@@ -75,214 +122,287 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-> By default, AI Cost Firewall does not require client-side authorization on incoming requests.
-> The `upstream_api_key` in the configuration is used by the firewall when calling the upstream LLM provider.
-> For production deployments, place the firewall behind an authenticated reverse proxy, API gateway, VPN, or private network boundary.
+The firewall returns a standard OpenAI-compatible response.
+
+No client-side API changes are required.
+
+---
+
+# Client Authentication Notes
+
+By default, AI Cost Firewall does not require incoming client authentication.
+
+The configured:
+
+```text
+upstream_api_key
+```
+
+is used only for upstream provider communication.
+
+For production environments, place the firewall behind:
+
+- authenticated reverse proxy
+- API gateway
+- VPN
+- private network boundary
+- service mesh
 
 ---
 
 # Step 1 — Request Normalization
 
-Before checking the cache, the firewall normalizes the request.
+Before cache lookup, the firewall normalizes requests.
 
-Normalization ensures that semantically identical requests generate the
-same cache key.
+Normalization removes non-deterministic request fields and produces stable semantic text.
 
-Example normalized semantic text:
+Example normalized prompt:
 
 ```text
 user: Explain Redis briefly
 ```
 
-If a system message exists, it is included as well:
+With system message:
 
 ```text
 system: You are a concise assistant
 user: Explain Redis briefly
 ```
 
-This normalized text is used for:
+Normalization is used for:
+
+- exact cache hashing
 - semantic embeddings
-- semantic similarity search
+- semantic search consistency
 
 ---
 
-# Step 2 — Exact Cache Lookup (Redis / Valkey)
+# Step 2 — Exact Cache Lookup
 
-The firewall generates a SHA256 hash of the normalized request JSON.
+The firewall creates a SHA256 hash from the normalized request JSON.
 
 Example key:
 
-```bash
+```text
 aif:exact:<sha256>
 ```
 
 Redis lookup:
 
-```bash
+```text
 GET aif:exact:<sha256>
 ```
 
-## Possible outcomes
+---
 
-### Exact Cache Hit
+# Exact Cache Hit
 
-If a cached response exists:
+If the response already exists in Redis:
 
 ```text
-Redis → cached response
+Redis → HIT
 ```
 
-The firewall immediately returns the cached result to the client.
+The firewall immediately returns the cached response.
 
 Benefits:
-- no upstream API call
+
 - near-zero latency
-- no token usage
+- no upstream API call
+- no additional token usage
+- predictable response times
 
-### Exact Cache Miss
+---
 
-If Redis does not contain the key:
+# Exact Cache Miss
+
+If Redis does not contain the request:
 
 ```text
 Redis → MISS
 ```
 
-The firewall proceeds to semantic search.
+the firewall continues to semantic lookup.
 
 ---
 
-# Step 3 — Semantic Cache Search (Qdrant)
+# Step 3 — Embedding Generation
 
-The firewall generates an embedding for the normalized prompt text.
+The firewall generates an embedding from the normalized semantic text.
 
-Embeddings are generated through the configured OpenAI-compatible embedding provider. The embedding provider may use a different `embedding_base_url` from the main chat upstream.
+Embeddings are produced through the configured embedding provider.
 
-Example embedding model:
+The embedding provider may differ from the chat provider.
 
+Examples:
+
+| Chat Provider | Embedding Provider |
+|---|---|
+| OpenAI | OpenAI |
+| OpenAI | Ollama |
+| OpenRouter | OpenAI |
+| Ollama | Ollama |
+
+---
+
+# Embedding Models
+
+Typical embedding models:
+
+| Model | Vector Size |
+|---|---|
+| text-embedding-3-small | 1536 |
+| nomic-embed-text | 768 |
+
+Example configuration:
+
+```conf
+embedding_model text-embedding-3-small;
+qdrant_vector_size 1536;
 ```
-text-embedding-3-small
-```
 
-The embedding is used to search the Qdrant vector collection:
+The vector size must match the embedding model dimension.
 
-```
+---
+
+# Step 4 — Semantic Search
+
+The generated embedding is used to query Qdrant.
+
+Typical collection:
+
+```text
 aif_semantic_cache
 ```
 
-Search example:
+Qdrant returns semantically similar candidates.
 
-```
-vector search → top matches
-```
+Each candidate contains:
 
-Each returned candidate represents a previously cached response with similar meaning.
+- embedding vector
+- cached response payload
+- similarity score
+- inserted_at
+- expires_at
+- model metadata
 
 ---
 
-# Step 4 — Semantic Similarity & Lifecycle Check
+# Semantic Candidate Evaluation
 
-> Semantic cache decisions are based on both similarity and freshness.
+AI Cost Firewall validates semantic candidates before reuse.
 
-Each semantic cache entry stored in Qdrant includes:
+A candidate is reusable only if:
 
-- an embedding vector
-- cached response payload
-- lifecycle metadata (`inserted_at`, `expires_at`)
-- model metadata
+```text
+similarity_score >= semantic_similarity_threshold
+AND
+expires_at > now
+AND
+cached response payload is valid
+```
+
+---
+
+# Semantic Threshold Example
 
 Example:
 
 ```text
 Prompt: "Explain Redis briefly"
-Cached prompt: "What is Redis used for?"
-Similarity score: 0.94
+Cached Prompt: "What is Redis used for?"
+Similarity: 0.94
+Threshold: 0.92
 ```
 
-Expired semantic entries are filtered before similarity ranking.
+Because:
 
-The lookup flow is:
-
-1. Qdrant searches only entries for the same model.
-2. Qdrant filters out expired entries using `expires_at > now`.
-3. The firewall evaluates returned candidates against `semantic_similarity_threshold`.
-4. The firewall verifies that the cached response payload is valid.
-5. The first valid candidate is returned as a semantic cache hit.
-
-Example configuration:
-
-```conf
-semantic_similarity_threshold 0.92;
+```text
+0.94 >= 0.92
 ```
+
+the candidate may be reused.
 
 ---
 
-## Semantic Cache Hit
+# Semantic Cache Hit
 
-A candidate is considered a hit only if:
+When a valid semantic candidate exists:
 
-```
-expires_at > now
-AND
-similarity_score >= semantic_similarity_threshold
-AND
-cached response payload is valid
+```text
+semantic HIT
 ```
 
-Example:
-
-```
-expires_at > now → valid
-0.94 >= 0.92 → pass
-cached response payload exists → valid
-```
-
-The firewall returns the cached response.
+the firewall returns the cached response.
 
 Benefits:
 
-- avoids an expensive LLM call
-- reuses previously generated answers
-- improves response latency
-- increases effective cache hit rate
+- reduced upstream API cost
+- reduced latency
+- reuse of semantically equivalent answers
+- higher effective cache utilization
 
 ---
 
-## Semantic Cache Miss
+# Semantic Cache Miss
 
-A semantic miss occurs if:
+Semantic miss occurs when:
 
-- no non-expired candidate is returned by Qdrant
-- no returned candidate meets the similarity threshold
-- a returned candidate is missing required metadata
-- a returned candidate has an invalid or missing cached response payload
-- semantic lookup fails and fail-open behavior continues the request upstream
+- no candidates returned
+- similarity below threshold
+- entry expired
+- payload invalid
+- semantic lookup failure occurs
 
-Example:
+The firewall then forwards the request upstream.
 
+---
+
+# Semantic Cache Lifecycle
+
+Semantic entries contain lifecycle metadata:
+
+- inserted_at
+- expires_at
+
+Expiration derives from:
+
+```conf
+semantic_cache_retention_seconds 604800;
 ```
-semantic MISS
+
+Expired entries:
+
+- are filtered during lookup
+- are never reused
+- may remain stored until pruned
+
+Semantic correctness does not depend on cleanup.
+
+---
+
+# Runtime Fail-Open Behavior
+
+Optional runtime behavior:
+
+```conf
+semantic_cache_fail_open true;
 ```
 
-the firewall forwards the request to the configured OpenAI-compatible upstream.
+When enabled:
+
+- semantic lookup failures behave like cache misses
+- requests continue upstream normally
+
+This prevents semantic infrastructure failures from blocking chat traffic.
 
 ---
 
-## Important Notes
+# Step 5 — Upstream Request
 
-- Expired semantic entries are never returned, even if similarity would otherwise be high.
-- Expired entries are filtered during lookup before similarity ranking.
-- Expiration is enforced by query-time filtering and defensive runtime checks, not by automatic Qdrant deletion.
-- Expired entries may remain stored in Qdrant until manually pruned.
-- Manual pruning removes expired entries where `expires_at <= now`.
+When both cache layers miss, the firewall forwards the request upstream.
 
----
-
-# Step 5 — OpenAI-Compatible Upstream Request
-
-The firewall forwards cache misses to the configured OpenAI-compatible upstream.
-
-The configured `upstream_base_url` may be the provider root URL or its `/v1` base path:
+Example providers:
 
 ```text
 https://api.openai.com
@@ -290,135 +410,160 @@ http://ollama:11434/v1
 http://vllm:8000/v1
 ```
 
-AI Cost Firewall builds the final chat-completions endpoint internally:
+AI Cost Firewall internally appends:
 
 ```text
 /v1/chat/completions
 ```
 
-Do not configure the full endpoint path as `upstream_base_url`.
+Do not configure the full endpoint path as:
 
-For local providers without authentication, `upstream_api_key` may be set to `dummy`, `none`, `null`, or `-`. In that case, AI Cost Firewall does not send an upstream `Authorization: Bearer ...` header.
-
-The upstream response is then returned to the firewall.
+```text
+upstream_base_url
+```
 
 ---
 
-# Step 6 — Store in Cache
+# Correct vs Wrong Base URLs
 
-After receiving the upstream response, the firewall stores the result in both caches.
+## Correct
 
-## Redis
+```text
+http://ollama:11434/v1
+```
 
-Exact request → response
+## Wrong
 
-```bash
+```text
+http://ollama:11434/v1/chat/completions
+```
+
+---
+
+# Local Provider Authentication
+
+Local providers often do not require authentication.
+
+Accepted placeholders:
+
+```text
+dummy
+none
+null
+-
+```
+
+Example:
+
+```conf
+upstream_api_key dummy;
+embedding_api_key dummy;
+```
+
+When placeholders are used, AI Cost Firewall does not send:
+
+```text
+Authorization: Bearer ...
+```
+
+headers upstream.
+
+---
+
+# Step 6 — Cache Storage
+
+After receiving the upstream response, the firewall stores results in both caches.
+
+---
+
+# Exact Cache Storage
+
+Redis stores:
+
+```text
+exact request → response
+```
+
+Example:
+
+```text
 SET aif:exact:<sha256> response
 ```
 
-## Qdrant
+---
 
-Prompt embedding → response
+# Semantic Cache Storage
 
-Stored data includes:
+Qdrant stores:
+
 - normalized prompt text
 - embedding vector
 - response payload
-- `inserted_at`
-- `expires_at`
-
-The expiration timestamp is calculated using `semantic_cache_retention_seconds`.
-
----
-
-# Step 7 — Return Response to Client
-
-Finally, the firewall returns the response to the client application.
-
-The client receives a **standard OpenAI-compatible response**, meaning no application changes are required.
+- inserted_at
+- expires_at
+- model metadata
 
 ---
 
-# Complete Request Flow
+# Step 7 — Return Response
 
-```text
-Client Request
-      |
-      v
-Normalize Request
-      |
-      v
-Exact Cache Lookup (Redis)
-      |
-      |-- HIT ---------> Return Cached Response
-      |
-      v
-Generate Embedding
-      |
-      v
-Semantic Search (Qdrant)
-      |
-      |-- HIT ---------> Return Cached Response
-      |
-      v
-Forward to Upstream API
-      |
-      v
-Store Response in Cache
-      |
-      v
-Return Response to Client
+The firewall returns a standard OpenAI-compatible response to the client.
+
+Applications do not need special cache-awareness logic.
+
+---
+
+# Streaming Behavior
+
+Streaming requests are forwarded upstream normally.
+
+Example:
+
+```json
+{
+  "stream": true
+}
 ```
 
+Current behavior:
+
+- streaming requests bypass semantic cache
+- streaming responses are not stored in semantic cache
+- exact cache behavior may vary depending on request flow
+
 ---
 
-# When Semantic Caching is Disabled
+# Structured Outputs and Tools
 
-Semantic caching can be disabled globally or skipped automatically for specific request types.
+Semantic cache may also be skipped for:
 
-## Globally disabled by configuration
+- tool-calling requests
+- function-calling requests
+- structured response formats
 
-Semantic caching is disabled for all requests when the configuration contains:
+These request types often contain non-deterministic structures that reduce safe semantic reuse.
+
+---
+
+# When Semantic Cache Is Disabled
+
+Semantic cache may be disabled globally:
 
 ```conf
 semantic_cache_enabled false;
 ```
 
-In this mode, the firewall uses only the exact cache and upstream forwarding.
+In this mode:
 
-## Automatically skipped for specific requests
-
-Even when semantic caching is enabled globally, the firewall skips semantic lookup for streaming requests.
-
-Streaming is controlled by the incoming request body, not by the firewall configuration.
-
-Examples include:
-
-- streaming requests, where the request body contains `stream: true`
-- requests using tools or function-calling
-- requests using structured response formats
-
-Example streaming request:
-
-```json
-{
-  "model": "gpt-4o-mini-2024-07-18",
-  "stream": true,
-  "messages": [
-    {"role": "user", "content": "Say hello"}
-  ]
-}
-```
-
-In these cases, the firewall does not use semantic caching for that request. The request is handled through exact cache logic where applicable, or forwarded upstream.
+- only exact cache is used
+- semantic embeddings are skipped
+- Qdrant not required
 
 ---
 
-# Observability
+# Metrics and Observability
 
-AI Cost Firewall exposes Prometheus metrics that show how requests move through the cache and upstream path.
-
-Metrics are available at:
+AI Cost Firewall exposes Prometheus metrics:
 
 ```text
 /metrics
@@ -430,12 +575,9 @@ Example:
 curl http://localhost:8080/metrics
 ```
 
-- cache hit rates
-- upstream API usage
-- token savings
-- estimated cost savings
+---
 
-The most useful metrics for understanding request flow are:
+# Core Request Metrics
 
 ```text
 aif_requests_total
@@ -443,10 +585,143 @@ aif_cache_exact_hits
 aif_cache_semantic_hits
 aif_cache_misses
 aif_upstream_calls_total
-aif_upstream_request_duration_seconds
-aif_upstream_timeouts_total
-aif_embedding_request_duration_seconds
-aif_embedding_timeouts_total
-aif_semantic_lookup_duration_seconds
 ```
-These show whether requests are served from cache or forwarded upstream.
+
+These metrics show whether requests were:
+
+- exact cache hits
+- semantic cache hits
+- upstream requests
+
+---
+
+# Semantic Diagnostics Metrics
+
+```text
+aif_semantic_candidates_checked_total
+aif_semantic_threshold_results_total
+aif_semantic_lookup_duration_seconds
+aif_semantic_expired_entries_skipped_total
+```
+
+These metrics help tune:
+
+- semantic similarity thresholds
+- retention windows
+- embedding quality
+- semantic reuse behavior
+
+---
+
+# Timeout Metrics
+
+```text
+aif_upstream_timeouts_total
+aif_embedding_timeouts_total
+aif_upstream_request_duration_seconds
+aif_embedding_request_duration_seconds
+```
+
+Useful for diagnosing:
+
+- slow providers
+- overloaded local models
+- embedding bottlenecks
+- network latency
+
+---
+
+# Cost Metrics
+
+```text
+aif_model_cost_micro_usd_total
+aif_gross_saved_micro_usd_total
+aif_embedding_overhead_micro_usd_total
+aif_net_saved_micro_usd_total
+```
+
+These metrics distinguish:
+
+- gross avoided chat-completion cost
+- embedding overhead
+- net savings after embeddings
+
+---
+
+# Included Dashboards
+
+AI Cost Firewall includes pre-configured Grafana dashboards.
+
+Overview dashboard:
+
+- cost savings
+- cache hit rates
+- request traffic
+- net savings
+
+Diagnostics dashboard:
+
+- semantic threshold pass/fail behavior
+- lookup latency
+- semantic cache diagnostics
+- runtime semantic activity
+
+---
+
+# Why Semantic Cache Matters
+
+Exact cache alone only reuses identical prompts.
+
+Semantic cache enables reuse across:
+
+- paraphrased questions
+- slightly modified prompts
+- repeated support requests
+- repeated agent interactions
+- recurring enterprise workflows
+
+This significantly improves effective cache utilization.
+
+---
+
+# Typical Deployment Patterns
+
+AI Cost Firewall supports:
+
+| Pattern | Example |
+|---|---|
+| Cloud upstream | OpenAI |
+| Fully local | Ollama |
+| Hybrid | OpenAI + local embeddings |
+| Routing layer | OpenRouter |
+| Self-hosted inference | vLLM |
+
+Deployment examples:
+
+```text
+deploy/examples/
+```
+
+---
+
+# Operational Notes
+
+- Redis required for exact cache
+- Qdrant required only when semantic cache enabled
+- vector size must match embedding dimension
+- semantic correctness does not depend on pruning
+- expired entries filtered during lookup
+- semantic cache fail-open affects runtime only
+- OpenAI-compatible providers supported through flat configuration model
+
+---
+
+# Additional Documentation
+
+See also:
+
+- `docs/quickstart.md`
+- `docs/config-reference.md`
+- `docs/provider-compatibility.md`
+- `docs/operation.md`
+- `docs/troubleshooting.md`
