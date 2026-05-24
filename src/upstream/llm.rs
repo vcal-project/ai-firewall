@@ -36,13 +36,23 @@ impl UpstreamErrorKind {
             UpstreamErrorKind::Timeout => {
                 "The upstream provider did not respond before the configured timeout."
             }
-            UpstreamErrorKind::Tls => "TLS/certificate verification failed while contacting the upstream provider.",
+            UpstreamErrorKind::Tls => {
+                "TLS/certificate verification failed while contacting the upstream provider."
+            }
             UpstreamErrorKind::Dns => "Failed to resolve the upstream provider hostname.",
-            UpstreamErrorKind::Connect => "Failed to connect to the upstream provider host or port.",
-            UpstreamErrorKind::HttpStatus => "The upstream provider returned an HTTP error response.",
-            UpstreamErrorKind::Other => "The upstream provider request failed before a valid response was received.",
+            UpstreamErrorKind::Connect => {
+                "Failed to connect to the upstream provider host or port."
+            }
+            UpstreamErrorKind::HttpStatus => {
+                "The upstream provider returned an HTTP error response."
+            }
+            UpstreamErrorKind::Other => {
+                "The upstream provider request failed before a valid response was received."
+            }
             UpstreamErrorKind::Authentication => "The upstream provider rejected authentication.",
-            UpstreamErrorKind::NotFound => "The upstream provider returned 404 for the OpenAI-compatible endpoint.",
+            UpstreamErrorKind::NotFound => {
+                "The upstream provider returned 404 for the OpenAI-compatible endpoint."
+            }
             UpstreamErrorKind::RateLimited => "The upstream provider rate-limited the request.",
         }
     }

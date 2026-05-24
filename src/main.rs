@@ -299,7 +299,11 @@ async fn main() -> anyhow::Result<()> {
                 "failed to bind HTTP listener"
             );
 
-            return Err(anyhow::anyhow!("failed to bind listen address '{}': {}", listen_addr, e));
+            return Err(anyhow::anyhow!(
+                "failed to bind listen address '{}': {}",
+                listen_addr,
+                e
+            ));
         }
     };
 

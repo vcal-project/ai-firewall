@@ -199,7 +199,6 @@ impl LlmUpstream for OpenAiUpstream {
     }
 }
 
-
 fn classify_reqwest_error(err: &reqwest::Error) -> UpstreamErrorKind {
     if err.is_timeout() {
         return UpstreamErrorKind::Timeout;
