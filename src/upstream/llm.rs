@@ -36,13 +36,13 @@ impl UpstreamErrorKind {
             UpstreamErrorKind::Timeout => {
                 "The upstream provider did not respond before the configured timeout."
             }
-            UpstreamErrorKind::Tls => "Upstream TLS certificate verification failed.",
-            UpstreamErrorKind::Dns => "Failed to resolve upstream provider hostname.",
-            UpstreamErrorKind::Connect => "Failed to connect to upstream provider.",
-            UpstreamErrorKind::HttpStatus => "The upstream provider returned an error response.",
-            UpstreamErrorKind::Other => "The upstream provider request failed.",
+            UpstreamErrorKind::Tls => "TLS/certificate verification failed while contacting the upstream provider.",
+            UpstreamErrorKind::Dns => "Failed to resolve the upstream provider hostname.",
+            UpstreamErrorKind::Connect => "Failed to connect to the upstream provider host or port.",
+            UpstreamErrorKind::HttpStatus => "The upstream provider returned an HTTP error response.",
+            UpstreamErrorKind::Other => "The upstream provider request failed before a valid response was received.",
             UpstreamErrorKind::Authentication => "The upstream provider rejected authentication.",
-            UpstreamErrorKind::NotFound => "The upstream endpoint was not found.",
+            UpstreamErrorKind::NotFound => "The upstream provider returned 404 for the OpenAI-compatible endpoint.",
             UpstreamErrorKind::RateLimited => "The upstream provider rate-limited the request.",
         }
     }
@@ -50,23 +50,28 @@ impl UpstreamErrorKind {
     pub fn default_hint(self) -> Option<&'static str> {
         match self {
             UpstreamErrorKind::Tls => Some(
-                "Check whether the upstream certificate is trusted by the AI Firewall container and whether upstream_base_url matches the certificate Subject Alternative Name.",
+                "Check certificate trust, hostname/SAN, and whether upstream_base_url uses the correct scheme. For trusted local providers with self-signed certificates, consider using http:// inside the private network.",
             ),
             UpstreamErrorKind::Dns => Some(
-                "Check upstream_base_url and DNS/network configuration from inside the AI Firewall container.",
+                "Check upstream_base_url, provider hostname, Docker service name, and DNS resolution from inside the AI Firewall container.",
             ),
             UpstreamErrorKind::Connect => Some(
-                "Check that the upstream endpoint is reachable from the AI Firewall container and that the port is open.",
+                "Check upstream_base_url, provider host/port, Docker network membership, firewall rules, and whether the provider process is listening.",
             ),
             UpstreamErrorKind::Timeout => Some(
-                "Increase request_timeout_seconds or check upstream provider latency and availability.",
+                "Increase request_timeout_seconds or check upstream provider latency, model load time, network latency, and provider availability.",
             ),
-            UpstreamErrorKind::HttpStatus | UpstreamErrorKind::Other => None,
+            UpstreamErrorKind::HttpStatus => Some(
+                "Check provider response details, upstream_base_url, authentication, rate limits, and OpenAI-compatible API support.",
+            ),
+            UpstreamErrorKind::Other => Some(
+                "Check upstream_base_url and provider availability. If this is a local provider, verify the OpenAI-compatible API is enabled.",
+            ),
             UpstreamErrorKind::Authentication => Some(
-                "Check upstream_api_key. For local providers without authentication, use dummy, none, null, or -.",
+                "Check upstream_api_key. For local providers without authentication, use dummy, none, null, or - so no Bearer token is sent.",
             ),
             UpstreamErrorKind::NotFound => Some(
-                "Check upstream_base_url. Configure the provider root URL or its /v1 base path, not the full /chat/completions endpoint.",
+                "Check upstream_base_url. Configure the provider root URL or its /v1 base path, not /v1/chat/completions. Verify the provider exposes an OpenAI-compatible chat completions endpoint.",
             ),
             UpstreamErrorKind::RateLimited => Some(
                 "The upstream provider returned 429. Reduce request rate or check provider quota.",

@@ -117,18 +117,21 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
                 );
 
                 anyhow::bail!(
-                    "{} Embedding model: '{}'. Embedding provider: '{}'.",
+                    "{} Embedding model: '{}'. Embedding provider: '{}'. Hint: {}",
                     match kind {
                         UpstreamErrorKind::Timeout =>
                             "Embedding provider did not respond before the configured timeout.",
                         UpstreamErrorKind::Tls =>
-                            "Embedding provider TLS certificate verification failed.",
-                        UpstreamErrorKind::Dns => "Failed to resolve embedding provider hostname.",
-                        UpstreamErrorKind::Connect => "Failed to connect to embedding provider.",
+                            "TLS/certificate verification failed while contacting the embedding provider.",
+                        UpstreamErrorKind::Dns =>
+                            "Failed to resolve the embedding provider hostname.",
+                        UpstreamErrorKind::Connect =>
+                            "Failed to connect to the embedding provider host or port.",
                         _ => "Embedding provider request failed.",
                     },
                     self.model,
-                    self.base_url
+                    self.base_url,
+                    embedding_error_hint(kind)
                 );
             }
         };
@@ -136,7 +139,7 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
         let status = response.status();
         let body = response.text().await.with_context(|| {
             format!(
-                "failed reading embedding response body for model '{}' at '{}'",
+                "failed reading embedding response body for model '{}' at '{}'. Hint: check embedding provider availability and whether it returned a valid HTTP response body",
                 self.model, self.base_url
             )
         })?;
@@ -167,30 +170,31 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             );
 
             anyhow::bail!(
-                "{} Status: {}. Embedding model: '{}'. Embedding provider: '{}'. Body: {}",
+                "{} Status: {}. Embedding model: '{}'. Embedding provider: '{}'. Hint: {} Body: {}",
                 embedding_status_message(kind),
                 status,
                 self.model,
                 self.base_url,
+                embedding_error_hint(kind),
                 body
             );
         }
 
         let parsed: EmbeddingResponse = serde_json::from_str(&body).with_context(|| {
             format!(
-                "failed to parse embedding response for model '{}' at '{}'",
+                "failed to parse embedding response for model '{}' at '{}'. Hint: verify the provider returns an OpenAI-compatible /v1/embeddings JSON response",
                 self.model, self.base_url
             )
         })?;
 
         let first = parsed.data.into_iter().next().context(format!(
-            "embedding response contained no vectors for model '{}' at '{}'",
+            "embedding response contained no vectors for model '{}' at '{}'. Hint: verify embedding_model and OpenAI-compatible embeddings support",
             self.model, self.base_url
         ))?;
 
         if first.embedding.is_empty() {
             anyhow::bail!(
-                "embedding provider returned an empty vector for model '{}' at '{}'",
+                "embedding provider returned an empty vector for model '{}' at '{}'. Hint: check embedding_model and provider compatibility.",
                 self.model,
                 self.base_url
             );
@@ -278,6 +282,38 @@ fn embedding_status_message(kind: UpstreamErrorKind) -> &'static str {
         }
         UpstreamErrorKind::HttpStatus => "The embedding provider returned an HTTP error.",
         _ => "The embedding provider request failed.",
+    }
+}
+
+fn embedding_error_hint(kind: UpstreamErrorKind) -> &'static str {
+    match kind {
+        UpstreamErrorKind::Authentication => {
+            "Check embedding_api_key. For local embedding providers without authentication, use dummy, none, null, or - so no Bearer token is sent."
+        }
+        UpstreamErrorKind::NotFound => {
+            "Check embedding_base_url. Configure the provider root URL or its /v1 base path, not /v1/embeddings. Verify the provider exposes an OpenAI-compatible embeddings endpoint."
+        }
+        UpstreamErrorKind::RateLimited => {
+            "Check embedding provider quota, rate limits, billing status, or retry later."
+        }
+        UpstreamErrorKind::Timeout => {
+            "Increase request_timeout_seconds or check embedding provider latency, model load time, network latency, and provider availability."
+        }
+        UpstreamErrorKind::Tls => {
+            "Check certificate trust, hostname/SAN, and whether embedding_base_url uses the correct scheme. For trusted local providers with self-signed certificates, consider using http:// inside the private network."
+        }
+        UpstreamErrorKind::Dns => {
+            "Check embedding_base_url, provider hostname, Docker service name, and DNS resolution from inside the AI Firewall container."
+        }
+        UpstreamErrorKind::Connect => {
+            "Check embedding_base_url, provider host/port, Docker network membership, firewall rules, and whether the provider process is listening."
+        }
+        UpstreamErrorKind::HttpStatus => {
+            "Check provider response details, embedding_base_url, authentication, rate limits, and OpenAI-compatible embeddings API support."
+        }
+        UpstreamErrorKind::Other => {
+            "Check embedding_base_url and provider availability. If this is a local provider, verify the OpenAI-compatible embeddings API is enabled."
+        }
     }
 }
 

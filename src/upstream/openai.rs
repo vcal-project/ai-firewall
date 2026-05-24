@@ -167,7 +167,7 @@ impl LlmUpstream for OpenAiUpstream {
                 AppError::upstream_kind(
                     UpstreamErrorKind::Other,
                     format!(
-                        "Failed to parse upstream response body for model '{}' at '{}': {e}; body: {}",
+                        "Failed to parse upstream response body for model '{}' at '{}': {e}. Verify the provider returns an OpenAI-compatible /v1/chat/completions JSON response. Body: {}",
                         req.normalized_model(),
                         self.base_url,
                         body
@@ -187,7 +187,7 @@ impl LlmUpstream for OpenAiUpstream {
                 AppError::upstream_kind(
                     UpstreamErrorKind::Other,
                     format!(
-                        "Upstream response for model '{}' at '{}' is not a usable OpenAI-compatible chat response: {}",
+                        "Upstream response for model '{}' at '{}' is not a usable OpenAI-compatible chat response: {}. Verify the provider response includes a usable choices array and OpenAI-compatible chat completion fields.",
                         req.normalized_model(),
                         self.base_url,
                         e
@@ -198,6 +198,7 @@ impl LlmUpstream for OpenAiUpstream {
         Ok(parsed)
     }
 }
+
 
 fn classify_reqwest_error(err: &reqwest::Error) -> UpstreamErrorKind {
     if err.is_timeout() {

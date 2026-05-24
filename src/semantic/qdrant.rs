@@ -44,7 +44,7 @@ impl QdrantSemanticCache {
         if let Some(api_key) = qdrant_api_key {
             builder = builder.api_key(api_key);
         }
-        let client = builder.build().context("failed to build Qdrant client")?;
+        let client = builder.build().with_context(|| format!("failed to build Qdrant client for qdrant_url '{}'; check qdrant_url, network reachability, and Qdrant gRPC port 6334", qdrant_url))?;
 
         ensure_collection(&client, &collection_name, vector_size).await?;
 
@@ -59,7 +59,9 @@ impl QdrantSemanticCache {
 }
 
 async fn ensure_collection(client: &Qdrant, collection_name: &str, vector_size: u64) -> Result<()> {
-    let collections = client.list_collections().await?;
+    let collections = client.list_collections().await.with_context(|| {
+        "failed to list Qdrant collections; check that Qdrant is reachable and that qdrant_url points to the gRPC port, usually 6334"
+    })?;
     let exists = collections
         .collections
         .iter()
@@ -83,7 +85,12 @@ async fn ensure_collection(client: &Qdrant, collection_name: &str, vector_size: 
             ..Default::default()
         })
         .await
-        .with_context(|| format!("failed creating Qdrant collection {}", collection_name))?;
+        .with_context(|| {
+            format!(
+                "failed creating Qdrant collection '{}'; check Qdrant permissions, qdrant_url, and vector size {}",
+                collection_name, vector_size
+            )
+        })?;
 
     tracing::info!(
         collection = %collection_name,
@@ -104,7 +111,7 @@ async fn validate_collection_vector_size(
         .await
         .with_context(|| {
             format!(
-                "failed to inspect existing Qdrant collection '{}'",
+                "failed to inspect existing Qdrant collection '{}'; check Qdrant connectivity, collection permissions, and qdrant_url",
                 collection_name
             )
         })?;
@@ -121,15 +128,16 @@ async fn validate_collection_vector_size(
         })
         .with_context(|| {
             format!(
-                "failed to determine vector size for existing Qdrant collection '{}'",
+                "failed to determine vector size for existing Qdrant collection '{}'; named vectors are not currently supported by this semantic cache configuration",
                 collection_name
             )
         })?;
 
     if actual_vector_size != expected_vector_size {
         bail!(
-            "Qdrant collection '{}' has vector size {}, but config requires {}; \
-             recreate the collection or set qdrant_vector_size to match the embedding model",
+            "Qdrant collection '{}' has vector size {}, but qdrant_vector_size is {}. \
+             This usually means the collection was created for a different embedding model. \
+             Check embedding_model and qdrant_vector_size, or recreate the collection.",
             collection_name,
             actual_vector_size,
             expected_vector_size
@@ -168,7 +176,12 @@ impl SemanticCache for QdrantSemanticCache {
                         "embedding provider failed during semantic lookup"
                     );
 
-                    return Err(err).context("embedding provider failed during semantic lookup");
+                    return Err(err).with_context(|| {
+                        format!(
+                            "embedding provider failed during semantic lookup for model '{}'; check embedding_base_url, embedding_model, embedding_api_key, provider availability, and request_timeout_seconds",
+                            model
+                        )
+                    });
                 }
             };
 
@@ -225,7 +238,7 @@ impl SemanticCache for QdrantSemanticCache {
                 .await
                 .with_context(|| {
                     format!(
-                        "Qdrant semantic search failed for model '{}' in collection '{}'",
+                        "Qdrant semantic search failed for model '{}' in collection '{}'; check qdrant_url, Qdrant availability, collection health, and vector-size compatibility",
                         model, self.collection_name
                     )
                 })?;
@@ -281,10 +294,20 @@ impl SemanticCache for QdrantSemanticCache {
                 let raw_response = payload
                     .get("response_json")
                     .and_then(proto_value_to_json_string)
-                    .context("missing response_json payload in semantic hit")?;
+                    .with_context(|| {
+                        format!(
+                            "semantic hit in collection '{}' for model '{}' is missing response_json payload; the cached entry is invalid and should be pruned or recreated",
+                            self.collection_name, model
+                        )
+                    })?;
 
                 let parsed: ChatCompletionResponse = serde_json::from_str(&raw_response)
-                    .context("invalid cached semantic response")?;
+                    .with_context(|| {
+                        format!(
+                            "semantic hit in collection '{}' for model '{}' contains invalid cached response JSON; the cached entry is invalid and should be pruned or recreated",
+                            self.collection_name, model
+                        )
+                    })?;
 
                 tracing::debug!(
                     model = %model,
@@ -334,7 +357,12 @@ impl SemanticCache for QdrantSemanticCache {
                         "embedding provider failed during semantic store"
                     );
 
-                    return Err(err).context("embedding provider failed during semantic store");
+                    return Err(err).with_context(|| {
+                        format!(
+                            "embedding provider failed during semantic store for model '{}'; check embedding_base_url, embedding_model, embedding_api_key, provider availability, and request_timeout_seconds",
+                            model
+                        )
+                    });
                 }
             };
 
@@ -356,7 +384,12 @@ impl SemanticCache for QdrantSemanticCache {
             };
 
             let response_json = serde_json::to_string(&record.response)
-                .context("failed to serialize response_json")?;
+                .with_context(|| {
+                format!(
+                    "failed to serialize response_json before semantic cache store for model '{}'",
+                    model
+                )
+            })?;
 
             let point = PointStruct::new(
                 Uuid::new_v4().to_string(),
@@ -399,7 +432,7 @@ impl SemanticCache for QdrantSemanticCache {
                 .await
                 .with_context(|| {
                     format!(
-                        "Qdrant upsert failed for model '{}' in collection '{}'",
+                        "Qdrant upsert failed for model '{}' in collection '{}'; check qdrant_url, collection health, Qdrant disk/memory pressure, and vector-size compatibility",
                         model, self.collection_name
                     )
                 })?;
@@ -476,7 +509,7 @@ pub async fn prune_expired_semantic_cache_entries(
         builder = builder.api_key(api_key);
     }
 
-    let client = builder.build().context("failed to build Qdrant client")?;
+    let client = builder.build().with_context(|| format!("failed to build Qdrant client for pruning using qdrant_url '{}'; check qdrant_url and Qdrant connectivity", qdrant_url))?;
 
     let now = Utc::now().timestamp();
 
@@ -514,7 +547,7 @@ pub async fn prune_expired_semantic_cache_entries(
         .await
         .with_context(|| {
             format!(
-                "failed to prune expired semantic cache entries from Qdrant collection {}",
+                "failed to prune expired semantic cache entries from Qdrant collection '{}'; check qdrant_url, Qdrant availability, and collection permissions",
                 collection_name
             )
         })?;
