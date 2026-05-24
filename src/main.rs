@@ -108,7 +108,7 @@ async fn config_reload_loop(
         match config::Config::from_file(path) {
             Ok(new_config) => {
                 if let Err(e) = new_config.validate() {
-                    tracing::error!("config validation failed during reload: {}", e);
+                    tracing::error!(error = %e, "config validation failed during reload");
                     continue;
                 }
 
@@ -128,14 +128,14 @@ async fn config_reload_loop(
                     }
                     Err(e) => {
                         tracing::error!(
-                            error = ?e,
+                            error = %e,
                             "config reload aborted: new runtime initialization failed"
                         );
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("config reload failed from {}: {}", path, e);
+                tracing::error!(config_path = %path, error = %e, "config reload failed");
             }
         }
     }
@@ -231,7 +231,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = match config::Config::from_env_or_file(config_path.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
-            tracing::error!("startup aborted due to configuration error: {}", e);
+            tracing::error!(error = %e, "configuration loading failed");
             return Err(e);
         }
     };
@@ -275,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(built) => built,
         Err(e) => {
             tracing::error!(
-                error = ?e,
+                error = %e,
                 "startup aborted during runtime initialization"
             );
             return Err(e);
@@ -299,7 +299,7 @@ async fn main() -> anyhow::Result<()> {
                 "failed to bind HTTP listener"
             );
 
-            return Err(anyhow::anyhow!("failed to bind {}: {}", listen_addr, e));
+            return Err(anyhow::anyhow!("failed to bind listen address '{}': {}", listen_addr, e));
         }
     };
 
