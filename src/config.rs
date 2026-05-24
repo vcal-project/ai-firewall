@@ -797,6 +797,51 @@ impl Config {
         tracing::info!("no config file found, falling back to environment variables");
         Self::from_env()
     }
+
+    pub fn semantic_cache_status(&self) -> &'static str {
+        if self.semantic_cache_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    }
+
+    pub fn startup_summary_lines(&self) -> Vec<String> {
+        let mut lines = vec![
+            format!("- upstream provider: {}", self.upstream_provider.as_str()),
+            format!("- upstream base URL: {}", self.upstream_base_url),
+            format!("- semantic cache: {}", self.semantic_cache_status()),
+            format!("- request timeout: {}s", self.request_timeout_seconds),
+            format!("- max request body: {} bytes", self.max_request_body_bytes),
+            format!("- exact cache TTL: {}s", self.exact_cache_ttl_seconds),
+        ];
+
+        if self.semantic_cache_enabled {
+            lines.push(format!(
+                "- embedding provider: {}",
+                self.embedding_provider.as_str()
+            ));
+            lines.push(format!("- embedding base URL: {}", self.embedding_base_url));
+            lines.push(format!("- embedding model: {}", self.embedding_model));
+            lines.push(format!("- qdrant URL: {}", self.qdrant_url));
+            lines.push(format!("- qdrant collection: {}", self.qdrant_collection));
+            lines.push(format!("- qdrant vector size: {}", self.qdrant_vector_size));
+            lines.push(format!(
+                "- semantic similarity threshold: {}",
+                self.semantic_similarity_threshold
+            ));
+            lines.push(format!(
+                "- semantic retention: {}s",
+                self.semantic_cache_retention_seconds
+            ));
+            lines.push(format!(
+                "- semantic fail-open: {}",
+                self.semantic_cache_fail_open
+            ));
+        }
+
+        lines
+    }
 }
 
 impl fmt::Debug for Config {

@@ -125,23 +125,19 @@ fn mask_redis_url_for_logs(redis_url: &str) -> String {
     redis_url.to_string()
 }
 
-pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
-    tracing::info!(
-        upstream_provider = cfg.upstream_provider.as_str(),
-        embedding_provider = cfg.embedding_provider.as_str(),
-        semantic_cache_enabled = cfg.semantic_cache_enabled,
-        semantic_cache_fail_open = cfg.semantic_cache_fail_open,
-        request_timeout_seconds = cfg.request_timeout_seconds,
-        cache_ttl_seconds = cfg.cache_ttl_seconds,
-        exact_cache_ttl_seconds = cfg.exact_cache_ttl_seconds,
-        semantic_cache_retention_seconds = cfg.semantic_cache_retention_seconds,
-        "building application runtime"
-    );
+fn log_startup_summary(cfg: &Config) {
+    tracing::info!("=== AI Cost Firewall Startup ===");
 
-    tracing::info!(
-        redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
-        "connecting to Redis exact cache"
-    );
+    tracing::info!("Configuration:");
+    for line in cfg.startup_summary_lines() {
+        tracing::info!("{}", line);
+    }
+
+    tracing::info!("Dependency checks:");
+}
+
+pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
+    log_startup_summary(cfg);
 
     let redis_client = redis::Client::open(cfg.redis_url.clone()).with_context(|| {
         format!(
@@ -154,7 +150,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
         Ok(conn) => {
             tracing::info!(
                 redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
-                "connected to Redis exact cache"
+                "[OK] Redis connected"
             );
             conn
         }
@@ -182,10 +178,16 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
     tracing::info!(
         upstream_provider = cfg.upstream_provider.as_str(),
         upstream_base_url = %cfg.upstream_base_url,
-        "initializing upstream provider"
+        "checking upstream provider configuration"
     );
 
     let upstream = build_llm_upstream(cfg).context("failed to initialize upstream provider")?;
+
+    tracing::info!(
+        upstream_provider = cfg.upstream_provider.as_str(),
+        upstream_base_url = %cfg.upstream_base_url,
+        "[OK] Upstream provider initialized"
+    );
 
     let semantic_cache: Arc<dyn SemanticCache> = if cfg.semantic_cache_enabled {
         tracing::info!(
@@ -196,22 +198,31 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
         );
 
         let embedder: Arc<dyn EmbeddingProvider> = match cfg.embedding_provider {
-            ProviderKind::OpenAiCompatible => Arc::new(
-                OpenAiEmbeddingProvider::new(
+            ProviderKind::OpenAiCompatible => {
+                let provider = OpenAiEmbeddingProvider::new(
                     cfg.embedding_base_url.clone(),
                     cfg.embedding_api_key.clone(),
                     cfg.embedding_model.clone(),
                     Duration::from_secs(cfg.request_timeout_seconds),
                 )
-                .context("failed to initialize OpenAI-compatible embedding provider")?,
-            ),
+                .context("failed to initialize OpenAI-compatible embedding provider")?;
+
+                tracing::info!(
+                    embedding_provider = cfg.embedding_provider.as_str(),
+                    embedding_base_url = %cfg.embedding_base_url,
+                    embedding_model = %cfg.embedding_model,
+                    "[OK] Embedding provider initialized"
+                );
+
+                Arc::new(provider)
+            }
         };
 
         tracing::info!(
             qdrant_url = %cfg.qdrant_url,
             qdrant_collection = %cfg.qdrant_collection,
             qdrant_vector_size = cfg.qdrant_vector_size,
-            "connecting to Qdrant semantic cache"
+            "checking Qdrant semantic cache"
         );
 
         match QdrantSemanticCache::new(
@@ -230,7 +241,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
                     qdrant_url = %cfg.qdrant_url,
                     qdrant_collection = %cfg.qdrant_collection,
                     qdrant_vector_size = cfg.qdrant_vector_size,
-                    "connected to Qdrant semantic cache"
+                    "[OK] Qdrant connected and collection validated"
                 );
 
                 Arc::new(cache)
@@ -253,9 +264,11 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
             }
         }
     } else {
-        tracing::info!("semantic cache disabled; using no-op semantic cache");
+        tracing::info!("[SKIP] Semantic cache disabled; Qdrant and embeddings are not required");
         Arc::new(NoopSemanticCache)
     };
+
+    tracing::info!("[OK] Runtime initialized");
 
     Ok(Arc::new(ChatService::new(
         exact_cache,

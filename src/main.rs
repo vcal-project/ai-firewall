@@ -303,7 +303,18 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    tracing::info!("listening on {}", listen_addr);
+    let display_addr = if listen_addr.starts_with("0.0.0.0:") {
+        listen_addr.replacen("0.0.0.0", "localhost", 1)
+    } else {
+        listen_addr.clone()
+    };
+
+    tracing::info!("Server:");
+    tracing::info!("- listening on {}", listen_addr);
+    tracing::info!("- health: http://{}/healthz", display_addr);
+    tracing::info!("- readiness: http://{}/readyz", display_addr);
+    tracing::info!("- metrics: http://{}/metrics", display_addr);
+    tracing::info!("=== AI Cost Firewall ready ===");
 
     axum::serve(listener, built.router)
         .with_graceful_shutdown(graceful_shutdown(built.state.clone(), shutdown_timeout))
