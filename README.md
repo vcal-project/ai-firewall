@@ -70,7 +70,7 @@ Demonstrates:
 
 ## Semantic Diagnostics
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics_019.png)](assets/grafana/ai-firewall-diagnostics_019.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics-019.png)](assets/grafana/ai-firewall-diagnostics_019.png)
 
 Demonstrates:
 
