@@ -21,7 +21,7 @@ services:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/collections"]
+      test: ["CMD", "qdrant", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 10
