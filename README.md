@@ -202,7 +202,7 @@ Expected:
 
 ```text
 OK
-READY
+ready
 ```
 
 ---
