@@ -4,7 +4,7 @@ use crate::metrics;
 use axum::response::IntoResponse;
 
 pub async fn health() -> impl IntoResponse {
-    "ok"
+    "OK\n"
 }
 
 pub async fn metrics() -> impl IntoResponse {

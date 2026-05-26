@@ -308,11 +308,11 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
     Ok(BuiltApp { router, state })
 }
 
-async fn readyz(State(state): State<Arc<AppState>>) -> StatusCode {
+async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, &'static str) {
     if state.shutdown.is_ready() {
-        StatusCode::OK
+        (StatusCode::OK, "ready\n")
     } else {
-        StatusCode::SERVICE_UNAVAILABLE
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
     }
 }
 
