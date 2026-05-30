@@ -1,9 +1,10 @@
-
 # Troubleshooting
 
-AI Cost Firewall is designed to fail fast with explicit startup validation and actionable runtime errors.
+AI Cost Firewall is designed to fail fast during startup, expose clear runtime errors, and make cache, provider, and cost behavior observable.
 
-This document covers the most common deployment and operational issues.
+This document covers common deployment and operational issues for v0.2.0, the first pilot-ready OpenAI-compatible gateway milestone.
+
+AI Cost Firewall v0.2.0 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not yet provide native provider-specific API integrations or provider-specific configuration blocks.
 
 ---
 
@@ -24,6 +25,58 @@ configuration OK
 ```
 
 This performs static validation only and does not contact external services.
+
+`--test-config` validates configuration syntax and internal consistency. It does not verify that Redis, Qdrant, the upstream LLM endpoint, or the embedding endpoint are reachable.
+
+Runtime dependencies are initialized during normal startup:
+
+- Redis is required for exact cache
+- Qdrant is required when semantic cache is enabled
+- embedding configuration is required when semantic cache is enabled
+- the configured Qdrant vector size must match the embedding model dimension
+
+After the service starts, confirm the running release and readiness state:
+
+```bash
+curl http://localhost:8080/version
+curl http://localhost:8080/healthz
+curl http://localhost:8080/readyz
+```
+
+Expected basic responses:
+
+```text
+OK
+ready
+```
+
+The /version endpoint returns release metadata, including the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
+
+---
+
+# Basic Diagnostic Commands
+
+Use these commands before deeper debugging:
+
+```bash
+docker compose ps
+curl http://localhost:8080/version
+curl http://localhost:8080/healthz
+curl http://localhost:8080/readyz
+curl -s http://localhost:8080/metrics | head
+docker compose logs --tail=100 firewall
+docker compose logs --tail=100 redis
+docker compose logs --tail=100 qdrant
+```
+
+These commands confirm:
+
+which services are running
+which AI Cost Firewall release is active
+whether the process is alive
+whether it is ready to serve traffic
+whether metrics are exposed
+recent firewall, Redis, and Qdrant errors
 
 ---
 
@@ -344,6 +397,62 @@ docker compose restart firewall
 
 ---
 
+# Semantic Cache Fail-Open Behavior
+
+## Symptoms
+
+Requests continue successfully even though semantic cache lookup, embedding, or semantic store errors appear in logs.
+
+Or, when fail-open is disabled, requests fail with semantic cache or embedding-related errors.
+
+## Cause
+
+AI Cost Firewall can be configured to fail open for runtime semantic cache failures.
+
+When enabled:
+
+```text
+semantic_cache_fail_open true;
+```
+
+runtime semantic cache failures do not block the request. AI Cost Firewall skips the semantic cache path and continues to the upstream LLM endpoint.
+
+When disabled:
+
+```text
+semantic_cache_fail_open false;
+```
+
+runtime semantic cache failures may return an error instead of silently falling back to the upstream path.
+
+## Important Distinction
+
+`semantic_cache_fail_open` applies to runtime semantic cache operations.
+
+It does not bypass startup dependency validation. If semantic cache is enabled, Qdrant must be reachable during startup, and the configured `qdrant_vector_size` must match the existing collection or the embedding model dimension.
+
+## Recommended Checks
+
+Check semantic-related logs:
+
+```bash
+docker compose logs firewall | grep -i semantic
+```
+
+Check embedding-related logs:
+
+```bash
+docker compose logs firewall | grep -i embedding
+```
+
+Check semantic metrics:
+
+```bash
+curl -s http://localhost:8080/metrics | grep semantic
+```
+
+---
+
 # Semantic Cache Not Producing Hits
 
 ## Symptoms
@@ -411,7 +520,7 @@ Higher threshold:
 ## Recommended Checks
 
 Verify metrics:
-
+Grafana Dashboards Are Empty
 ```bash
 curl http://localhost:8080/metrics
 ```
@@ -439,6 +548,51 @@ for i in {1..20}; do
     -d '{"model":"gpt-4o-mini-2024-07-18","messages":[{"role":"user","content":"Explain Redis briefly."}]}'
 done
 ```
+
+---
+
+# Cost or Savings Metrics Look Unexpected
+
+## Symptoms
+
+- net savings are lower than expected
+- semantic cache hits occur but savings look small
+- embedding overhead is visible even when chat savings are low
+- dashboard savings panels appear unrealistic during short demos
+
+## Cause
+
+AI Cost Firewall separates:
+
+- gross chat-completion savings
+- embedding overhead
+- net savings after embedding cost
+
+Semantic cache lookup may require embedding generation. This means semantic cache can save chat-completion cost while still adding embedding overhead.
+
+## Recommended Checks
+
+Inspect cost metrics:
+
+```bash
+curl -s http://localhost:8080/metrics | grep '_micro_usd'
+```
+
+Important metrics:
+
+```text
+aif_model_cost_micro_usd_total
+aif_gross_saved_micro_usd_total
+aif_embedding_overhead_micro_usd_total
+aif_net_saved_micro_usd_total
+```
+
+Check whether traffic is realistic:
+
+repeated identical prompts should mostly exercise exact cache
+similar but non-identical prompts are needed to exercise semantic cache
+short test runs may not produce representative savings ratios
+local dummy providers may not reflect real provider pricing behavior
 
 ---
 
@@ -631,11 +785,26 @@ aif_embedding_timeouts_total
 
 # Provider Compatibility Notes
 
+AI Cost Firewall v0.2.0 supports OpenAI-compatible provider patterns.
+
+The expected configuration model is:
+
+```text
+upstream_provider openai_compatible;
+embedding_provider openai_compatible;
+```
+
+This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
+
+It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
+
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.0. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
+
+Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs are intentionally postponed until after v0.2.0.
+
 ## OpenAI
 
 Reference implementation.
-
----
 
 ## Ollama
 
@@ -649,25 +818,17 @@ http://ollama:11434/v1
 
 Pull models before testing.
 
----
-
 ## LM Studio
 
 Verify that embeddings are enabled.
-
----
 
 ## vLLM
 
 Check timeout configuration for large models.
 
----
-
 ## LiteLLM
 
 Useful aggregation layer for multiple providers.
-
----
 
 ## OpenRouter
 
