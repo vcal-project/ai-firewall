@@ -1611,7 +1611,7 @@
     "prometheus",
     "semantic-cache",
     "cost-intelligence",
-    "v0.1.9"
+    "v0.2.0"
   ],
   "templating": {
     "list": []
@@ -1626,5 +1626,5 @@
   "uid": "ai-cost-firewall-diagnostics",
   "version": 6,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall v0.1.9 including range-stable semantic lookup counts, threshold decisions, embedding overhead, gross vs net savings, cache-type savings, provider latency/errors, and operational health."
+  "description": "Diagnostics dashboard for AI Cost Firewall v0.2.0 including range-stable semantic lookup counts, threshold decisions, embedding overhead, gross vs net savings, cache-type savings, provider latency/errors, and operational health."
 }
