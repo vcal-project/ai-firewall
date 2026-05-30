@@ -4,16 +4,18 @@
 ![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![License](https://img.shields.io/github/license/vcal-project/ai-firewall)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
-![Status](https://img.shields.io/badge/status-early--production-blue)
+![Status](https://img.shields.io/badge/status-pilot--ready-blue)
 
-## OpenAI-compatible gateway for LLM cost reduction, semantic caching, and operational control
+## Pilot-ready OpenAI-compatible gateway for LLM caching, cost control, and observability
 
-AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM API cost and latency using:
+AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM API cost and latency through two cache layers:
 
-- exact cache (Redis)
-- semantic cache (Qdrant)
+* exact cache using Redis
+* semantic cache using Qdrant
 
-Only cache misses are forwarded upstream.
+Only cache misses are forwarded to the upstream LLM endpoint.
+
+v0.2.0 is the first pilot-ready milestone of AI Cost Firewall. It consolidates the v0.1.x work into a stable OpenAI-compatible gateway model for caching, cost visibility, and operational diagnostics.
 
 AI Cost Firewall is developed and maintained by VCAL Labs, Inc.
 
@@ -52,6 +54,28 @@ Supported OpenAI-compatible providers include:
 
 ---
 
+# v0.2.0 Release Focus
+
+AI Cost Firewall v0.2.0 supports OpenAI-compatible chat and embedding APIs through a simple configuration model.
+
+This release focuses on:
+
+* stable OpenAI-compatible `/v1/chat/completions` gateway behavior
+* stable exact and semantic caching
+* embedding overhead accounting
+* gross and net savings metrics
+* safe masked configuration printing
+* static configuration validation
+* readiness and liveness endpoints
+* graceful shutdown and request draining
+* SIGHUP hot reload
+* clear Redis, Qdrant, upstream, and embedding failure behavior
+* polished Docker Compose, Prometheus, and Grafana deployment flow
+
+v0.2.0 is a consolidation milestone. Most capabilities were introduced progressively across the v0.1.x series and are now presented as the first pilot-ready baseline.
+
+---
+
 # Included Dashboards
 
 ## Cost Savings Overview
@@ -70,7 +94,7 @@ Demonstrates:
 
 ## Semantic Diagnostics
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics-019.png)](assets/grafana/ai-firewall-diagnostics_019.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics-019.png)](assets/grafana/ai-firewall-diagnostics-019.png)
 
 Demonstrates:
 
@@ -196,6 +220,7 @@ docker compose up -d
 ```bash
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
+curl http://localhost:8080/version
 ```
 
 Expected:
@@ -204,6 +229,8 @@ Expected:
 OK
 ready
 ```
+
+The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
 
 ---
 
@@ -242,6 +269,7 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - upstream timeout tracking
 - request size protection
 - runtime diagnostics
+- configurable semantic cache fail-open behavior
 
 ---
 
@@ -272,6 +300,14 @@ configuration OK
 
 ---
 
+## Semantic Cache Fail-Open Behavior
+
+When `semantic_cache_fail_open` is enabled, runtime semantic cache lookup or embedding failures skip semantic cache and continue to the upstream LLM endpoint.
+
+This setting applies to runtime semantic cache behavior. It does not bypass startup dependency validation when semantic cache is enabled. If semantic cache is enabled, Qdrant must be reachable during startup and the configured vector size must match the collection.
+
+---
+
 ## Print Loaded Configuration
 
 ```bash
@@ -286,18 +322,27 @@ Secrets are automatically masked.
 
 # OpenAI-Compatible Providers
 
-AI Cost Firewall supports practical OpenAI-compatible deployments while keeping a flat configuration model.
+AI Cost Firewall supports practical OpenAI-compatible deployments while keeping a simple flat configuration model.
 
-Supported provider patterns include:
+The current model is:
 
-| Provider | Status |
-|---|---|
-| OpenAI | Fully tested |
-| Ollama | Supported |
-| LM Studio | Supported |
-| vLLM | Supported |
-| LiteLLM | Supported |
-| OpenRouter | Supported |
+```text
+upstream_provider openai_compatible;
+embedding_provider openai_compatible;
+```
+
+This means AI Cost Firewall expects OpenAI-style chat and embedding APIs. It does not yet provide provider-specific configuration blocks or native provider-specific request transformations.
+
+Common OpenAI-compatible deployment patterns include:
+
+| Runtime or Gateway | Usage Pattern                               |
+| ------------------ | ------------------------------------------- |
+| OpenAI             | Cloud OpenAI-compatible chat and embeddings |
+| Ollama             | Local OpenAI-compatible model endpoint      |
+| LM Studio          | Local OpenAI-compatible model endpoint      |
+| vLLM               | Self-hosted OpenAI-compatible serving       |
+| LiteLLM            | Gateway in front of multiple providers      |
+| OpenRouter         | OpenAI-compatible hosted gateway            |
 
 Example configuration:
 
@@ -311,13 +356,21 @@ embedding_base_url https://api.openai.com;
 embedding_api_key sk-your-key;
 ```
 
-The upstream provider and embedding provider may use different base URLs.
+The upstream provider and embedding provider may use different OpenAI-compatible base URLs.
+
+Important limitations:
+
+* AI Cost Firewall does not claim universal compatibility with every OpenAI-like API.
+* Native Anthropic, Gemini, Mistral, and Cohere APIs are not directly supported in v0.2.0.
+* Mistral, Anthropic, Gemini, or other providers may be used only when exposed through an OpenAI-compatible layer such as LiteLLM, OpenRouter, or another compatible gateway.
+* Provider-specific config blocks, fallback chains, native provider transformations, and provider-specific pricing catalogs are intentionally postponed until after v0.2.0.
 
 See:
 
 ```text
 configs/examples/
 deploy/examples/
+docs/provider-compatibility.md
 ```
 
 ---
@@ -443,6 +496,7 @@ AI Cost Firewall includes tests for:
 - configuration validation
 - request validation
 - semantic cache requirements
+- semantic cache fail-open behavior
 - environment variable parsing
 - request size parsing
 - cost accounting logic
