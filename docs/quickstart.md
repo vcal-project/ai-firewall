@@ -1,14 +1,21 @@
-
 # AI Cost Firewall — Quick Start
 
 This guide explains how to deploy, validate, and test AI Cost Firewall using either Docker Compose or a local Rust build.
 
-AI Cost Firewall is an OpenAI-compatible gateway that reduces LLM API cost and latency using:
+AI Cost Firewall is a pilot-ready OpenAI-compatible gateway for LLM caching, cost control, and observability.
 
-- exact cache (Redis)
-- semantic cache (Qdrant)
+It reduces LLM API cost and latency using two cache layers:
 
-Only cache misses are forwarded upstream.
+* exact cache using Redis
+* semantic cache using Qdrant
+
+Only cache misses are forwarded to the upstream LLM endpoint.
+
+v0.2.0 consolidates the v0.1.x work into the first pilot-ready baseline. The current product model is intentionally simple:
+
+AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a flat configuration model.
+
+It does not yet provide native provider-specific API integrations or provider-specific configuration blocks.
 
 ---
 
@@ -27,14 +34,18 @@ AI Cost Firewall
 OpenAI-compatible upstream
 ```
 
-Supported OpenAI-compatible providers include:
+Common OpenAI-compatible deployment patterns include:
 
-- OpenAI
-- Ollama
-- LM Studio
-- vLLM
-- LiteLLM
-- OpenRouter
+* OpenAI
+* Ollama
+* LM Studio
+* vLLM
+* LiteLLM
+* OpenRouter
+
+AI Cost Firewall expects OpenAI-style chat and embedding APIs. Compatibility depends on how closely the selected provider or runtime follows the OpenAI-compatible API shape.
+
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.0. They may be used only through an OpenAI-compatible gateway or compatibility layer.
 
 ---
 
@@ -63,6 +74,30 @@ Each example includes:
 - expected metrics
 - dashboard support
 - example requests
+
+---
+
+# v0.2.0 Release Focus
+
+v0.2.0 is the first pilot-ready milestone of AI Cost Firewall.
+
+This release focuses on:
+
+- stable OpenAI-compatible `/v1/chat/completions` gateway behavior
+- stable exact cache behavior
+- stable semantic cache behavior
+- embedding overhead accounting
+- gross and net savings metrics
+- safe masked configuration printing
+- static configuration validation
+- readiness and liveness endpoints
+- graceful shutdown and request draining
+- SIGHUP hot reload
+- clear Redis, Qdrant, upstream, and embedding failure behavior
+- polished Docker Compose deployment flow
+- Prometheus and Grafana observability
+
+v0.2.0 is a consolidation release. Most capabilities were introduced incrementally across the v0.1.x series and are now documented as a stable pilot-ready baseline.
 
 ---
 
@@ -183,6 +218,12 @@ Check liveness:
 curl http://localhost:8080/healthz
 ```
 
+Expected:
+
+```text
+OK
+```
+
 Check readiness:
 
 ```bash
@@ -192,9 +233,16 @@ curl http://localhost:8080/readyz
 Expected:
 
 ```text
-OK
-READY
+ready
 ```
+
+Check release metadata:
+
+```bash
+curl http://localhost:8080/version
+```
+
+The `/version` endpoint returns the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
 
 Check logs:
 
@@ -380,29 +428,40 @@ qdrant_collection aif_semantic_cache;
 qdrant_vector_size 1536;
 
 semantic_cache_enabled true;
+semantic_cache_fail_open true;
 semantic_similarity_threshold 0.92;
+
+exact_cache_ttl_seconds 3600;
+semantic_cache_retention_seconds 604800;
+
+request_timeout_seconds 120;
+graceful_shutdown_timeout_seconds 30;
 ```
 
 ---
 
 # OpenAI-Compatible Provider URLs
 
-Use provider base URLs only.
+Use a provider base URL, not a full endpoint URL.
 
-## Correct
+AI Cost Firewall automatically appends OpenAI-compatible endpoint paths such as:
 
 ```text
-https://api.openai.com
+/v1/chat/completions
+/v1/embeddings
+```
+
+For example, use:
+
+```text
 http://ollama:11434/v1
 ```
 
-## Wrong
+Do not use:
 
 ```text
 http://ollama:11434/v1/chat/completions
 ```
-
-AI Cost Firewall automatically appends endpoint paths.
 
 ---
 
@@ -520,6 +579,16 @@ Requirements:
 
 ---
 
+# Semantic Cache Fail-Open Behavior
+
+When `semantic_cache_fail_open` is enabled, runtime semantic cache lookup, embedding, or semantic store failures do not block the request. AI Cost Firewall skips the semantic cache path and continues to the upstream LLM endpoint.
+
+This behavior applies to runtime semantic cache operations.
+
+It does not bypass startup dependency validation. When semantic cache is enabled, Qdrant must be reachable during startup, and the configured `qdrant_vector_size` must match the semantic cache collection.
+
+---
+
 # Common Startup Errors
 
 ## Missing embedding configuration
@@ -584,6 +653,8 @@ aif_requests_total
 aif_cache_exact_hits
 aif_cache_semantic_hits
 aif_model_cost_micro_usd_total
+aif_gross_saved_micro_usd_total
+aif_embedding_overhead_micro_usd_total
 aif_net_saved_micro_usd_total
 ```
 
@@ -594,6 +665,14 @@ aif_semantic_candidates_checked_total
 aif_semantic_threshold_results_total
 aif_semantic_lookup_duration_seconds
 ```
+
+AI Cost Firewall distinguishes between:
+
+- gross chat-completion savings
+- embedding overhead
+- net savings after embedding cost
+
+This distinction is important for semantic cache deployments because semantic lookup may require embedding generation.
 
 ---
 
