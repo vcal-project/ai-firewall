@@ -1,3 +1,4 @@
+use crate::release;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Url;
 use std::{
@@ -322,6 +323,16 @@ impl Config {
 
         out.push_str("AI Cost Firewall configuration\n");
         out.push_str("--------------------------------\n");
+        out.push_str(&format!("version = {}\n", release::PRODUCT_VERSION));
+        out.push_str(&format!("release = {}\n", release::RELEASE_TITLE));
+        out.push_str(&format!(
+            "compatibility_model = {}\n",
+            release::COMPATIBILITY_MODEL
+        ));
+        out.push_str(&format!(
+            "native_provider_support = {}\n",
+            release::NATIVE_PROVIDER_SUPPORT
+        ));
 
         out.push_str(&format!("listen_addr = {}\n", self.listen_addr));
         out.push_str(&format!(

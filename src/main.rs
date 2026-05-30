@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod error;
 mod metrics;
+mod release;
 
 mod api;
 mod cache;
@@ -318,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("- health: http://{}/healthz", display_addr);
     tracing::info!("- readiness: http://{}/readyz", display_addr);
     tracing::info!("- metrics: http://{}/metrics", display_addr);
+    tracing::info!("- version: http://{}/version", display_addr);
     tracing::info!("=== AI Cost Firewall ready ===");
 
     axum::serve(listener, built.router)

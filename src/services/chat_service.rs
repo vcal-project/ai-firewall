@@ -184,7 +184,7 @@ impl ChatService {
                     }
                 }
 
-                Err(e) => {
+                Err(e) if self.semantic_cache_fail_open => {
                     self.record_semantic_skip("store_error");
 
                     tracing::warn!(
@@ -192,6 +192,14 @@ impl ChatService {
                         error = %e,
                         "semantic store failed; response returned without semantic cache write"
                     );
+                }
+
+                Err(e) => {
+                    self.record_semantic_skip("store_error");
+
+                    return Err(AppError::semantic_provider(format!(
+                        "semantic store failed and semantic_cache_fail_open=false: {e}"
+                    )));
                 }
             }
         }
@@ -950,7 +958,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn semantic_store_error_does_not_fail_response() {
+    async fn semantic_store_error_fail_open_does_not_fail_response() {
+        let exact_cache = Arc::new(FakeExactCache::new());
+        let semantic_cache = Arc::new(FakeSemanticCache::with_store_error(
+            "embedding provider unavailable during store",
+        ));
+        let upstream = Arc::new(FakeUpstream::new(response_with_content(
+            "upstream response",
+        )));
+
+        let service = ChatService::new(
+            exact_cache,
+            semantic_cache,
+            upstream,
+            true,
+            true,
+            model_prices(),
+            Some(EmbeddingPrice {
+                usd_per_1m_tokens: 0.020,
+            }),
+        );
+
+        let response = service.handle(request()).await.unwrap();
+
+        assert_eq!(
+            response.choices[0].message.content,
+            json!("upstream response")
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_store_error_fail_closed_returns_error() {
         let exact_cache = Arc::new(FakeExactCache::new());
         let semantic_cache = Arc::new(FakeSemanticCache::with_store_error(
             "embedding provider unavailable during store",
@@ -971,11 +1009,10 @@ mod tests {
             }),
         );
 
-        let response = service.handle(request()).await.unwrap();
+        let err = service.handle(request()).await.unwrap_err();
+        let msg = err.to_string();
 
-        assert_eq!(
-            response.choices[0].message.content,
-            json!("upstream response")
-        );
+        assert!(msg.contains("semantic store failed"));
+        assert!(msg.contains("semantic_cache_fail_open=false"));
     }
 }

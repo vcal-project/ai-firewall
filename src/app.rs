@@ -1,4 +1,4 @@
-use crate::core::pricing::is_priced_model;
+use crate::{core::pricing::is_priced_model, release};
 
 use crate::{
     api,
@@ -126,7 +126,13 @@ fn mask_redis_url_for_logs(redis_url: &str) -> String {
 }
 
 fn log_startup_summary(cfg: &Config) {
-    tracing::info!("=== AI Cost Firewall Startup ===");
+    tracing::info!(
+        product = release::PRODUCT_NAME,
+        version = release::PRODUCT_VERSION,
+        release = release::RELEASE_TITLE,
+        compatibility_model = release::COMPATIBILITY_MODEL,
+        "=== AI Cost Firewall Startup ==="
+    );
 
     tracing::info!("Configuration:");
     for line in cfg.startup_summary_lines() {
@@ -296,6 +302,7 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
         .route("/healthz", get(api::health))
         .route("/readyz", get(readyz))
         .route("/metrics", get(api::metrics))
+        .route("/version", get(version))
         .route("/v1/chat/completions", post(api::chat::chat_completions))
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
         .layer(axum::middleware::from_fn_with_state(
@@ -306,6 +313,18 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
         .with_state(state.clone());
 
     Ok(BuiltApp { router, state })
+}
+
+async fn version() -> Json<serde_json::Value> {
+    Json(json!({
+        "product": release::PRODUCT_NAME,
+        "version": release::PRODUCT_VERSION,
+        "release_title": release::RELEASE_TITLE,
+        "compatibility_model": release::COMPATIBILITY_MODEL,
+        "native_provider_support": release::NATIVE_PROVIDER_SUPPORT,
+        "supported_api_style": "openai_compatible",
+        "provider_specific_config_blocks": false
+    }))
 }
 
 async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, &'static str) {
@@ -322,7 +341,7 @@ async fn shutdown_gate_middleware(
     next: Next,
 ) -> Response {
     let path = req.uri().path();
-    let is_probe = matches!(path, "/healthz" | "/readyz" | "/metrics");
+    let is_probe = matches!(path, "/healthz" | "/readyz" | "/metrics" | "/version");
 
     if state.shutdown.is_shutting_down() && !is_probe {
         metrics::SHUTDOWN_REJECTIONS_TOTAL.inc();
