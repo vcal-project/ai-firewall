@@ -329,10 +329,7 @@ impl Config {
             "compatibility_model = {}\n",
             release::COMPATIBILITY_MODEL
         ));
-        out.push_str(&format!(
-            "native_provider_support = {}\n",
-            release::NATIVE_PROVIDER_SUPPORT
-        ));
+        out.push_str(&format!("scope_note = {}\n", release::SCOPE_NOTE));
 
         out.push_str(&format!("listen_addr = {}\n", self.listen_addr));
         out.push_str(&format!(

@@ -320,10 +320,11 @@ async fn version() -> Json<serde_json::Value> {
         "product": release::PRODUCT_NAME,
         "version": release::PRODUCT_VERSION,
         "release_title": release::RELEASE_TITLE,
+        "supported_api_style": release::SUPPORTED_API_STYLE,
         "compatibility_model": release::COMPATIBILITY_MODEL,
-        "native_provider_support": release::NATIVE_PROVIDER_SUPPORT,
-        "supported_api_style": "openai_compatible",
-        "provider_specific_config_blocks": false
+        "provider_specific_config_blocks": false,
+        "native_provider_integrations": false,
+        "scope_note": release::SCOPE_NOTE
     }))
 }
 
