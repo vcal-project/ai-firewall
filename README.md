@@ -536,9 +536,9 @@ CONTRIBUTING.md
 
 ---
 
-# Integration with VCAL Server
+# Integration with VCAL Semantic Cache
 
-AI Cost Firewall can optionally integrate with VCAL Server for advanced semantic caching and distributed vector storage.
+AI Cost Firewall can optionally integrate with VCAL Semantic Cache for advanced semantic caching and distributed vector storage.
 
 https://vcal-project.com/vcal-server
 
