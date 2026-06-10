@@ -389,8 +389,8 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
     Ok(BuiltApp { router, state })
 }
 
-async fn version() -> Json<serde_json::Value> {
-    Json(json!({
+async fn version() -> impl IntoResponse {
+    let body = json!({
         "product": release::PRODUCT_NAME,
         "version": release::PRODUCT_VERSION,
         "release_title": release::RELEASE_TITLE,
@@ -399,7 +399,12 @@ async fn version() -> Json<serde_json::Value> {
         "provider_specific_config_blocks": false,
         "native_provider_integrations": false,
         "scope_note": release::SCOPE_NOTE
-    }))
+    });
+
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        format!("{}\n", body),
+    )
 }
 
 async fn metrics_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
