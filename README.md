@@ -91,17 +91,17 @@ The Overview dashboard shows the high-level cost and cache impact of AI Cost Fir
 
 It demonstrates:
 
-total request volume
-estimated chat-completion cost
-gross savings from cache reuse
-embedding overhead
-net savings after embedding cost
-net savings percentage
-cache hit rate
-exact and semantic cache activity
-cache bypass request rate
-per-model spend and savings
-savings by cache type
+- total request volume
+- estimated chat-completion cost
+- gross savings from cache reuse
+- embedding overhead
+- net savings after embedding cost
+- net savings percentage
+- cache hit rate
+- exact and semantic cache activity
+- cache bypass request rate
+- per-model spend and savings
+- savings by cache type
 
 This dashboard is intended for quick validation, demos, and cost-savings reviews.
 
@@ -115,20 +115,20 @@ The Diagnostics dashboard provides a deeper operational view of semantic-cache b
 
 It demonstrates:
 
-readiness state
-semantic lookup volume
-semantic threshold pass/fail behavior
-semantic candidate evaluation
-expired semantic entries skipped during lookup
-semantic lookup latency
-upstream and embedding latency
-embedding overhead by operation
-gross vs net semantic savings
-exact vs semantic savings
-semantic cache misses vs threshold passes
-semantic store health
-runtime and provider pressure signals
-provider error classes
+- readiness state
+- semantic lookup volume
+- semantic threshold pass/fail behavior
+- semantic candidate evaluation
+- expired semantic entries skipped during lookup
+- semantic lookup latency
+- upstream and embedding latency
+- embedding overhead by operation
+- gross vs net semantic savings
+- exact vs semantic savings
+- semantic cache misses vs threshold passes
+- semantic store health
+- runtime and provider pressure signals
+- provider error classes
 
 This dashboard is intended for troubleshooting, tuning semantic similarity thresholds, validating fail-open behavior, and understanding runtime cache behavior during pilots.
 
