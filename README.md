@@ -85,7 +85,7 @@ The dashboards are included in the Docker deployment files and are automatically
 
 ## Cost Savings Overview
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-overview-018.png)](assets/grafana/ai-firewall-overview-021.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-overview-021.png)](assets/grafana/ai-firewall-overview-021.png)
 
 The Overview dashboard shows the high-level cost and cache impact of AI Cost Firewall.
 
@@ -109,7 +109,7 @@ This dashboard is intended for quick validation, demos, and cost-savings reviews
 
 ## Semantic Diagnostics
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics-019.png)](assets/grafana/ai-firewall-diagnostics-021.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics-021.png)](assets/grafana/ai-firewall-diagnostics-021.png)
 
 The Diagnostics dashboard provides a deeper operational view of semantic-cache behavior and runtime health.
 
