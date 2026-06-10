@@ -11,16 +11,18 @@ AI Cost Firewall is designed to behave predictably in production environments an
 
 AI Cost Firewall provides:
 
-- exact cache and semantic cache orchestration
-- explicit readiness and liveness behavior
+- configurable exact cache and semantic cache orchestration
+- explicit readiness, liveness, and dependency-aware readiness behavior
 - graceful shutdown with request draining
 - nginx-style hot reload using `SIGHUP`
 - startup dependency validation
 - OpenAI-compatible provider diagnostics
 - Prometheus metrics and Grafana dashboards
 - semantic cache lifecycle control
-- upstream and embedding timeout visibility
+- separate upstream and embedding timeout controls
 - structured runtime error classification
+- per-request cache bypass support
+- request body and prompt-size protection
 
 ---
 
@@ -45,9 +47,9 @@ OpenAI-compatible provider
 
 Runtime dependencies are initialized during normal startup.
 
-## Required Dependencies
+## Runtime Dependencies
 
-Redis is always required.
+Redis is used for the exact cache.
 
 Example:
 
@@ -55,13 +57,24 @@ Example:
 redis_url redis://redis:6379;
 ```
 
+In v0.2.1 and newer, exact cache behavior is configurable:
+
+```conf
+exact_cache_enabled true;
+exact_cache_fail_open true;
+```
+
+When `exact_cache_enabled` is `false`, Redis exact-cache lookup and storage are skipped.
+
+When `exact_cache_fail_open` is `true`, Redis initialization or runtime Redis errors can fail open depending on readiness policy. Requests can continue upstream, but `/readyz` may still report unavailable if `readiness_requires_redis` is enabled.
+
 When semantic cache is enabled:
 
 ```conf
 semantic_cache_enabled true;
 ```
 
-Qdrant must also be reachable.
+Qdrant is used for semantic cache storage.
 
 Example:
 
@@ -75,16 +88,16 @@ qdrant_url http://qdrant:6334;
 
 During startup, AI Cost Firewall validates:
 
-- Redis connectivity
-- Qdrant connectivity
+- Redis connectivity when exact cache is enabled and required
+- Qdrant connectivity when semantic cache is enabled and required
 - semantic cache configuration completeness
 - embedding configuration
 - Qdrant collection vector size compatibility
 - provider configuration
-- request-size configuration
+- request body and prompt-size configuration
 - model validation settings
 
-Startup intentionally fails fast on invalid configuration to avoid silent runtime errors.
+Startup fails fast on invalid configuration to avoid silent runtime errors. Dependency behavior may also be affected by fail-open and readiness settings.
 
 ---
 
@@ -106,9 +119,33 @@ Qdrant collection 'aif_semantic_cache' has vector size 768, but config requires 
 
 ---
 
+# exact_cache_fail_open Behavior
+
+`exact_cache_fail_open` controls runtime Redis/exact-cache failure behavior.
+
+Example:
+
+```conf
+exact_cache_fail_open true;
+```
+
+When enabled:
+
+- Redis lookup failures behave like cache misses
+- Redis store failures do not fail the request
+- requests continue upstream
+
+Readiness can still report Redis as unavailable when:
+
+```conf
+readiness_requires_redis true;
+```
+
+---
+
 # semantic_cache_fail_open Behavior
 
-`semantic_cache_fail_open` affects runtime semantic lookup behavior only.
+`semantic_cache_fail_open` affects runtime semantic lookup behavior.
 
 Example:
 
@@ -121,7 +158,7 @@ When enabled:
 - runtime semantic lookup failures are treated as cache skips
 - requests continue upstream normally
 
-It does not bypass startup dependency validation.
+It does not bypass invalid configuration validation. Dependency startup behavior depends on the configured fail-open and readiness settings.
 
 ---
 
@@ -129,9 +166,13 @@ It does not bypass startup dependency validation.
 
 | Condition | Behavior |
 |---|---|
-| Redis unavailable | startup fails |
-| Semantic cache enabled and Qdrant unavailable | startup fails |
+| Redis unavailable + exact cache enabled + fail-open disabled | startup fails |
+| Redis unavailable + exact cache enabled + fail-open enabled | startup may continue; readiness depends on `readiness_requires_redis` |
+| Exact cache disabled | Redis exact-cache path skipped |
+| Semantic cache enabled and Qdrant unavailable | startup fails unless semantic fail-open/runtime behavior is configured to tolerate it |
 | Vector size mismatch | startup fails |
+| Runtime exact-cache failure + fail-open enabled | continue upstream |
+| Runtime exact-cache failure + fail-open disabled | request may fail |
 | Runtime semantic lookup failure + fail-open enabled | continue upstream |
 | Runtime semantic lookup failure + fail-open disabled | request fails |
 
@@ -175,7 +216,18 @@ Behavior:
 
 - returns `200 OK` during normal operation
 - returns `503 Service Unavailable` during graceful shutdown
+- can return `503 Service Unavailable` when a configured dependency is unavailable
 - suitable for load balancers and orchestration systems
+
+Readiness can be configured with:
+
+```conf
+readiness_requires_redis true;
+readiness_requires_qdrant false;
+readiness_requires_upstream false;
+```
+
+This allows deployments to choose whether readiness should fail when Redis, Qdrant, or the upstream provider is unavailable.
 
 ---
 
@@ -185,6 +237,9 @@ Behavior:
 |---|---:|---:|
 | Normal operation | 200 | 200 |
 | Graceful shutdown | 200 | 503 |
+| Required Redis unavailable | 200 | 503 |
+| Required Qdrant unavailable | 200 | 503 |
+| Required upstream unavailable | 200 | 503 |
 | Process stopped | unavailable | unavailable |
 
 ---
@@ -367,6 +422,52 @@ embedding_api_key = sk-y...-key
 ```
 
 ---
+# Request Limits and Cache Bypass
+
+AI Cost Firewall can reject oversized requests before forwarding them upstream.
+
+```conf
+max_request_body_bytes 1048576;
+max_prompt_chars 200000;
+```
+
+`max_request_body_bytes` limits the full HTTP request body.
+
+`max_prompt_chars` limits the total chat message content after parsing.
+
+Oversized requests are rejected as validation or payload-size errors and are not forwarded upstream.
+
+Per-request cache bypass can be enabled with:
+
+```conf
+cache_bypass_header X-AIF-Cache-Bypass;
+```
+
+Example request header:
+
+```http
+X-AIF-Cache-Bypass: true
+```
+
+Accepted truthy values:
+
+```text
+true
+1
+yes
+on
+```
+
+When cache bypass is enabled for a request:
+
+- exact cache lookup is skipped
+- semantic cache lookup is skipped
+- exact cache storage is skipped
+- semantic cache storage is skipped
+- the request is counted by `aif_cache_bypass_requests_total`
+
+---
+
 
 # Upstream Timeout Behavior
 
@@ -374,7 +475,11 @@ Requests to upstream providers are limited by:
 
 ```conf
 request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
 ```
+
+where `request_timeout_seconds` remains a fallback.
 
 When exceeded:
 
@@ -458,13 +563,16 @@ embedding_api_key dummy;
 
 Semantic cache lookup flow:
 
-1. normalize request
-2. generate embedding
-3. query Qdrant
-4. filter expired entries
-5. evaluate similarity threshold
-6. return reusable cached response
-7. fallback upstream on miss
+1. check per-request cache bypass header
+2. normalize request
+3. generate embedding
+4. query Qdrant
+5. filter expired entries
+6. evaluate similarity threshold
+7. return reusable cached response
+8. fallback upstream on miss
+
+When the configured cache bypass header is present with a truthy value, exact lookup, semantic lookup, and cache storage are skipped for that request.
 
 ---
 
@@ -502,6 +610,15 @@ Expired entries:
 - may remain stored until pruned
 
 Semantic correctness does not depend on cleanup.
+
+Cache writes can be controlled independently:
+
+```conf
+exact_cache_store_enabled true;
+semantic_cache_store_enabled true;
+```
+
+When store controls are disabled, existing cache entries may still be read, but new upstream responses are not written to the corresponding cache layer.
 
 ---
 
@@ -560,6 +677,19 @@ Metrics endpoint:
 http://localhost:8080/metrics
 ```
 
+Metrics access can be controlled with:
+
+```conf
+metrics_auth_required false;
+# metrics_auth_token replace-with-prometheus-token;
+```
+
+When `metrics_auth_required` is enabled, `/metrics` requires:
+
+```http
+Authorization: Bearer <metrics_auth_token>
+```
+
 ---
 
 # Core Runtime Metrics
@@ -576,9 +706,10 @@ aif_readiness_state
 # Cache Metrics
 
 ```text
-aif_cache_exact_hits
-aif_cache_semantic_hits
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
+aif_cache_bypass_requests_total
 ```
 
 ---
@@ -707,9 +838,10 @@ Recommended operational tasks:
 Inspect:
 
 ```text
-aif_cache_exact_hits
-aif_cache_semantic_hits
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
+aif_cache_bypass_requests_total
 ```
 
 Possible causes:
@@ -735,6 +867,28 @@ Possible actions:
 - reduce prompt size
 - use faster models
 - inspect provider latency
+
+---
+
+# Cache Bypass Requests Show Zero
+
+Inspect:
+
+```bash
+curl -s http://localhost:8080/metrics | grep aif_cache_bypass_requests_total
+```
+
+Send a bypass request:
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer demo-key" \
+  -H "X-AIF-Cache-Bypass: true" \
+  -d '{"model":"gpt-4o-mini-2024-07-18","messages":[{"role":"user","content":"Bypass test"}],"temperature":0}'
+```
+
+If the metric increments after the next Prometheus scrape, the Grafana panel should show bypass traffic.
 
 ---
 
@@ -797,6 +951,27 @@ qdrant_url http://127.0.0.1:6334;
 
 ---
 
+# Docker Container Shows Unhealthy but Logs Show Ready
+
+If the runtime image does not include `curl`, a Dockerfile or Compose healthcheck that calls `curl` inside the container will fail even when AI Cost Firewall is running correctly.
+
+Check the healthcheck failure:
+
+```bash
+docker inspect ai-firewall --format '{{json .State.Health}}' | jq
+```
+
+Verify the app from the host:
+
+```bash
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/readyz
+```
+
+Prefer host-level, Prometheus, Grafana, load-balancer, or Kubernetes probes instead of installing extra tools only for container-internal healthchecks.
+
+---
+
 # Wrong Upstream Base URL
 
 Correct:
@@ -832,7 +1007,11 @@ See also:
 - reload happens only via `SIGHUP`
 - `--test-config` performs static validation only
 - runtime dependencies initialize during startup and reload
-- Redis is always required
-- Qdrant required only when semantic cache enabled
-- `semantic_cache_fail_open` affects runtime lookup behavior only
-- upstream requests exceeding timeout are aborted
+- Redis is required only when exact cache is enabled and the deployment treats Redis as required
+- Qdrant is required only when semantic cache is enabled and the deployment treats Qdrant as required
+- `exact_cache_fail_open` affects runtime Redis/exact-cache failure behavior
+- `semantic_cache_fail_open` affects runtime semantic lookup behavior
+- `request_timeout_seconds` is a backward-compatible fallback
+- `upstream_timeout_seconds` controls chat-completion upstream calls
+- `embedding_timeout_seconds` controls embedding provider calls
+- upstream or embedding requests exceeding timeout are aborted

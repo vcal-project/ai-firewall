@@ -435,8 +435,11 @@ Exact cache behavior may vary depending on deployment flow.
 Recommended starting point:
 
 ```text
-request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
 ```
+
+where `request_timeout_seconds` is a fallback.
 
 Local GPU models and large cloud models may require higher values.
 

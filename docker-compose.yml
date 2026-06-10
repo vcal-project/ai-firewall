@@ -27,7 +27,7 @@ services:
       retries: 10
 
   firewall:
-    image: vcalproject/ai-firewall:v0.2.0
+    image: vcalproject/ai-firewall:v0.2.1
     container_name: ai-firewall
     depends_on:
       redis:
@@ -40,11 +40,6 @@ services:
       - ./configs:/configs:ro
     command: ["--config", "/configs/ai-firewall.conf"]
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
 
   prometheus:
     image: prom/prometheus:v3.10.0

@@ -1,4 +1,3 @@
-
 # AI Cost Firewall Architecture
 
 AI Cost Firewall is a lightweight OpenAI-compatible gateway for LLM cost reduction, semantic caching, operational control, and observability.
@@ -16,7 +15,9 @@ using a two-layer caching strategy:
 1. exact cache (Redis / Valkey)
 2. semantic cache (Qdrant)
 
-Only cache misses are forwarded upstream.
+Only requests that miss all enabled cache layers are forwarded upstream.
+
+AI Cost Firewall v0.2.1 also adds more explicit gateway controls, including per-request cache bypass, independent cache store controls, configurable readiness dependencies, request-size protection, and separate upstream and embedding timeouts.
 
 ---
 
@@ -62,8 +63,11 @@ Prometheus metrics and Grafana dashboards provide visibility into:
 - request traffic
 - cache reuse
 - semantic behavior
+- cache bypass activity
+- readiness state
 - latency
 - timeout behavior
+- provider errors
 - cost savings
 - embedding overhead
 
@@ -113,13 +117,18 @@ Applications typically require no SDK changes.
 Every request follows a staged pipeline.
 
 ```text
-normalize request
-→ exact cache lookup
-→ semantic cache lookup
-→ upstream request
-→ cache storage
+receive request
+→ enforce request body and prompt-size limits
+→ normalize request
+→ check per-request cache bypass
+→ exact cache lookup, if enabled
+→ semantic cache lookup, if enabled
+→ upstream request on miss or bypass
+→ cache storage, if enabled
 → response return
 ```
+
+A request can skip cache lookup and cache storage when the configured cache-bypass header is present.
 
 ---
 
@@ -130,53 +139,81 @@ flowchart TD
 
     A[Client Request]
 
-    B[Normalize Request]
+    B{Request Size<br/>Allowed?}
 
-    C{Exact Cache Lookup<br/>Redis}
+    C[Normalize Request]
 
-    D[Return Cached Response]
+    D{Cache Bypass<br/>Header?}
 
-    E[Generate Embedding]
+    E{Exact Cache<br/>Enabled?}
 
-    F{Semantic Search<br/>Qdrant}
+    F{Exact Cache Lookup<br/>Redis}
 
-    G{Candidate Valid?<br/>similarity + freshness}
+    G[Return Cached Response]
 
-    H[Forward to Upstream]
+    H{Semantic Cache<br/>Enabled?}
 
-    I[Receive Upstream Response]
+    I[Generate Embedding]
 
-    J[Store Exact Cache]
+    J{Semantic Search<br/>Qdrant}
 
-    K[Store Semantic Cache]
+    K{Candidate Valid?<br/>similarity + freshness}
 
-    L[Return Response]
+    L[Forward to Upstream]
+
+    M[Receive Upstream Response]
+
+    N{Exact Store<br/>Enabled?}
+
+    O[Store Exact Cache]
+
+    P{Semantic Store<br/>Enabled?}
+
+    Q[Store Semantic Cache]
+
+    R[Return Response]
+
+    S[Reject Request]
 
     A --> B
 
-    B --> C
+    B -->|NO| S
+    B -->|YES| C
 
-    C -->|HIT| D
+    C --> D
 
-    D --> L
+    D -->|YES| L
+    D -->|NO| E
 
-    C -->|MISS| E
+    E -->|YES| F
+    E -->|NO| H
 
-    E --> F
+    F -->|HIT| G
+    F -->|MISS| H
 
-    F --> G
+    G --> R
 
-    G -->|YES| D
-
-    G -->|NO| H
-
-    H --> I
+    H -->|YES| I
+    H -->|NO| L
 
     I --> J
-    I --> K
+    J --> K
 
-    J --> L
-    K --> L
+    K -->|YES| G
+    K -->|NO| L
+
+    L --> M
+
+    M --> N
+    N -->|YES| O
+    N -->|NO| P
+
+    O --> P
+
+    P -->|YES| Q
+    P -->|NO| R
+
+    Q --> R
 ```
 
 ---
@@ -198,10 +235,13 @@ AI Cost Firewall is implemented in Rust using:
 
 Responsibilities include:
 
+- request validation
 - request normalization
 - cache orchestration
+- per-request cache bypass handling
 - semantic similarity evaluation
 - upstream forwarding
+- timeout enforcement
 - metrics generation
 - operational diagnostics
 - lifecycle management
@@ -239,6 +279,20 @@ hash(normalized request)
 → cached response
 ```
 
+Exact cache can be controlled with:
+
+```conf
+exact_cache_enabled true;
+exact_cache_fail_open true;
+exact_cache_store_enabled true;
+```
+
+When `exact_cache_enabled` is disabled, exact-cache lookup and storage are skipped.
+
+When `exact_cache_store_enabled` is disabled, exact-cache reads may still happen, but new upstream responses are not written to Redis.
+
+When `exact_cache_fail_open` is enabled, runtime Redis lookup/store failures behave like cache misses and requests continue upstream.
+
 ---
 
 # Qdrant — Semantic Cache
@@ -260,6 +314,19 @@ Each semantic entry contains:
 - inserted_at
 - expires_at
 - model metadata
+
+Semantic cache can be controlled with:
+
+```conf
+semantic_cache_enabled true;
+semantic_cache_fail_open true;
+semantic_cache_store_enabled true;
+semantic_similarity_threshold 0.92;
+```
+
+When `semantic_cache_enabled` is disabled, embeddings are skipped and Qdrant is not required.
+
+When `semantic_cache_store_enabled` is disabled, semantic lookups may still happen, but new upstream responses are not written to Qdrant.
 
 ---
 
@@ -284,6 +351,8 @@ Typical embedding models:
 |---|---|
 | text-embedding-3-small | 1536 |
 | nomic-embed-text | 768 |
+
+Embedding requests use `embedding_timeout_seconds` when configured.
 
 ---
 
@@ -318,6 +387,8 @@ AI Cost Firewall evaluates each candidate using:
 similarity_score >= semantic_similarity_threshold
 AND
 expires_at > now
+AND
+cached response payload is valid
 ```
 
 Typical thresholds:
@@ -363,28 +434,88 @@ Semantic correctness does not depend on cleanup.
 
 ---
 
-# semantic_cache_fail_open
+# Runtime Fail-Open Behavior
 
-Optional runtime behavior:
+AI Cost Firewall supports separate fail-open controls for exact cache and semantic cache.
 
 ```conf
+exact_cache_fail_open true;
 semantic_cache_fail_open true;
 ```
 
 When enabled:
 
-- semantic lookup failures behave like cache misses
+- runtime Redis/exact-cache failures behave like cache misses
+- runtime semantic lookup failures behave like cache misses
 - requests continue upstream normally
 
-This prevents semantic infrastructure failures from blocking traffic.
+Fail-open behavior applies to runtime lookup/store activity. It does not turn invalid configuration into valid configuration.
 
-It does not bypass startup validation.
+---
+
+# Per-request Cache Bypass
+
+AI Cost Firewall can bypass cache lookup and cache storage for a single request.
+
+Default configuration:
+
+```conf
+cache_bypass_header X-AIF-Cache-Bypass;
+```
+
+Example request header:
+
+```http
+X-AIF-Cache-Bypass: true
+```
+
+Accepted truthy values:
+
+```text
+true
+1
+yes
+on
+```
+
+When cache bypass is enabled for a request:
+
+- exact cache lookup is skipped
+- semantic cache lookup is skipped
+- exact cache storage is skipped
+- semantic cache storage is skipped
+- the request is forwarded upstream
+
+Bypass activity is exposed through:
+
+```text
+aif_cache_bypass_requests_total
+```
+
+---
+
+# Request Protection
+
+AI Cost Firewall applies request-size limits before forwarding traffic upstream.
+
+Example:
+
+```conf
+max_request_body_bytes 1M;
+max_prompt_chars 200000;
+```
+
+`max_request_body_bytes` limits the full HTTP request body.
+
+`max_prompt_chars` limits total chat message content after parsing.
+
+These controls help prevent accidental oversized prompts and unexpected upstream cost spikes.
 
 ---
 
 # OpenAI-Compatible Upstream Providers
 
-When no cache match exists, requests are forwarded upstream.
+When no enabled cache layer can return a response, requests are forwarded upstream.
 
 Supported practical providers include:
 
@@ -415,6 +546,29 @@ AI Cost Firewall internally appends:
 ```
 
 Do not configure full endpoint paths directly.
+
+Upstream chat-completion calls use `upstream_timeout_seconds` when configured.
+
+---
+
+# Timeout Model
+
+AI Cost Firewall separates chat-completion and embedding timeouts.
+
+Example:
+
+```conf
+request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
+```
+
+`request_timeout_seconds` remains a backward-compatible fallback.
+
+Specific timeout settings override it:
+
+- `upstream_timeout_seconds`
+- `embedding_timeout_seconds`
 
 ---
 
@@ -459,6 +613,12 @@ hash(normalized request)
 
 Fastest possible path.
 
+Can be disabled with:
+
+```conf
+exact_cache_enabled false;
+```
+
 ---
 
 ## Stage 2 — Semantic Cache
@@ -472,13 +632,25 @@ similar_prompt
 
 Used when exact matching fails.
 
+Can be disabled with:
+
+```conf
+semantic_cache_enabled false;
+```
+
 ---
 
 ## Stage 3 — Upstream Request
 
-Only requests missing both cache layers reach upstream providers.
+Requests reach upstream providers when:
 
-Returned responses are then stored in both caches.
+- cache bypass is active
+- exact cache misses or is disabled
+- semantic cache misses or is disabled
+- cache infrastructure fails open
+- streaming/tool/structured-output behavior skips semantic cache
+
+Returned responses are stored only in enabled cache stores.
 
 ---
 
@@ -516,6 +688,22 @@ flowchart LR
     Firewall --> Qdrant
 
     Qdrant -->|Semantic Hit| Firewall
+
+    Firewall --> Client
+```
+
+---
+
+## Cache Bypass Request
+
+```mermaid
+flowchart LR
+
+    Client -->|Bypass Header| Firewall
+
+    Firewall --> Upstream
+
+    Upstream --> Firewall
 
     Firewall --> Client
 ```
@@ -566,6 +754,7 @@ Current behavior:
 
 - streaming requests bypass semantic cache
 - streaming responses are not stored in semantic cache
+- exact cache behavior may vary depending on request flow
 
 ---
 
@@ -581,12 +770,50 @@ These request types often reduce safe semantic reuse.
 
 ---
 
+# Readiness and Health
+
+AI Cost Firewall exposes:
+
+```text
+/healthz
+/readyz
+```
+
+`/healthz` indicates process liveness.
+
+`/readyz` indicates whether the instance should receive traffic.
+
+Readiness behavior can be configured with:
+
+```conf
+readiness_requires_redis true;
+readiness_requires_qdrant false;
+readiness_requires_upstream false;
+```
+
+This lets deployments decide whether Redis, Qdrant, or upstream-provider availability should affect readiness.
+
+---
+
 # Metrics & Observability
 
 AI Cost Firewall exports Prometheus metrics:
 
 ```text
 /metrics
+```
+
+Example:
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+The metrics endpoint can optionally require bearer-token authentication:
+
+```conf
+metrics_auth_required true;
+metrics_auth_token your-prometheus-token;
 ```
 
 ---
@@ -596,9 +823,10 @@ AI Cost Firewall exports Prometheus metrics:
 ```text
 aif_requests_total
 aif_upstream_calls_total
-aif_cache_exact_hits
-aif_cache_semantic_hits
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
+aif_cache_bypass_requests_total
 ```
 
 ---
@@ -610,6 +838,8 @@ aif_semantic_candidates_checked_total
 aif_semantic_threshold_results_total
 aif_semantic_lookup_duration_seconds
 aif_semantic_expired_entries_skipped_total
+aif_semantic_store_total
+aif_semantic_store_errors_total
 ```
 
 Useful for tuning:
@@ -617,6 +847,7 @@ Useful for tuning:
 - semantic thresholds
 - embedding quality
 - retention windows
+- semantic store behavior
 
 ---
 
@@ -664,28 +895,41 @@ AI Cost Firewall includes pre-configured Grafana dashboards.
 
 ---
 
-## Overview Dashboard
+## Cost Savings Overview
 
 Shows:
 
-- cache hit rates
-- cost savings
+- total request volume
+- estimated chat-completion cost
+- gross savings
 - embedding overhead
-- request traffic
 - net savings
+- net savings percentage
+- cache hit rate
+- exact and semantic cache activity
+- cache bypass request rate
+- per-model spend and savings
+- savings by cache type
 
 ---
 
-## Diagnostics Dashboard
+## Semantic Diagnostics
 
 Shows:
 
+- readiness state
+- semantic lookup volume
 - semantic threshold pass/fail behavior
-- semantic lookup latency
-- runtime cache diagnostics
 - semantic candidate activity
+- expired semantic entries skipped during lookup
+- semantic lookup latency
+- upstream and embedding latency
+- embedding overhead by operation
+- gross vs net semantic savings
+- semantic store health
+- provider error classes
 
-Dashboards are provisioned automatically in Docker deployments.
+Dashboards are provisioned automatically in Docker deployments that use the provided Grafana provisioning files.
 
 ---
 
@@ -714,7 +958,7 @@ deploy/examples/
 Approximate behavior on a small cloud instance:
 
 | Scenario | Approx Throughput | Typical Latency |
-|---|---|---|
+|---|---:|---:|
 | Exact cache hit | 5k–20k req/sec | 1–3 ms |
 | Semantic cache hit | 50–300 req/sec | 50–150 ms |
 | Upstream request | depends on provider | 0.5–5 s |
@@ -726,18 +970,23 @@ Actual performance depends on:
 - upstream model latency
 - infrastructure
 - network topology
+- request size
+- cache hit ratio
 
 ---
 
 # Operational Notes
 
-- Redis always required
-- Qdrant required only when semantic cache enabled
-- vector dimensions must match embedding model
-- expired semantic entries filtered during lookup
-- semantic correctness independent of pruning
-- fail-open affects runtime semantic lookups only
-- providers accessed through OpenAI-compatible APIs
+- Redis is used for exact cache when exact cache is enabled.
+- Qdrant is required only when semantic cache is enabled.
+- Vector dimensions must match the embedding model.
+- Expired semantic entries are filtered during lookup.
+- Semantic correctness is independent of pruning.
+- Exact and semantic cache writes can be disabled independently.
+- Cache bypass skips lookup and storage for a single request.
+- Fail-open controls apply to runtime cache behavior.
+- Providers are accessed through OpenAI-compatible APIs.
+- `request_timeout_seconds` remains a fallback for specific timeout settings.
 
 ---
 
@@ -749,12 +998,16 @@ AI Cost Firewall acts as a lightweight LLM gateway that:
 - improves latency
 - increases effective cache reuse
 - provides operational visibility
+- adds practical gateway controls for pilot and production-like deployments
 - supports OpenAI-compatible deployments
 
 By combining:
 
 - exact caching (Redis / Valkey)
 - semantic caching (Qdrant)
+- request controls
+- cache-store controls
+- Prometheus/Grafana observability
 
 the firewall maximizes reusable responses while maintaining operational simplicity.
 

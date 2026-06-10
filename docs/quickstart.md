@@ -6,16 +6,14 @@ AI Cost Firewall is a pilot-ready OpenAI-compatible gateway for LLM caching, cos
 
 It reduces LLM API cost and latency using two cache layers:
 
-* exact cache using Redis
-* semantic cache using Qdrant
+- exact cache using Redis or Valkey
+- semantic cache using Qdrant
 
-Only cache misses are forwarded to the upstream LLM endpoint.
+Only cache misses are forwarded to the upstream LLM endpoint unless a request explicitly bypasses cache.
 
-v0.2.0 consolidates the v0.1.x work into the first pilot-ready baseline. The current product model is intentionally simple:
+The current product model is intentionally simple: AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a flat configuration model.
 
-AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a flat configuration model.
-
-It does not yet provide native provider-specific API integrations or provider-specific configuration blocks.
+It does not provide native provider-specific API integrations or provider-specific configuration blocks. Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs may be used through an OpenAI-compatible gateway or compatibility layer.
 
 ---
 
@@ -27,7 +25,7 @@ Client
    ▼
 AI Cost Firewall
    │
-   ├── Redis (exact cache)
+   ├── Redis / Valkey (exact cache)
    ├── Qdrant (semantic cache)
    │
    ▼
@@ -36,16 +34,14 @@ OpenAI-compatible upstream
 
 Common OpenAI-compatible deployment patterns include:
 
-* OpenAI
-* Ollama
-* LM Studio
-* vLLM
-* LiteLLM
-* OpenRouter
+- OpenAI
+- Ollama
+- LM Studio
+- vLLM
+- LiteLLM
+- OpenRouter
 
 AI Cost Firewall expects OpenAI-style chat and embedding APIs. Compatibility depends on how closely the selected provider or runtime follows the OpenAI-compatible API shape.
-
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.0. They may be used only through an OpenAI-compatible gateway or compatibility layer.
 
 ---
 
@@ -69,7 +65,7 @@ Recommended starting points:
 
 Each example includes:
 
-- docker-compose deployment
+- Docker Compose deployment
 - minimal configuration
 - expected metrics
 - dashboard support
@@ -77,31 +73,30 @@ Each example includes:
 
 ---
 
-# v0.2.0 Release Focus
+# v0.2.1 Release Focus
 
-v0.2.0 is the first pilot-ready milestone of AI Cost Firewall.
+AI Cost Firewall v0.2.1 builds on the v0.2.0 pilot-ready baseline with additional gateway controls, clearer fail-open behavior, and improved deployment diagnostics.
 
 This release focuses on:
 
-- stable OpenAI-compatible `/v1/chat/completions` gateway behavior
-- stable exact cache behavior
-- stable semantic cache behavior
-- embedding overhead accounting
-- gross and net savings metrics
-- safe masked configuration printing
-- static configuration validation
-- readiness and liveness endpoints
-- graceful shutdown and request draining
-- SIGHUP hot reload
-- clear Redis, Qdrant, upstream, and embedding failure behavior
-- polished Docker Compose deployment flow
-- Prometheus and Grafana observability
+- configurable exact cache enable/disable behavior
+- explicit Redis/exact-cache fail-open behavior
+- separate upstream and embedding timeout controls
+- request body and prompt-size protection
+- independent exact and semantic cache store controls
+- per-request cache bypass using `X-AIF-Cache-Bypass`
+- metrics endpoint access-control configuration
+- configurable readiness dependency behavior for Redis, Qdrant, and upstream providers
+- improved Grafana Overview and Diagnostics dashboards
+- cache-bypass visibility in Prometheus and Grafana
+- cleaner Docker runtime image for release testing
+- continued support for OpenAI-compatible chat and embedding APIs
 
-v0.2.0 is a consolidation release. Most capabilities were introduced incrementally across the v0.1.x series and are now documented as a stable pilot-ready baseline.
+v0.2.1 is an operational hardening release. It keeps the v0.2.0 architecture stable while making the gateway easier to test, debug, and deploy in pilot and production-like environments.
 
 ---
 
-# Quickest Start (Docker)
+# Quickest Start with Docker
 
 ## Prerequisites
 
@@ -198,9 +193,9 @@ docker compose restart firewall
 
 | Service | URL |
 |---|---|
-| Firewall API | http://localhost:8080 |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 |
+| Firewall API | `http://localhost:8080` |
+| Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3000` |
 
 Prometheus and Grafana are included automatically in:
 
@@ -254,7 +249,7 @@ docker compose logs -f firewall
 
 # Example Requests
 
-## OpenAI Example
+## OpenAI-Compatible Example
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -266,6 +261,14 @@ curl http://localhost:8080/v1/chat/completions \
     ]
   }'
 ```
+
+Run the same request twice.
+
+Expected behavior:
+
+- first request: upstream provider
+- second request: exact cache hit
+- similar requests: possible semantic cache hits
 
 ---
 
@@ -282,13 +285,44 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-Run the same request twice.
+---
 
-Expected behavior:
+# Per-request Cache Bypass
 
-- first request → upstream provider
-- second request → exact cache hit
-- similar requests → possible semantic cache hits
+v0.2.1 supports bypassing cache for one request.
+
+Default header:
+
+```http
+X-AIF-Cache-Bypass: true
+```
+
+Example:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-AIF-Cache-Bypass: true" \
+  -d '{
+    "model": "gpt-4o-mini-2024-07-18",
+    "messages": [
+      {"role": "user", "content": "Bypass cache for this request."}
+    ]
+  }'
+```
+
+When bypass is enabled for a request:
+
+- exact cache lookup is skipped
+- semantic cache lookup is skipped
+- exact cache storage is skipped
+- semantic cache storage is skipped
+
+Bypass activity is exported through:
+
+```text
+aif_cache_bypass_requests_total
+```
 
 ---
 
@@ -296,32 +330,49 @@ Expected behavior:
 
 AI Cost Firewall includes pre-configured Grafana dashboards.
 
-## Overview Dashboard
-
-Shows:
-
-- exact cache savings
-- semantic cache savings
-- embedding overhead
-- net savings
-- request activity
-
----
-
-## Diagnostics Dashboard
-
-Shows:
-
-- semantic threshold pass/fail behavior
-- semantic lookup latency
-- cache diagnostics
-- runtime semantic behavior
-
-Dashboards are loaded from:
+The dashboards are loaded from:
 
 ```text
 deploy/grafana/dashboards/
 ```
+
+## Cost Savings Overview
+
+The Overview dashboard shows high-level cost and cache impact.
+
+It demonstrates:
+
+- total request volume
+- estimated chat-completion cost
+- gross savings from cache reuse
+- embedding overhead
+- net savings after embedding cost
+- net savings percentage
+- cache hit rate
+- exact and semantic cache activity
+- cache bypass request rate
+- per-model spend and savings
+- savings by cache type
+
+## Semantic Diagnostics
+
+The Diagnostics dashboard provides a deeper operational view of semantic-cache behavior and runtime health.
+
+It demonstrates:
+
+- readiness state
+- semantic lookup volume
+- semantic threshold pass/fail behavior
+- semantic candidate evaluation
+- expired semantic entries skipped during lookup
+- semantic lookup latency
+- upstream and embedding latency
+- embedding overhead by operation
+- gross vs net semantic savings
+- exact vs semantic savings
+- semantic cache misses vs threshold passes
+- semantic store health
+- provider error classes
 
 ---
 
@@ -331,7 +382,7 @@ deploy/grafana/dashboards/
 
 ```bash
 curl https://sh.rustup.rs -sSf | sh
-source $HOME/.cargo/env
+source "$HOME/.cargo/env"
 ```
 
 Verify installation:
@@ -343,18 +394,20 @@ cargo --version
 
 ---
 
-## Redis
+## Redis or Valkey
+
+Redis-compatible storage is used for exact cache.
 
 Docker example:
 
 ```bash
-docker run -d -p 6379:6379 redis:8
+docker run -d --name redis -p 6379:6379 redis:8
 ```
 
 Verify:
 
 ```bash
-docker exec -it <redis-container> redis-cli ping
+docker exec -it redis redis-cli ping
 ```
 
 Expected:
@@ -367,7 +420,7 @@ PONG
 
 ## Qdrant
 
-Required only for semantic cache.
+Qdrant is required when semantic cache is enabled.
 
 Run with Docker:
 
@@ -383,6 +436,11 @@ Verify:
 ```bash
 curl http://127.0.0.1:6333/healthz
 ```
+
+Notes:
+
+- AI Cost Firewall uses Qdrant gRPC on port `6334`
+- manual inspection usually uses Qdrant REST on port `6333`
 
 ---
 
@@ -409,7 +467,7 @@ AI Cost Firewall uses nginx-style configuration.
 
 Example:
 
-```text
+```conf
 listen_addr 0.0.0.0:8080;
 
 redis_url redis://redis:6379;
@@ -427,15 +485,38 @@ qdrant_url http://qdrant:6334;
 qdrant_collection aif_semantic_cache;
 qdrant_vector_size 1536;
 
-semantic_cache_enabled true;
-semantic_cache_fail_open true;
-semantic_similarity_threshold 0.92;
-
+cache_ttl_seconds 86400;
 exact_cache_ttl_seconds 3600;
 semantic_cache_retention_seconds 604800;
 
+exact_cache_enabled true;
+exact_cache_fail_open true;
+exact_cache_store_enabled true;
+
+semantic_cache_enabled true;
+semantic_cache_fail_open true;
+semantic_cache_store_enabled true;
+semantic_similarity_threshold 0.92;
+
 request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
 graceful_shutdown_timeout_seconds 30;
+
+max_request_body_bytes 1048576;
+max_prompt_chars 200000;
+
+cache_bypass_header X-AIF-Cache-Bypass;
+
+metrics_auth_required false;
+# metrics_auth_token replace-with-prometheus-token;
+
+readiness_requires_redis true;
+readiness_requires_qdrant false;
+readiness_requires_upstream false;
+
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+embedding_price 0.020;
 ```
 
 ---
@@ -469,7 +550,7 @@ http://ollama:11434/v1/chat/completions
 
 For providers without authentication:
 
-```text
+```conf
 upstream_api_key dummy;
 embedding_api_key dummy;
 ```
@@ -494,13 +575,13 @@ By default:
 
 Example:
 
-```text
+```conf
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 ```
 
 Optional pass-through mode:
 
-```text
+```conf
 allow_unknown_models_pass_through true;
 ```
 
@@ -509,6 +590,27 @@ Useful for:
 - OpenRouter
 - rapidly changing provider catalogs
 - proxy-style deployments
+
+---
+
+# Runtime Dependency Validation
+
+Runtime dependencies are initialized during normal startup.
+
+Default requirements:
+
+- Redis is required when exact cache is enabled
+- Qdrant is required when semantic cache is enabled
+- embedding configuration is required when semantic cache is enabled
+- vector size must match the embedding model dimension
+
+Readiness behavior can be tuned separately:
+
+```conf
+readiness_requires_redis true;
+readiness_requires_qdrant false;
+readiness_requires_upstream false;
+```
 
 ---
 
@@ -532,6 +634,49 @@ docker compose run --rm firewall \
   --config /configs/ai-firewall.conf \
   --prune-expired-semantic-cache
 ```
+
+---
+
+# Fail-open Behavior
+
+## Exact Cache Fail-open
+
+When `exact_cache_fail_open` is enabled, runtime Redis/exact-cache lookup or store failures behave like cache misses and requests continue upstream.
+
+```conf
+exact_cache_fail_open true;
+```
+
+## Semantic Cache Fail-open
+
+When `semantic_cache_fail_open` is enabled, runtime semantic cache lookup, embedding, or semantic store failures do not block the request. AI Cost Firewall skips the semantic cache path and continues to the upstream LLM endpoint.
+
+```conf
+semantic_cache_fail_open true;
+```
+
+Fail-open behavior applies to runtime cache operations. It does not bypass startup configuration validation.
+
+---
+
+# Request Limits and Timeouts
+
+Request size and prompt size can be limited:
+
+```conf
+max_request_body_bytes 1048576;
+max_prompt_chars 200000;
+```
+
+Timeouts can be configured separately:
+
+```conf
+request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
+```
+
+`request_timeout_seconds` remains a backward-compatible fallback when the more specific timeout values are not configured.
 
 ---
 
@@ -567,28 +712,6 @@ Secrets are automatically masked.
 
 ---
 
-# Runtime Dependency Validation
-
-Runtime dependencies are initialized during normal startup.
-
-Requirements:
-
-- Redis required for exact cache
-- Qdrant required when semantic cache is enabled
-- vector size must match embedding model dimension
-
----
-
-# Semantic Cache Fail-Open Behavior
-
-When `semantic_cache_fail_open` is enabled, runtime semantic cache lookup, embedding, or semantic store failures do not block the request. AI Cost Firewall skips the semantic cache path and continues to the upstream LLM endpoint.
-
-This behavior applies to runtime semantic cache operations.
-
-It does not bypass startup dependency validation. When semantic cache is enabled, Qdrant must be reachable during startup, and the configured `qdrant_vector_size` must match the semantic cache collection.
-
----
-
 # Common Startup Errors
 
 ## Missing embedding configuration
@@ -616,23 +739,23 @@ existing collection vector size does not match qdrant_vector_size
 Typical vector sizes:
 
 | Embedding Model | Vector Size |
-|---|---|
-| text-embedding-3-small | 1536 |
-| nomic-embed-text | 768 |
+|---|---:|
+| `text-embedding-3-small` | 1536 |
+| `nomic-embed-text` | 768 |
 
 ---
 
 ## Wrong upstream URL
 
-## Wrong
+Wrong:
 
-```text
+```conf
 upstream_base_url http://ollama:11434/v1/chat/completions;
 ```
 
-## Correct
+Correct:
 
-```text
+```conf
 upstream_base_url http://ollama:11434/v1;
 ```
 
@@ -646,16 +769,15 @@ Metrics endpoint:
 http://localhost:8080/metrics
 ```
 
-Example metrics:
+Core metrics:
 
 ```text
 aif_requests_total
-aif_cache_exact_hits
-aif_cache_semantic_hits
-aif_model_cost_micro_usd_total
-aif_gross_saved_micro_usd_total
-aif_embedding_overhead_micro_usd_total
-aif_net_saved_micro_usd_total
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_hits_total{cache_type="semantic"}
+aif_cache_misses_total
+aif_upstream_calls_total
+aif_cache_bypass_requests_total
 ```
 
 Useful semantic diagnostics:
@@ -664,6 +786,18 @@ Useful semantic diagnostics:
 aif_semantic_candidates_checked_total
 aif_semantic_threshold_results_total
 aif_semantic_lookup_duration_seconds
+aif_semantic_expired_entries_skipped_total
+aif_semantic_store_total
+aif_semantic_store_errors_total
+```
+
+Cost metrics:
+
+```text
+aif_model_cost_micro_usd_total
+aif_gross_saved_micro_usd_total
+aif_embedding_overhead_micro_usd_total
+aif_net_saved_micro_usd_total
 ```
 
 AI Cost Firewall distinguishes between:
@@ -673,6 +807,29 @@ AI Cost Firewall distinguishes between:
 - net savings after embedding cost
 
 This distinction is important for semantic cache deployments because semantic lookup may require embedding generation.
+
+---
+
+# Metrics Authentication
+
+By default, `/metrics` is easy to scrape from a private Docker network:
+
+```conf
+metrics_auth_required false;
+```
+
+For exposed deployments:
+
+```conf
+metrics_auth_required true;
+metrics_auth_token your-prometheus-token;
+```
+
+Prometheus or curl must then send:
+
+```http
+Authorization: Bearer your-prometheus-token
+```
 
 ---
 
@@ -714,7 +871,7 @@ docker compose logs -f firewall
 Save logs:
 
 ```bash
-docker compose up -d > logs.txt 2>&1
+docker compose logs firewall > firewall.log
 ```
 
 ---

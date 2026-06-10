@@ -74,12 +74,28 @@ pub struct Config {
     pub exact_cache_ttl_seconds: usize,
     pub semantic_cache_retention_seconds: usize,
     pub request_timeout_seconds: u64,
+    pub upstream_timeout_seconds: u64,
+    pub embedding_timeout_seconds: u64,
     pub graceful_shutdown_timeout_seconds: u64,
     pub max_request_body_bytes: usize,
+    pub max_prompt_chars: usize,
+
+    pub exact_cache_enabled: bool,
+    pub exact_cache_fail_open: bool,
+    pub exact_cache_store_enabled: bool,
 
     pub semantic_cache_enabled: bool,
     pub semantic_similarity_threshold: f32,
     pub semantic_cache_fail_open: bool,
+    pub semantic_cache_store_enabled: bool,
+
+    pub cache_bypass_header: String,
+    pub metrics_auth_required: bool,
+    pub metrics_auth_token: Option<String>,
+
+    pub readiness_requires_redis: bool,
+    pub readiness_requires_qdrant: bool,
+    pub readiness_requires_upstream: bool,
 
     pub model_prices: HashMap<String, ModelPrice>,
 
@@ -131,6 +147,14 @@ impl Config {
             errors.push("request_timeout_seconds must be > 0".into());
         }
 
+        if self.upstream_timeout_seconds == 0 {
+            errors.push("upstream_timeout_seconds must be > 0".into());
+        }
+
+        if self.embedding_timeout_seconds == 0 {
+            errors.push("embedding_timeout_seconds must be > 0".into());
+        }
+
         if self.cache_ttl_seconds == 0 {
             errors.push("cache_ttl_seconds must be > 0".into());
         }
@@ -153,6 +177,22 @@ impl Config {
         // ---- request size
         if self.max_request_body_bytes == 0 {
             errors.push("max_request_body_bytes must be > 0 (example: 1M, 512K, 1048576)".into());
+        }
+
+        if self.max_prompt_chars == 0 {
+            errors.push("max_prompt_chars must be > 0".into());
+        }
+
+        if self.cache_bypass_header.trim().is_empty() {
+            errors.push("cache_bypass_header must not be empty".into());
+        }
+
+        if self.metrics_auth_required {
+            match self.metrics_auth_token.as_deref() {
+                Some(token) if !token.trim().is_empty() => {}
+                _ => errors
+                    .push("metrics_auth_token must be set when metrics_auth_required=true".into()),
+            }
         }
 
         // ---- semantic threshold
@@ -495,6 +535,12 @@ impl Config {
         let semantic_cache_retention_seconds =
             parse_or_default(&map, "semantic_cache_retention_seconds", cache_ttl_seconds)?;
 
+        let request_timeout_seconds = parse_or_default(&map, "request_timeout_seconds", 120u64)?;
+        let upstream_timeout_seconds =
+            parse_or_default(&map, "upstream_timeout_seconds", request_timeout_seconds)?;
+        let embedding_timeout_seconds =
+            parse_or_default(&map, "embedding_timeout_seconds", request_timeout_seconds)?;
+
         let cfg = Self {
             listen_addr: get_or_default(&map, "listen_addr", "0.0.0.0:8080"),
             redis_url: get_required(&map, "redis_url")?,
@@ -545,7 +591,13 @@ impl Config {
             exact_cache_ttl_seconds,
             semantic_cache_retention_seconds,
 
-            request_timeout_seconds: parse_or_default(&map, "request_timeout_seconds", 120u64)?,
+            request_timeout_seconds,
+            upstream_timeout_seconds,
+            embedding_timeout_seconds,
+
+            exact_cache_enabled: parse_or_default(&map, "exact_cache_enabled", true)?,
+            exact_cache_fail_open: parse_or_default(&map, "exact_cache_fail_open", true)?,
+            exact_cache_store_enabled: parse_or_default(&map, "exact_cache_store_enabled", true)?,
 
             semantic_cache_enabled: parse_or_default(&map, "semantic_cache_enabled", false)?,
             semantic_similarity_threshold: parse_or_default(
@@ -555,6 +607,23 @@ impl Config {
             )?,
 
             semantic_cache_fail_open: parse_or_default(&map, "semantic_cache_fail_open", true)?,
+            semantic_cache_store_enabled: parse_or_default(
+                &map,
+                "semantic_cache_store_enabled",
+                true,
+            )?,
+
+            cache_bypass_header: get_or_default(&map, "cache_bypass_header", "X-AIF-Cache-Bypass"),
+            metrics_auth_required: parse_or_default(&map, "metrics_auth_required", false)?,
+            metrics_auth_token: map.get("metrics_auth_token").cloned(),
+
+            readiness_requires_redis: parse_or_default(&map, "readiness_requires_redis", true)?,
+            readiness_requires_qdrant: parse_or_default(&map, "readiness_requires_qdrant", false)?,
+            readiness_requires_upstream: parse_or_default(
+                &map,
+                "readiness_requires_upstream",
+                false,
+            )?,
 
             model_prices,
 
@@ -575,6 +644,7 @@ impl Config {
                 .map(|v| Self::parse_bytes(v))
                 .transpose()?
                 .unwrap_or(1_048_576usize),
+            max_prompt_chars: parse_or_default(&map, "max_prompt_chars", 200_000usize)?,
         };
 
         let cache_ttl_was_set = map.contains_key("cache_ttl_seconds");
@@ -711,6 +781,57 @@ impl Config {
                     ))
                 })?
             },
+            upstream_timeout_seconds: {
+                let default =
+                    env::var("AIF_REQUEST_TIMEOUT_SECONDS").unwrap_or_else(|_| "120".into());
+                let raw = env::var("AIF_UPSTREAM_TIMEOUT_SECONDS").unwrap_or(default);
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_UPSTREAM_TIMEOUT_SECONDS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            embedding_timeout_seconds: {
+                let default =
+                    env::var("AIF_REQUEST_TIMEOUT_SECONDS").unwrap_or_else(|_| "120".into());
+                let raw = env::var("AIF_EMBEDDING_TIMEOUT_SECONDS").unwrap_or(default);
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_EMBEDDING_TIMEOUT_SECONDS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            exact_cache_enabled: {
+                let raw = env::var("AIF_EXACT_CACHE_ENABLED").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_EXACT_CACHE_ENABLED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            exact_cache_fail_open: {
+                let raw = env::var("AIF_EXACT_CACHE_FAIL_OPEN").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_EXACT_CACHE_FAIL_OPEN value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            exact_cache_store_enabled: {
+                let raw =
+                    env::var("AIF_EXACT_CACHE_STORE_ENABLED").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_EXACT_CACHE_STORE_ENABLED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
 
             semantic_cache_enabled: {
                 let raw = env::var("AIF_SEMANTIC_CACHE_ENABLED").unwrap_or_else(|_| "false".into());
@@ -739,6 +860,59 @@ impl Config {
                 raw.parse().map_err(|e| {
                     cfg_err(format!(
                         "invalid AIF_SEMANTIC_CACHE_FAIL_OPEN value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            semantic_cache_store_enabled: {
+                let raw =
+                    env::var("AIF_SEMANTIC_CACHE_STORE_ENABLED").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_SEMANTIC_CACHE_STORE_ENABLED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
+            cache_bypass_header: env::var("AIF_CACHE_BYPASS_HEADER")
+                .unwrap_or_else(|_| "X-AIF-Cache-Bypass".into()),
+            metrics_auth_required: {
+                let raw = env::var("AIF_METRICS_AUTH_REQUIRED").unwrap_or_else(|_| "false".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_METRICS_AUTH_REQUIRED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            metrics_auth_token: env::var("AIF_METRICS_AUTH_TOKEN").ok(),
+            readiness_requires_redis: {
+                let raw =
+                    env::var("AIF_READINESS_REQUIRES_REDIS").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_READINESS_REQUIRES_REDIS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            readiness_requires_qdrant: {
+                let raw =
+                    env::var("AIF_READINESS_REQUIRES_QDRANT").unwrap_or_else(|_| "false".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_READINESS_REQUIRES_QDRANT value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            readiness_requires_upstream: {
+                let raw =
+                    env::var("AIF_READINESS_REQUIRES_UPSTREAM").unwrap_or_else(|_| "false".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_READINESS_REQUIRES_UPSTREAM value '{}': {}",
                         raw, e
                     ))
                 })?
@@ -774,6 +948,15 @@ impl Config {
                     cfg_err(format!(
                         "invalid AIF_MAX_REQUEST_BODY_BYTES value '{}'. Use formats like 1024, 512K, 1M, 2M",
                         raw
+                    ))
+                })?
+            },
+            max_prompt_chars: {
+                let raw = env::var("AIF_MAX_PROMPT_CHARS").unwrap_or_else(|_| "200000".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_MAX_PROMPT_CHARS value '{}': {}",
+                        raw, e
                     ))
                 })?
             },
@@ -818,10 +1001,19 @@ impl Config {
         let mut lines = vec![
             format!("- upstream provider: {}", self.upstream_provider.as_str()),
             format!("- upstream base URL: {}", self.upstream_base_url),
+            format!("- exact cache enabled: {}", self.exact_cache_enabled),
             format!("- semantic cache: {}", self.semantic_cache_status()),
-            format!("- request timeout: {}s", self.request_timeout_seconds),
+            format!(
+                "- request timeout fallback: {}s",
+                self.request_timeout_seconds
+            ),
+            format!("- upstream timeout: {}s", self.upstream_timeout_seconds),
+            format!("- embedding timeout: {}s", self.embedding_timeout_seconds),
             format!("- max request body: {} bytes", self.max_request_body_bytes),
+            format!("- max prompt chars: {}", self.max_prompt_chars),
             format!("- exact cache TTL: {}s", self.exact_cache_ttl_seconds),
+            format!("- exact fail-open: {}", self.exact_cache_fail_open),
+            format!("- cache bypass header: {}", self.cache_bypass_header),
         ];
 
         if self.semantic_cache_enabled {
@@ -879,12 +1071,34 @@ impl fmt::Debug for Config {
                 &self.semantic_cache_retention_seconds,
             )
             .field("request_timeout_seconds", &self.request_timeout_seconds)
+            .field("upstream_timeout_seconds", &self.upstream_timeout_seconds)
+            .field("embedding_timeout_seconds", &self.embedding_timeout_seconds)
+            .field("max_prompt_chars", &self.max_prompt_chars)
+            .field("exact_cache_enabled", &self.exact_cache_enabled)
+            .field("exact_cache_fail_open", &self.exact_cache_fail_open)
+            .field("exact_cache_store_enabled", &self.exact_cache_store_enabled)
             .field("semantic_cache_enabled", &self.semantic_cache_enabled)
             .field(
                 "semantic_similarity_threshold",
                 &self.semantic_similarity_threshold,
             )
             .field("semantic_cache_fail_open", &self.semantic_cache_fail_open)
+            .field(
+                "semantic_cache_store_enabled",
+                &self.semantic_cache_store_enabled,
+            )
+            .field("cache_bypass_header", &self.cache_bypass_header)
+            .field("metrics_auth_required", &self.metrics_auth_required)
+            .field(
+                "metrics_auth_token",
+                &self.metrics_auth_token.as_ref().map(|k| mask_secret(k)),
+            )
+            .field("readiness_requires_redis", &self.readiness_requires_redis)
+            .field("readiness_requires_qdrant", &self.readiness_requires_qdrant)
+            .field(
+                "readiness_requires_upstream",
+                &self.readiness_requires_upstream,
+            )
             .field("model_prices", &self.model_prices)
             .field(
                 "allow_unknown_models_pass_through",
@@ -934,13 +1148,26 @@ fn allowed_directives() -> HashSet<&'static str> {
         "exact_cache_ttl_seconds",
         "semantic_cache_retention_seconds",
         "request_timeout_seconds",
+        "upstream_timeout_seconds",
+        "embedding_timeout_seconds",
+        "exact_cache_enabled",
+        "exact_cache_fail_open",
+        "exact_cache_store_enabled",
         "semantic_cache_enabled",
         "semantic_similarity_threshold",
         "semantic_cache_fail_open",
+        "semantic_cache_store_enabled",
+        "cache_bypass_header",
+        "metrics_auth_required",
+        "metrics_auth_token",
+        "readiness_requires_redis",
+        "readiness_requires_qdrant",
+        "readiness_requires_upstream",
         "model_price",
         "allow_unknown_models_pass_through",
         "graceful_shutdown_timeout_seconds",
         "max_request_body_bytes",
+        "max_prompt_chars",
     ])
 }
 

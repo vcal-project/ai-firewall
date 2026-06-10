@@ -2,16 +2,19 @@ use crate::{
     app::AppState,
     error::AppError,
     metrics,
+    services::chat_service::CacheControl,
     types::openai::{ChatCompletionRequest, ChatCompletionResponse},
 };
 use axum::{
     extract::{rejection::JsonRejection, State},
+    http::HeaderMap,
     Json,
 };
 use std::sync::Arc;
 
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     payload: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Json<ChatCompletionResponse>, AppError> {
     metrics::REQUESTS_TOTAL
@@ -36,9 +39,10 @@ pub async fn chat_completions(
         return Err(err);
     }
 
+    let cache_control = cache_control_from_headers(&state, &headers).await;
     let service = state.chat_service().await;
 
-    match service.handle(req).await {
+    match service.handle_with_cache_control(req, cache_control).await {
         Ok(response) => Ok(Json(response)),
         Err(err) => {
             metrics::ERRORS_TOTAL
@@ -46,6 +50,29 @@ pub async fn chat_completions(
                 .inc();
             Err(err)
         }
+    }
+}
+
+async fn cache_control_from_headers(state: &Arc<AppState>, headers: &HeaderMap) -> CacheControl {
+    let cfg = state.config.read().await;
+    let bypass = headers
+        .get(cfg.cache_bypass_header.as_str())
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false);
+
+    if bypass {
+        metrics::CACHE_BYPASS_REQUESTS_TOTAL.inc();
+    }
+
+    CacheControl {
+        bypass_lookup: bypass,
+        bypass_store: bypass,
     }
 }
 

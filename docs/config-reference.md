@@ -51,9 +51,14 @@ The configuration is logically divided into:
 | Embedding Provider | Embedding generation |
 | Qdrant | Semantic cache storage |
 | Cache Settings | TTL and retention |
+| Exact Cache | Redis exact-cache behavior |
 | Semantic Cache | Semantic lookup behavior |
+| Request Limits | Body size, prompt size, and timeout controls |
+| Per-request Controls | Cache bypass behavior |
 | Model Pricing | Cost tracking |
-| Operational Settings | Shutdown, reload, request limits |
+| Metrics & Observability | Prometheus metrics and metrics endpoint access |
+| Readiness Behavior | Dependency-aware readiness checks |
+| Operational Settings | Shutdown, reload, and maintenance behavior |
 
 ---
 
@@ -79,10 +84,31 @@ qdrant_vector_size 1536;
 
 cache_ttl_seconds 86400;
 
+exact_cache_enabled true;
+exact_cache_fail_open true;
+exact_cache_store_enabled true;
+
 semantic_cache_enabled true;
 semantic_similarity_threshold 0.92;
+semantic_cache_fail_open true;
+semantic_cache_store_enabled true;
 
 request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
+
+max_request_body_bytes 1M;
+max_prompt_chars 200000;
+
+cache_bypass_header X-AIF-Cache-Bypass;
+
+metrics_auth_required false;
+# metrics_auth_token replace-with-prometheus-token;
+
+readiness_requires_redis true;
+readiness_requires_qdrant false;
+readiness_requires_upstream false;
+
 graceful_shutdown_timeout_seconds 10;
 
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
@@ -544,6 +570,77 @@ Recommended during maintenance windows.
 
 ---
 
+# Exact Cache Settings
+
+---
+
+## exact_cache_enabled
+
+Enable Redis-backed exact cache lookup and storage.
+
+Example:
+
+```conf
+exact_cache_enabled true;
+```
+
+Default:
+
+```text
+true
+```
+
+When disabled:
+
+- Redis exact-cache lookup is skipped
+- exact-cache storage is skipped
+- semantic cache can still be used if enabled
+
+---
+
+## exact_cache_fail_open
+
+Controls runtime Redis/exact-cache failure behavior.
+
+Example:
+
+```conf
+exact_cache_fail_open true;
+```
+
+When enabled:
+
+- Redis lookup failures behave like cache misses
+- Redis store failures do not fail the request
+- requests continue upstream
+
+When disabled:
+
+- Redis lookup or store failures can return an error
+
+This setting controls runtime request behavior. Startup and readiness behavior are controlled separately.
+
+---
+
+## exact_cache_store_enabled
+
+Controls whether successful upstream responses are stored in exact cache.
+
+Example:
+
+```conf
+exact_cache_store_enabled true;
+```
+
+When disabled:
+
+- exact-cache reads may still happen
+- exact-cache writes are skipped
+
+Useful for read-only cache testing and debugging.
+
+---
+
 # Semantic Cache Settings
 
 ---
@@ -591,6 +688,26 @@ Does not bypass startup validation.
 
 ---
 
+## semantic_cache_store_enabled
+
+Controls whether successful upstream responses are stored in semantic cache.
+
+Example:
+
+```conf
+semantic_cache_store_enabled true;
+```
+
+When disabled:
+
+- semantic lookup can still be used
+- embedding and store work for new semantic entries is skipped
+- Qdrant writes are avoided
+
+Useful for read-only semantic-cache testing and debugging.
+
+---
+
 ## semantic_similarity_threshold
 
 Similarity threshold for semantic reuse.
@@ -627,7 +744,7 @@ Higher values:
 
 ## max_request_body_bytes
 
-Maximum allowed request size.
+Maximum allowed HTTP request body size.
 
 Example:
 
@@ -646,15 +763,40 @@ Supported formats:
 
 Behavior:
 
-- oversized requests rejected early
-- prevents accidental upstream cost spikes
-- protects runtime stability
+- oversized requests are rejected early
+- accidental upstream cost spikes are reduced
+- runtime stability is protected
+
+---
+
+## max_prompt_chars
+
+Maximum total prompt size across chat message content, measured in characters.
+
+Example:
+
+```conf
+max_prompt_chars 200000;
+```
+
+Behavior:
+
+- oversized prompts are rejected before upstream forwarding
+- accidental huge prompts are blocked even when the HTTP body is otherwise valid
+- complements `max_request_body_bytes`
+
+`max_request_body_bytes` limits the full HTTP request body. `max_prompt_chars` limits parsed chat message content.
 
 ---
 
 ## request_timeout_seconds
 
-Upstream timeout.
+Backward-compatible fallback timeout used when more specific timeout values are not configured.
+
+Specific timeout settings override it:
+
+- `upstream_timeout_seconds`
+- `embedding_timeout_seconds`
 
 Example:
 
@@ -668,10 +810,85 @@ Default:
 120
 ```
 
-Controls:
+In v0.2.1 and newer, prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
-- upstream requests
-- embedding requests
+---
+
+## upstream_timeout_seconds
+
+Timeout for chat-completion upstream calls.
+
+Example:
+
+```conf
+upstream_timeout_seconds 120;
+```
+
+If omitted, `request_timeout_seconds` is used as the fallback.
+
+---
+
+## embedding_timeout_seconds
+
+Timeout for embedding provider calls.
+
+Example:
+
+```conf
+embedding_timeout_seconds 30;
+```
+
+If omitted, `request_timeout_seconds` is used as the fallback.
+
+---
+
+# Per-request Cache Controls
+
+---
+
+## cache_bypass_header
+
+Header used to bypass cache lookup and cache storage for a single request.
+
+Example:
+
+```conf
+cache_bypass_header X-AIF-Cache-Bypass;
+```
+
+Default:
+
+```text
+X-AIF-Cache-Bypass
+```
+
+Example request header:
+
+```http
+X-AIF-Cache-Bypass: true
+```
+
+Accepted truthy values:
+
+```text
+true
+1
+yes
+on
+```
+
+When enabled for a request:
+
+- exact cache lookup is skipped
+- semantic cache lookup is skipped
+- exact cache storage is skipped
+- semantic cache storage is skipped
+
+Metric:
+
+```text
+aif_cache_bypass_requests_total
+```
 
 ---
 
@@ -821,6 +1038,8 @@ Static validation checks:
 - value ranges
 - semantic cache completeness
 - request-size parsing
+- prompt-size limits
+- timeout settings
 - model validation behavior
 
 Static validation does not contact:
@@ -863,6 +1082,52 @@ During startup and reload, AI Cost Firewall validates:
 
 ---
 
+# Readiness Dependency Behavior
+
+The `/readyz` endpoint can be configured to require specific runtime dependencies.
+
+## readiness_requires_redis
+
+Controls whether `/readyz` fails when Redis is unavailable.
+
+Example:
+
+```conf
+readiness_requires_redis true;
+```
+
+Useful when Redis/exact cache is considered required for serving production traffic.
+
+---
+
+## readiness_requires_qdrant
+
+Controls whether `/readyz` fails when Qdrant is unavailable.
+
+Example:
+
+```conf
+readiness_requires_qdrant false;
+```
+
+This can remain `false` when semantic cache is configured to fail open.
+
+---
+
+## readiness_requires_upstream
+
+Controls whether `/readyz` fails when the upstream provider is unavailable.
+
+Example:
+
+```conf
+readiness_requires_upstream false;
+```
+
+This is often left disabled because upstream providers may be external services with temporary availability changes.
+
+---
+
 # Environment Variables
 
 AI Cost Firewall supports environment-based configuration.
@@ -874,6 +1139,8 @@ AIF_REDIS_URL=redis://127.0.0.1:6379
 AIF_UPSTREAM_API_KEY=sk-xxxx
 AIF_EMBEDDING_MODEL=text-embedding-3-small
 AIF_MAX_REQUEST_BODY_BYTES=2M
+AIF_MAX_PROMPT_CHARS=200000
+AIF_CACHE_BYPASS_HEADER=X-AIF-Cache-Bypass
 ```
 
 `.env` files load automatically in development environments.
@@ -888,12 +1155,57 @@ Metrics endpoint:
 /metrics
 ```
 
+---
+
+## metrics_auth_required
+
+Controls whether `/metrics` requires bearer-token authentication.
+
+Example:
+
+```conf
+metrics_auth_required false;
+```
+
+Default:
+
+```text
+false
+```
+
+For private Docker networks, `false` is convenient for Prometheus scraping.
+
+For exposed production deployments, use:
+
+```conf
+metrics_auth_required true;
+metrics_auth_token your-prometheus-token;
+```
+
+---
+
+## metrics_auth_token
+
+Bearer token required when `metrics_auth_required` is enabled.
+
+Example:
+
+```conf
+metrics_auth_token your-prometheus-token;
+```
+
+When enabled, Prometheus or curl must send:
+
+```http
+Authorization: Bearer your-prometheus-token
+```
+
 Core metrics:
 
 ```text
 aif_requests_total
-aif_cache_exact_hits
-aif_cache_semantic_hits
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
 aif_upstream_calls_total
 ```
@@ -905,6 +1217,7 @@ aif_semantic_candidates_checked_total
 aif_semantic_threshold_results_total
 aif_semantic_lookup_duration_seconds
 aif_semantic_expired_entries_skipped_total
+aif_cache_bypass_requests_total
 ```
 
 Runtime health:
@@ -923,6 +1236,8 @@ aif_gross_saved_micro_usd_total
 aif_embedding_overhead_micro_usd_total
 aif_net_saved_micro_usd_total
 ```
+
+
 
 ---
 

@@ -76,13 +76,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "aif_readiness_state",
+          "expr": "max(aif_readiness_state)",
           "legendFormat": "",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Readiness State",
+      "title": "Readiness",
       "type": "stat"
     },
     {
@@ -1611,7 +1611,7 @@
     "prometheus",
     "semantic-cache",
     "cost-intelligence",
-    "v0.2.0"
+    "v0.2.1"
   ],
   "templating": {
     "list": []
@@ -1624,7 +1624,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Diagnostics",
   "uid": "ai-cost-firewall-diagnostics",
-  "version": 6,
+  "version": 7,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall v0.2.0 including range-stable semantic lookup counts, threshold decisions, embedding overhead, gross vs net savings, cache-type savings, provider latency/errors, and operational health."
+  "description": "Diagnostics dashboard for AI Cost Firewall v0.2.1 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, and operational health."
 }

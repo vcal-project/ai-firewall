@@ -54,57 +54,83 @@ Supported OpenAI-compatible providers include:
 
 ---
 
-# v0.2.0 Release Focus
+# v0.2.1 Release Focus
 
-AI Cost Firewall v0.2.0 supports OpenAI-compatible chat and embedding APIs through a simple configuration model.
+AI Cost Firewall v0.2.1 builds on the v0.2.0 pilot-ready baseline with additional gateway controls, clearer fail-open behavior, and improved deployment diagnostics.
 
 This release focuses on:
 
-* stable OpenAI-compatible `/v1/chat/completions` gateway behavior
-* stable exact and semantic caching
-* embedding overhead accounting
-* gross and net savings metrics
-* safe masked configuration printing
-* static configuration validation
-* readiness and liveness endpoints
-* graceful shutdown and request draining
-* SIGHUP hot reload
-* clear Redis, Qdrant, upstream, and embedding failure behavior
-* polished Docker Compose, Prometheus, and Grafana deployment flow
+* configurable exact cache enable/disable behavior
+* explicit Redis/exact-cache fail-open behavior
+* separate upstream and embedding timeout controls
+* request body and prompt-size protection
+* independent exact and semantic cache store controls
+* per-request cache bypass using `X-AIF-Cache-Bypass`
+* metrics endpoint access-control configuration
+* configurable readiness dependency behavior for Redis, Qdrant, and upstream providers
+* improved Grafana Overview and Diagnostics dashboards
+* cache-bypass visibility in Prometheus and Grafana
+* cleaner Docker runtime image for release testing
+* continued support for OpenAI-compatible chat and embedding APIs
 
-v0.2.0 is a consolidation milestone. Most capabilities were introduced progressively across the v0.1.x series and are now presented as the first pilot-ready baseline.
+v0.2.1 is an operational hardening release. It keeps the v0.2.0 architecture stable while making the gateway easier to test, debug, and deploy in pilot and production-like environments.
 
 ---
 
 # Included Dashboards
 
+AI Cost Firewall v0.2.1 includes Grafana dashboards for cost visibility, cache effectiveness, and operational diagnostics.
+
+The dashboards are included in the Docker deployment files and are automatically provisioned by Grafana when using the provided Docker Compose setup.
+
 ## Cost Savings Overview
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-overview-018.png)](assets/grafana/ai-firewall-overview-018.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-overview-018.png)](assets/grafana/ai-firewall-overview-021.png)
 
-Demonstrates:
+The Overview dashboard shows the high-level cost and cache impact of AI Cost Firewall.
 
-- exact cache savings
-- semantic cache savings
-- embedding overhead
-- net savings
-- per-model request activity
+It demonstrates:
+
+total request volume
+estimated chat-completion cost
+gross savings from cache reuse
+embedding overhead
+net savings after embedding cost
+net savings percentage
+cache hit rate
+exact and semantic cache activity
+cache bypass request rate
+per-model spend and savings
+savings by cache type
+
+This dashboard is intended for quick validation, demos, and cost-savings reviews.
 
 ---
 
 ## Semantic Diagnostics
 
-[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics-019.png)](assets/grafana/ai-firewall-diagnostics-019.png)
+[![AI Cost Firewall Grafana Dashboard](assets/grafana/ai-firewall-diagnostics-019.png)](assets/grafana/ai-firewall-diagnostics-021.png)
 
-Demonstrates:
+The Diagnostics dashboard provides a deeper operational view of semantic-cache behavior and runtime health.
 
-- semantic threshold pass/fail behavior
-- semantic candidate evaluation
-- cache hit quality
-- semantic lookup latency
-- runtime cache behavior
+It demonstrates:
 
-The dashboards are included in the Docker deployment and automatically provisioned through Grafana.
+readiness state
+semantic lookup volume
+semantic threshold pass/fail behavior
+semantic candidate evaluation
+expired semantic entries skipped during lookup
+semantic lookup latency
+upstream and embedding latency
+embedding overhead by operation
+gross vs net semantic savings
+exact vs semantic savings
+semantic cache misses vs threshold passes
+semantic store health
+runtime and provider pressure signals
+provider error classes
+
+This dashboard is intended for troubleshooting, tuning semantic similarity thresholds, validating fail-open behavior, and understanding runtime cache behavior during pilots.
 
 ---
 

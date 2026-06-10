@@ -2,9 +2,11 @@
 
 AI Cost Firewall is designed to fail fast during startup, expose clear runtime errors, and make cache, provider, and cost behavior observable.
 
-This document covers common deployment and operational issues for v0.2.0, the first pilot-ready OpenAI-compatible gateway milestone.
+This document covers common deployment and operational issues for v0.2.1.
 
-AI Cost Firewall v0.2.0 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not yet provide native provider-specific API integrations or provider-specific configuration blocks.
+AI Cost Firewall v0.2.1 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
+
+v0.2.1 adds practical gateway-control improvements, including exact-cache enable/disable controls, exact-cache fail-open behavior, split upstream and embedding timeouts, request-size protection, per-request cache bypass, metrics endpoint access control, and configurable readiness dependency behavior.
 
 ---
 
@@ -30,7 +32,7 @@ This performs static validation only and does not contact external services.
 
 Runtime dependencies are initialized during normal startup:
 
-- Redis is required for exact cache
+- Redis is required when exact cache is enabled and startup validation requires Redis
 - Qdrant is required when semantic cache is enabled
 - embedding configuration is required when semantic cache is enabled
 - the configured Qdrant vector size must match the embedding model dimension
@@ -50,7 +52,7 @@ OK
 ready
 ```
 
-The /version endpoint returns release metadata, including the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
+The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
 
 ---
 
@@ -71,12 +73,12 @@ docker compose logs --tail=100 qdrant
 
 These commands confirm:
 
-which services are running
-which AI Cost Firewall release is active
-whether the process is alive
-whether it is ready to serve traffic
-whether metrics are exposed
-recent firewall, Redis, and Qdrant errors
+- which services are running
+- which AI Cost Firewall release is active
+- whether the process is alive
+- whether it is ready to serve traffic
+- whether metrics are exposed
+- recent firewall, Redis, and Qdrant errors
 
 ---
 
@@ -101,6 +103,8 @@ configuration error: ...
 - missing embedding configuration
 - invalid vector size
 - malformed nginx-style config syntax
+- unsupported request-size or prompt-size value
+- unsupported timeout value
 
 ## Example Errors
 
@@ -158,6 +162,7 @@ connection refused
 - wrong Redis hostname
 - wrong Redis port
 - firewall running outside Docker network
+- exact cache enabled while Redis is unavailable
 
 ## Recommended Checks
 
@@ -181,9 +186,83 @@ docker compose logs redis
 
 ## Typical Configuration
 
-```text
+```conf
 redis_url redis://redis:6379;
+exact_cache_enabled true;
+exact_cache_fail_open true;
 ```
+
+When `exact_cache_fail_open` is enabled, runtime Redis lookup/store failures behave like cache misses and requests continue upstream. This does not mean a broken Redis configuration should be ignored for production; it only controls runtime failure handling.
+
+---
+
+# Exact Cache Disabled or Not Producing Hits
+
+## Symptoms
+
+- repeated identical requests still go upstream
+- exact hit panels stay flat
+- only semantic hits or misses increase
+
+## Common Causes
+
+- exact cache disabled
+- exact cache store disabled
+- Redis unavailable
+- requests differ after normalization
+- cache TTL too short
+
+## Recommended Checks
+
+Inspect configuration:
+
+```conf
+exact_cache_enabled true;
+exact_cache_store_enabled true;
+exact_cache_fail_open true;
+exact_cache_ttl_seconds 86400;
+```
+
+Inspect metrics:
+
+```bash
+curl -s http://localhost:8080/metrics | grep 'aif_cache_hits_total\|aif_cache_misses_total'
+```
+
+Important metrics:
+
+```text
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_misses_total
+```
+
+---
+
+# Exact Cache Fail-Open Behavior
+
+## Symptoms
+
+Requests continue successfully even though Redis lookup or store errors appear in logs.
+
+Or, when fail-open is disabled, Redis-related errors may fail the request.
+
+## Cause
+
+AI Cost Firewall can be configured to fail open for runtime exact-cache failures.
+
+```conf
+exact_cache_fail_open true;
+```
+
+When enabled:
+
+- Redis lookup failures behave like cache misses
+- Redis store failures do not fail the request
+- requests continue upstream
+
+When disabled:
+
+- Redis lookup/store failures may return an error
 
 ---
 
@@ -205,7 +284,7 @@ connection refused
 
 - Qdrant container not running
 - wrong Qdrant port
-- using HTTP instead of gRPC
+- using HTTP REST port instead of gRPC port in AI Firewall config
 - incorrect hostname
 
 ## Recommended Checks
@@ -220,12 +299,12 @@ Verify port:
 
 ```text
 6334 = gRPC
-6333 = HTTP
+6333 = HTTP REST
 ```
 
 Recommended configuration:
 
-```text
+```conf
 qdrant_url http://qdrant:6334;
 ```
 
@@ -258,7 +337,7 @@ Example:
 
 ### Option 1 — Use matching vector size
 
-```text
+```conf
 qdrant_vector_size 1536;
 ```
 
@@ -346,13 +425,13 @@ Using a full endpoint path instead of a provider base URL.
 
 ## Wrong
 
-```text
+```conf
 upstream_base_url http://ollama:11434/v1/chat/completions;
 ```
 
 ## Correct
 
-```text
+```conf
 upstream_base_url http://ollama:11434/v1;
 ```
 
@@ -380,6 +459,7 @@ embedding request failed
 - wrong embedding endpoint
 - incompatible embedding API
 - local embedding model not pulled
+- embedding provider timeout too low
 
 ## Ollama Example
 
@@ -394,6 +474,14 @@ Restart firewall:
 ```bash
 docker compose restart firewall
 ```
+
+## Timeout Configuration
+
+```conf
+embedding_timeout_seconds 30;
+```
+
+If omitted, `request_timeout_seconds` is used as the fallback.
 
 ---
 
@@ -411,7 +499,7 @@ AI Cost Firewall can be configured to fail open for runtime semantic cache failu
 
 When enabled:
 
-```text
+```conf
 semantic_cache_fail_open true;
 ```
 
@@ -419,7 +507,7 @@ runtime semantic cache failures do not block the request. AI Cost Firewall skips
 
 When disabled:
 
-```text
+```conf
 semantic_cache_fail_open false;
 ```
 
@@ -466,8 +554,20 @@ curl -s http://localhost:8080/metrics | grep semantic
 - prompts too different
 - embeddings not working
 - empty Qdrant collection
+- semantic cache store disabled
+- semantic cache disabled
+- entries expired too quickly
 
 ## Recommended Checks
+
+Inspect configuration:
+
+```conf
+semantic_cache_enabled true;
+semantic_cache_store_enabled true;
+semantic_similarity_threshold 0.92;
+semantic_cache_retention_seconds 604800;
+```
 
 Inspect metrics:
 
@@ -480,14 +580,16 @@ Important metrics:
 ```text
 aif_semantic_candidates_checked_total
 aif_semantic_threshold_results_total
-aif_cache_semantic_hits
+aif_cache_hits_total{cache_type="semantic"}
+aif_semantic_store_total
+aif_semantic_store_errors_total
 ```
 
 ## Recommended Thresholds
 
 Typical starting point:
 
-```text
+```conf
 semantic_similarity_threshold 0.92;
 ```
 
@@ -503,6 +605,69 @@ Higher threshold:
 
 ---
 
+# Cache Bypass Requests/sec Shows 0
+
+## Symptoms
+
+The Grafana Overview panel for cache bypass remains at zero.
+
+## Common Causes
+
+- no requests were sent with the bypass header
+- the bypass metric is not present in the running binary
+- Prometheus has not scraped the new metric yet
+- the dashboard is connected to an old container/image
+
+## Recommended Checks
+
+Check whether the metric exists:
+
+```bash
+curl -s http://localhost:8080/metrics | grep aif_cache_bypass_requests_total
+```
+
+Send a bypass request:
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer demo-key" \
+  -H "X-AIF-Cache-Bypass: true" \
+  -d '{"model":"gpt-4o-mini-2024-07-18","messages":[{"role":"user","content":"Manual bypass metric test"}],"temperature":0}'
+```
+
+Check the metric again:
+
+```bash
+curl -s http://localhost:8080/metrics | grep aif_cache_bypass_requests_total
+```
+
+## Configuration
+
+Default:
+
+```conf
+cache_bypass_header X-AIF-Cache-Bypass;
+```
+
+Accepted truthy values include:
+
+```text
+true
+1
+yes
+on
+```
+
+When bypass is enabled for a request:
+
+- exact cache lookup is skipped
+- semantic cache lookup is skipped
+- exact cache storage is skipped
+- semantic cache storage is skipped
+
+---
+
 # Grafana Dashboards Are Empty
 
 ## Symptoms
@@ -514,15 +679,23 @@ Higher threshold:
 
 - no traffic generated
 - Prometheus cannot scrape firewall
-- metrics endpoint unavailable
+- metrics endpoint unavailable or protected
 - wrong provisioning paths
+- Grafana is still using a persistent old dashboard definition
 
 ## Recommended Checks
 
 Verify metrics:
-Grafana Dashboards Are Empty
+
 ```bash
 curl http://localhost:8080/metrics
+```
+
+If metrics auth is enabled:
+
+```bash
+curl -H "Authorization: Bearer your-prometheus-token" \
+  http://localhost:8080/metrics
 ```
 
 Verify Prometheus targets:
@@ -547,6 +720,42 @@ for i in {1..20}; do
     -H "Content-Type: application/json" \
     -d '{"model":"gpt-4o-mini-2024-07-18","messages":[{"role":"user","content":"Explain Redis briefly."}]}'
 done
+```
+
+---
+
+# Metrics Endpoint Returns 401 or 403
+
+## Symptoms
+
+```text
+/metrics returns unauthorized
+```
+
+or Prometheus target is down after enabling metrics authentication.
+
+## Cause
+
+Metrics endpoint access control is enabled.
+
+```conf
+metrics_auth_required true;
+metrics_auth_token your-prometheus-token;
+```
+
+## Recommended Checks
+
+Query with bearer token:
+
+```bash
+curl -H "Authorization: Bearer your-prometheus-token" \
+  http://localhost:8080/metrics
+```
+
+Update Prometheus scrape configuration to send the same bearer token, or disable metrics auth on a private Docker network:
+
+```conf
+metrics_auth_required false;
 ```
 
 ---
@@ -589,10 +798,10 @@ aif_net_saved_micro_usd_total
 
 Check whether traffic is realistic:
 
-repeated identical prompts should mostly exercise exact cache
-similar but non-identical prompts are needed to exercise semantic cache
-short test runs may not produce representative savings ratios
-local dummy providers may not reflect real provider pricing behavior
+- repeated identical prompts should mostly exercise exact cache
+- similar but non-identical prompts are needed to exercise semantic cache
+- short test runs may not produce representative savings ratios
+- local dummy providers may not reflect real provider pricing behavior
 
 ---
 
@@ -617,9 +826,20 @@ Indicates the process is alive but not ready to serve traffic.
 Common causes:
 
 - startup initialization incomplete
-- Redis unavailable
-- Qdrant unavailable
+- Redis unavailable and readiness requires Redis
+- Qdrant unavailable and readiness requires Qdrant
+- upstream unavailable and readiness requires upstream
 - graceful shutdown in progress
+
+Readiness dependency behavior can be configured:
+
+```conf
+readiness_requires_redis true;
+readiness_requires_qdrant false;
+readiness_requires_upstream false;
+```
+
+This allows deployments to decide which dependency failures should remove the firewall from service.
 
 ---
 
@@ -646,21 +866,26 @@ aif_upstream_timeouts_total increasing
 
 ## Recommended Checks
 
-Increase timeout:
+Configure split timeouts:
 
-```text
+```conf
 request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
 ```
+
+`request_timeout_seconds` remains a backward-compatible fallback. In v0.2.1 and newer, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 Inspect latency metrics:
 
 ```text
 aif_upstream_request_duration_seconds
+aif_embedding_request_duration_seconds
 ```
 
 ---
 
-# Large Requests Rejected
+# Large Requests or Prompts Rejected
 
 ## Symptoms
 
@@ -672,13 +897,15 @@ aif_upstream_request_duration_seconds
 }
 ```
 
+or a validation error for prompt size.
+
 ## Cause
 
-Request exceeds configured limit.
+The request exceeds configured limits.
 
-## Example
+## Request Body Limit
 
-```text
+```conf
 max_request_body_bytes 1M;
 ```
 
@@ -689,6 +916,14 @@ Supported formats:
 1M
 2M
 ```
+
+## Prompt Character Limit
+
+```conf
+max_prompt_chars 200000;
+```
+
+`max_request_body_bytes` limits the full HTTP request body. `max_prompt_chars` limits parsed chat message content.
 
 ---
 
@@ -736,12 +971,6 @@ docker compose logs -f firewall
 Save logs:
 
 ```bash
-docker compose up -d > logs.txt 2>&1
-```
-
-or:
-
-```bash
 docker compose logs firewall > firewall.log
 ```
 
@@ -752,9 +981,10 @@ docker compose logs firewall > firewall.log
 ## Cache Behavior
 
 ```text
-aif_cache_exact_hits
-aif_cache_semantic_hits
-aif_cache_misses
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_hits_total{cache_type="semantic"}
+aif_cache_misses_total
+aif_cache_bypass_requests_total
 ```
 
 ## Semantic Diagnostics
@@ -763,6 +993,9 @@ aif_cache_misses
 aif_semantic_candidates_checked_total
 aif_semantic_threshold_results_total
 aif_semantic_lookup_duration_seconds
+aif_semantic_expired_entries_skipped_total
+aif_semantic_store_total
+aif_semantic_store_errors_total
 ```
 
 ## Runtime Health
@@ -785,11 +1018,11 @@ aif_embedding_timeouts_total
 
 # Provider Compatibility Notes
 
-AI Cost Firewall v0.2.0 supports OpenAI-compatible provider patterns.
+AI Cost Firewall v0.2.1 supports OpenAI-compatible provider patterns.
 
 The expected configuration model is:
 
-```text
+```conf
 upstream_provider openai_compatible;
 embedding_provider openai_compatible;
 ```
@@ -798,9 +1031,9 @@ This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
 
 It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
 
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.0. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.1. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
 
-Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs are intentionally postponed until after v0.2.0.
+Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.2.1 scope.
 
 ## OpenAI
 
@@ -834,7 +1067,7 @@ Useful aggregation layer for multiple providers.
 
 Enable:
 
-```text
+```conf
 allow_unknown_models_pass_through true;
 ```
 

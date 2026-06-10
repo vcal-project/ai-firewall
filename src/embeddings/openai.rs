@@ -297,7 +297,7 @@ fn embedding_error_hint(kind: UpstreamErrorKind) -> &'static str {
             "Check embedding provider quota, rate limits, billing status, or retry later."
         }
         UpstreamErrorKind::Timeout => {
-            "Increase request_timeout_seconds or check embedding provider latency, model load time, network latency, and provider availability."
+            "Increase embedding_timeout_seconds or check embedding provider latency, model load time, network latency, and provider availability."
         }
         UpstreamErrorKind::Tls => {
             "Check certificate trust, hostname/SAN, and whether embedding_base_url uses the correct scheme. For trusted local providers with self-signed certificates, consider using http:// inside the private network."

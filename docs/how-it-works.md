@@ -1,4 +1,3 @@
-
 # How AI Cost Firewall Works
 
 This document explains how AI Cost Firewall processes requests, evaluates cache reuse, communicates with OpenAI-compatible providers, and reduces LLM API cost and latency.
@@ -8,7 +7,7 @@ AI Cost Firewall sits between client applications and LLM providers and applies 
 1. exact cache (Redis)
 2. semantic cache (Qdrant)
 
-Only cache misses are forwarded upstream.
+Cache misses and explicit cache-bypass requests are forwarded upstream.
 
 ---
 
@@ -42,12 +41,14 @@ Supported OpenAI-compatible providers include:
 
 AI Cost Firewall evaluates requests in stages:
 
-1. normalize request
-2. exact cache lookup
-3. semantic cache lookup
-4. upstream request
-5. cache storage
-6. response return
+1. parse and validate request limits
+2. normalize request
+3. evaluate per-request cache bypass
+4. exact cache lookup, if enabled
+5. semantic cache lookup, if enabled and not bypassed
+6. upstream request on miss or bypass
+7. cache storage, if store controls allow it
+8. response return
 
 ---
 
@@ -58,13 +59,21 @@ flowchart TD
 
     A[Client Request]
 
+    A0{Request limits OK?}
+
     B[Normalize Request]
 
-    C{Exact Cache Lookup<br/>Redis}
+    B0{Cache bypass header?}
+
+    C{Exact Cache Enabled?}
+
+    C1{Exact Cache Lookup<br/>Redis}
 
     D[Return Cached Response]
 
-    E[Generate Embedding]
+    E{Semantic Cache Enabled?}
+
+    E1[Generate Embedding]
 
     F{Semantic Search<br/>Qdrant}
 
@@ -74,21 +83,37 @@ flowchart TD
 
     I[Receive Upstream Response]
 
-    J[Store Exact Cache]
+    J{Exact Store Enabled?}
 
-    K[Store Semantic Cache]
+    J1[Store Exact Cache]
+
+    K{Semantic Store Enabled?}
+
+    K1[Store Semantic Cache]
 
     L[Return Response]
 
-    A --> B
-    B --> C
+    A --> A0
+    A0 -->|NO| L
+    A0 -->|YES| B
 
-    C -->|HIT| D
+    B --> B0
+
+    B0 -->|YES| H
+    B0 -->|NO| C
+
+    C -->|NO| E
+    C -->|YES| C1
+
+    C1 -->|HIT| D
     D --> L
 
-    C -->|MISS| E
-    E --> F
+    C1 -->|MISS| E
 
+    E -->|NO| H
+    E -->|YES| E1
+
+    E1 --> F
     F --> G
 
     G -->|YES| D
@@ -97,10 +122,13 @@ flowchart TD
     H --> I
 
     I --> J
-    I --> K
+    J -->|YES| J1
+    J -->|NO| K
+    J1 --> K
 
-    J --> L
-    K --> L
+    K -->|YES| K1
+    K -->|NO| L
+    K1 --> L
 ```
 
 ---
@@ -150,6 +178,56 @@ For production environments, place the firewall behind:
 
 ---
 
+# Request Limits and Cache Bypass
+
+Before cache lookup, AI Cost Firewall validates basic gateway limits.
+
+Relevant settings:
+
+```conf
+max_request_body_bytes 1048576;
+max_prompt_chars 200000;
+```
+
+`max_request_body_bytes` limits the full HTTP request body. `max_prompt_chars` limits the total chat message content after parsing.
+
+AI Cost Firewall also supports per-request cache bypass:
+
+```conf
+cache_bypass_header X-AIF-Cache-Bypass;
+```
+
+Example request header:
+
+```http
+X-AIF-Cache-Bypass: true
+```
+
+Accepted truthy values:
+
+```text
+true
+1
+yes
+on
+```
+
+When bypass is enabled for a request:
+
+- exact cache lookup is skipped
+- semantic cache lookup is skipped
+- exact cache storage is skipped
+- semantic cache storage is skipped
+- the request is forwarded upstream
+
+Bypass requests are counted with:
+
+```text
+aif_cache_bypass_requests_total
+```
+
+---
+
 # Step 1 — Request Normalization
 
 Before cache lookup, the firewall normalizes requests.
@@ -178,6 +256,17 @@ Normalization is used for:
 ---
 
 # Step 2 — Exact Cache Lookup
+
+Exact cache is controlled by:
+
+```conf
+exact_cache_enabled true;
+exact_cache_fail_open true;
+```
+
+When `exact_cache_enabled` is disabled, Redis exact-cache lookup and storage are skipped and the request continues to semantic lookup or upstream forwarding.
+
+When `exact_cache_fail_open` is enabled, runtime Redis lookup failures behave like cache misses and requests continue upstream.
 
 The firewall creates a SHA256 hash from the normalized request JSON.
 
@@ -231,6 +320,14 @@ the firewall continues to semantic lookup.
 The firewall generates an embedding from the normalized semantic text.
 
 Embeddings are produced through the configured embedding provider.
+
+Embedding calls use:
+
+```conf
+embedding_timeout_seconds 30;
+```
+
+If omitted, `request_timeout_seconds` is used as the fallback.
 
 The embedding provider may differ from the chat provider.
 
@@ -383,24 +480,28 @@ Semantic correctness does not depend on cleanup.
 
 # Runtime Fail-Open Behavior
 
-Optional runtime behavior:
+AI Cost Firewall supports separate runtime fail-open controls for exact and semantic cache paths:
 
 ```conf
+exact_cache_fail_open true;
 semantic_cache_fail_open true;
 ```
 
 When enabled:
 
+- Redis exact-cache lookup/store failures can behave like cache misses or skipped stores
 - semantic lookup failures behave like cache misses
 - requests continue upstream normally
 
-This prevents semantic infrastructure failures from blocking chat traffic.
+This prevents cache infrastructure failures from blocking chat traffic when fail-open behavior is desired.
+
+Fail-open settings do not bypass static configuration validation.
 
 ---
 
 # Step 5 — Upstream Request
 
-When both cache layers miss, the firewall forwards the request upstream.
+When both cache layers miss, or when cache bypass is requested, the firewall forwards the request upstream.
 
 Example providers:
 
@@ -415,6 +516,14 @@ AI Cost Firewall internally appends:
 ```text
 /v1/chat/completions
 ```
+
+Chat-completion upstream calls use:
+
+```conf
+upstream_timeout_seconds 120;
+```
+
+If omitted, `request_timeout_seconds` is used as the fallback.
 
 Do not configure the full endpoint path as:
 
@@ -472,13 +581,24 @@ headers upstream.
 
 # Step 6 — Cache Storage
 
-After receiving the upstream response, the firewall stores results in both caches.
+After receiving the upstream response, the firewall can store results in one or both cache layers.
+
+Cache writes are controlled independently:
+
+```conf
+exact_cache_store_enabled true;
+semantic_cache_store_enabled true;
+```
+
+When a store control is disabled, lookup may still be enabled, but new upstream responses are not written to that cache layer.
+
+Cache storage is skipped for requests that use the cache bypass header.
 
 ---
 
 # Exact Cache Storage
 
-Redis stores:
+When `exact_cache_store_enabled` is enabled, Redis stores:
 
 ```text
 exact request → response
@@ -494,7 +614,7 @@ SET aif:exact:<sha256> response
 
 # Semantic Cache Storage
 
-Qdrant stores:
+When `semantic_cache_store_enabled` is enabled, Qdrant stores:
 
 - normalized prompt text
 - embedding vector
@@ -545,7 +665,7 @@ These request types often contain non-deterministic structures that reduce safe 
 
 ---
 
-# When Semantic Cache Is Disabled
+# When Cache Layers Are Disabled
 
 Semantic cache may be disabled globally:
 
@@ -555,9 +675,21 @@ semantic_cache_enabled false;
 
 In this mode:
 
-- only exact cache is used
+- exact cache can still be used
 - semantic embeddings are skipped
-- Qdrant not required
+- Qdrant is not required for request processing
+
+Exact cache may also be disabled:
+
+```conf
+exact_cache_enabled false;
+```
+
+In this mode:
+
+- Redis exact-cache lookup and storage are skipped
+- semantic cache can still be used if enabled
+- all cache can be disabled when both exact and semantic cache are disabled
 
 ---
 
@@ -575,15 +707,29 @@ Example:
 curl http://localhost:8080/metrics
 ```
 
+The metrics endpoint can be protected:
+
+```conf
+metrics_auth_required true;
+metrics_auth_token your-prometheus-token;
+```
+
+When enabled, clients must send:
+
+```http
+Authorization: Bearer your-prometheus-token
+```
+
 ---
 
 # Core Request Metrics
 
 ```text
 aif_requests_total
-aif_cache_exact_hits
-aif_cache_semantic_hits
+aif_cache_hits_total{cache_type="exact"}
+aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
+aif_cache_bypass_requests_total
 aif_upstream_calls_total
 ```
 
@@ -591,6 +737,8 @@ These metrics show whether requests were:
 
 - exact cache hits
 - semantic cache hits
+- cache misses
+- explicit cache-bypass requests
 - upstream requests
 
 ---
@@ -602,6 +750,8 @@ aif_semantic_candidates_checked_total
 aif_semantic_threshold_results_total
 aif_semantic_lookup_duration_seconds
 aif_semantic_expired_entries_skipped_total
+aif_semantic_store_total
+aif_semantic_store_errors_total
 ```
 
 These metrics help tune:
@@ -650,21 +800,30 @@ These metrics distinguish:
 
 # Included Dashboards
 
-AI Cost Firewall includes pre-configured Grafana dashboards.
+AI Cost Firewall includes pre-configured Grafana dashboards in the Docker deployment files.
 
 Overview dashboard:
 
-- cost savings
-- cache hit rates
-- request traffic
-- net savings
+- total request volume
+- estimated chat cost
+- gross and net savings
+- embedding overhead
+- cache hit rate
+- exact and semantic cache activity
+- cache bypass request rate
+- per-model spend and savings
 
 Diagnostics dashboard:
 
+- readiness state
 - semantic threshold pass/fail behavior
-- lookup latency
-- semantic cache diagnostics
-- runtime semantic activity
+- semantic candidate evaluation
+- expired entry skips
+- semantic lookup latency
+- upstream and embedding latency
+- semantic store health
+- runtime and provider pressure signals
+- provider error classes
 
 ---
 
@@ -706,13 +865,15 @@ deploy/examples/
 
 # Operational Notes
 
-- Redis required for exact cache
-- Qdrant required only when semantic cache enabled
+- Redis is used for exact cache when `exact_cache_enabled` is true
+- Redis startup/runtime behavior depends on `exact_cache_fail_open` and readiness settings
+- Qdrant is required for semantic cache when semantic cache is enabled and fail-open behavior does not allow startup without it
 - vector size must match embedding dimension
 - semantic correctness does not depend on pruning
-- expired entries filtered during lookup
-- semantic cache fail-open affects runtime only
-- OpenAI-compatible providers supported through flat configuration model
+- expired entries are filtered during lookup
+- exact and semantic cache writes can be controlled independently
+- per-request cache bypass skips lookup and store
+- OpenAI-compatible providers are supported through a flat configuration model
 
 ---
 

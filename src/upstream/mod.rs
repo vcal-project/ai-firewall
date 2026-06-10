@@ -16,7 +16,7 @@ pub fn build_llm_upstream(cfg: &Config) -> Result<Arc<dyn LlmUpstream>, AppError
         ProviderKind::OpenAiCompatible => Ok(Arc::new(OpenAiUpstream::new(
             cfg.upstream_base_url.clone(),
             cfg.upstream_api_key.clone(),
-            Duration::from_secs(cfg.request_timeout_seconds),
+            Duration::from_secs(cfg.upstream_timeout_seconds),
         )?)),
     }
 }

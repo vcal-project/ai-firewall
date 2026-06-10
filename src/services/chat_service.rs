@@ -18,14 +18,43 @@ use crate::{
     upstream::llm::LlmUpstream,
 };
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CacheControl {
+    pub bypass_lookup: bool,
+    pub bypass_store: bool,
+}
+
 pub struct ChatService {
     exact_cache: Arc<dyn ExactCache>,
     semantic_cache: Arc<dyn SemanticCache>,
     upstream: Arc<dyn LlmUpstream>,
+    exact_cache_enabled: bool,
+    exact_cache_fail_open: bool,
+    exact_cache_store_enabled: bool,
     semantic_cache_enabled: bool,
     semantic_cache_fail_open: bool,
+    semantic_cache_store_enabled: bool,
+    max_prompt_chars: Option<usize>,
     model_prices: HashMap<String, ModelPrice>,
     embedding_price: Option<EmbeddingPrice>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChatServiceSettings {
+    pub semantic_cache_enabled: bool,
+    pub exact_cache_enabled: bool,
+    pub exact_cache_fail_open: bool,
+    pub exact_cache_store_enabled: bool,
+    pub semantic_cache_store_enabled: bool,
+    pub semantic_cache_fail_open: bool,
+    pub max_prompt_chars: Option<usize>,
+}
+
+fn estimate_prompt_chars(req: &ChatCompletionRequest) -> usize {
+    req.messages
+        .iter()
+        .map(|message| message.content.to_string().chars().count())
+        .sum()
 }
 
 impl ChatService {
@@ -33,8 +62,7 @@ impl ChatService {
         exact_cache: Arc<dyn ExactCache>,
         semantic_cache: Arc<dyn SemanticCache>,
         upstream: Arc<dyn LlmUpstream>,
-        semantic_cache_enabled: bool,
-        semantic_cache_fail_open: bool,
+        settings: ChatServiceSettings,
         model_prices: HashMap<String, ModelPrice>,
         embedding_price: Option<EmbeddingPrice>,
     ) -> Self {
@@ -42,16 +70,31 @@ impl ChatService {
             exact_cache,
             semantic_cache,
             upstream,
-            semantic_cache_enabled,
-            semantic_cache_fail_open,
+            exact_cache_enabled: settings.exact_cache_enabled,
+            exact_cache_fail_open: settings.exact_cache_fail_open,
+            exact_cache_store_enabled: settings.exact_cache_store_enabled,
+            semantic_cache_enabled: settings.semantic_cache_enabled,
+            semantic_cache_fail_open: settings.semantic_cache_fail_open,
+            semantic_cache_store_enabled: settings.semantic_cache_store_enabled,
+            max_prompt_chars: settings.max_prompt_chars,
             model_prices,
             embedding_price,
         }
     }
 
+    #[cfg(test)]
     pub async fn handle(
         &self,
         req: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, AppError> {
+        self.handle_with_cache_control(req, CacheControl::default())
+            .await
+    }
+
+    pub async fn handle_with_cache_control(
+        &self,
+        req: ChatCompletionRequest,
+        cache_control: CacheControl,
     ) -> Result<ChatCompletionResponse, AppError> {
         self.validate(&req)?;
 
@@ -66,28 +109,47 @@ impl ChatService {
 
         let exact_key = self.exact_cache_key(&normalized);
 
-        if let Some(raw) = self
-            .exact_cache
-            .get(&exact_key)
-            .await
-            .map_err(|e| AppError::internal(format!("exact cache get failed: {e}")))?
-        {
-            let hit: ChatCompletionResponse = serde_json::from_str(&raw)
-                .map_err(|e| AppError::internal(format!("cached response decode failed: {e}")))?;
+        if self.exact_cache_enabled && !cache_control.bypass_lookup {
+            match self.exact_cache.get(&exact_key).await {
+                Ok(Some(raw)) => {
+                    let hit: ChatCompletionResponse = serde_json::from_str(&raw).map_err(|e| {
+                        AppError::internal(format!("cached response decode failed: {e}"))
+                    })?;
 
-            metrics::CACHE_EXACT_HITS.inc();
-            self.record_exact_hit_savings(&hit);
+                    metrics::CACHE_EXACT_HITS.inc();
+                    self.record_exact_hit_savings(&hit);
 
+                    tracing::debug!(
+                        model = %req.normalized_model(),
+                        cache_key = %exact_key,
+                        "exact cache hit"
+                    );
+
+                    return Ok(hit);
+                }
+                Ok(None) => {}
+                Err(e) if self.exact_cache_fail_open => {
+                    tracing::warn!(
+                        model = %req.normalized_model(),
+                        error = %e,
+                        "exact cache lookup failed; exact_cache_fail_open=true so request continues"
+                    );
+                }
+                Err(e) => {
+                    return Err(AppError::internal(format!("exact cache get failed: {e}")));
+                }
+            }
+        } else if cache_control.bypass_lookup {
             tracing::debug!(
                 model = %req.normalized_model(),
-                cache_key = %exact_key,
-                "exact cache hit"
+                "cache lookup bypass requested"
             );
-
-            return Ok(hit);
         }
 
-        if self.semantic_cache_enabled && self.semantic_eligible(&req) {
+        if self.semantic_cache_enabled
+            && !cache_control.bypass_lookup
+            && self.semantic_eligible(&req)
+        {
             match self
                 .semantic_cache
                 .lookup(req.normalized_model(), &semantic_text)
@@ -109,16 +171,30 @@ impl ChatService {
                         "semantic cache hit"
                     );
 
-                    if let Ok(raw) = serde_json::to_string(&hit.response) {
-                        if let Err(e) = self.exact_cache.set(&exact_key, raw).await {
-                            tracing::debug!("failed to warm exact cache from semantic hit: {e}");
+                    if self.exact_cache_enabled
+                        && self.exact_cache_store_enabled
+                        && !cache_control.bypass_store
+                    {
+                        if let Ok(raw) = serde_json::to_string(&hit.response) {
+                            match self.exact_cache.set(&exact_key, raw).await {
+                                Ok(()) => {}
+                                Err(e) if self.exact_cache_fail_open => {
+                                    tracing::debug!(
+                                        "failed to warm exact cache from semantic hit: {e}"
+                                    );
+                                }
+                                Err(e) => {
+                                    return Err(AppError::internal(format!(
+                                        "exact cache set failed while warming semantic hit: {e}"
+                                    )));
+                                }
+                            }
+                        } else {
+                            tracing::debug!(
+                                "failed to serialize semantic-hit response for exact cache warming"
+                            );
                         }
-                    } else {
-                        tracing::debug!(
-                            "failed to serialize semantic-hit response for exact cache warming"
-                        );
                     }
-
                     return Ok(hit.response);
                 }
 
@@ -163,12 +239,28 @@ impl ChatService {
         let raw = serde_json::to_string(&response)
             .map_err(|e| AppError::internal(format!("response encode failed: {e}")))?;
 
-        self.exact_cache
-            .set(&exact_key, raw)
-            .await
-            .map_err(|e| AppError::internal(format!("exact cache set failed: {e}")))?;
+        if self.exact_cache_enabled && self.exact_cache_store_enabled && !cache_control.bypass_store
+        {
+            match self.exact_cache.set(&exact_key, raw).await {
+                Ok(()) => {}
+                Err(e) if self.exact_cache_fail_open => {
+                    tracing::warn!(
+                        model = %req.normalized_model(),
+                        error = %e,
+                        "exact cache store failed; exact_cache_fail_open=true so response is returned"
+                    );
+                }
+                Err(e) => {
+                    return Err(AppError::internal(format!("exact cache set failed: {e}")));
+                }
+            }
+        }
 
-        if self.semantic_cache_enabled && self.semantic_eligible(&req) {
+        if self.semantic_cache_enabled
+            && self.semantic_cache_store_enabled
+            && !cache_control.bypass_store
+            && self.semantic_eligible(&req)
+        {
             match self
                 .semantic_cache
                 .store(req.normalized_model(), &semantic_text, &response)
@@ -214,6 +306,16 @@ impl ChatService {
 
         if req.messages.is_empty() {
             return Err(AppError::bad_request("messages must not be empty"));
+        }
+
+        if let Some(max_prompt_chars) = self.max_prompt_chars {
+            let prompt_chars = estimate_prompt_chars(req);
+            if prompt_chars > max_prompt_chars {
+                return Err(AppError::payload_too_large(format!(
+                    "prompt size exceeds max_prompt_chars ({} > {})",
+                    prompt_chars, max_prompt_chars
+                )));
+            }
         }
 
         Ok(())
@@ -681,12 +783,21 @@ mod tests {
         upstream: Arc<dyn LlmUpstream>,
         semantic_cache_enabled: bool,
     ) -> ChatService {
+        let settings = ChatServiceSettings {
+            semantic_cache_enabled,
+            exact_cache_enabled: true,
+            exact_cache_fail_open: true,
+            exact_cache_store_enabled: true,
+            semantic_cache_store_enabled: true,
+            semantic_cache_fail_open: true,
+            max_prompt_chars: Some(200_000),
+        };
+
         ChatService::new(
             exact_cache,
             semantic_cache,
             upstream,
-            semantic_cache_enabled,
-            true,
+            settings,
             model_prices(),
             Some(EmbeddingPrice {
                 usd_per_1m_tokens: 0.020,
@@ -908,12 +1019,21 @@ mod tests {
             "upstream response",
         )));
 
+        let settings = ChatServiceSettings {
+            semantic_cache_enabled: true,
+            exact_cache_enabled: true,
+            exact_cache_fail_open: true,
+            exact_cache_store_enabled: true,
+            semantic_cache_store_enabled: true,
+            semantic_cache_fail_open: true,
+            max_prompt_chars: Some(200_000),
+        };
+
         let service = ChatService::new(
             exact_cache,
             semantic_cache,
             upstream,
-            true,
-            true,
+            settings,
             model_prices(),
             Some(EmbeddingPrice {
                 usd_per_1m_tokens: 0.020,
@@ -938,12 +1058,21 @@ mod tests {
             "upstream response",
         )));
 
+        let settings = ChatServiceSettings {
+            semantic_cache_enabled: true,
+            exact_cache_enabled: true,
+            exact_cache_fail_open: true,
+            exact_cache_store_enabled: true,
+            semantic_cache_store_enabled: true,
+            semantic_cache_fail_open: false,
+            max_prompt_chars: Some(200_000),
+        };
+
         let service = ChatService::new(
             exact_cache,
             semantic_cache,
             upstream,
-            true,
-            false,
+            settings,
             model_prices(),
             Some(EmbeddingPrice {
                 usd_per_1m_tokens: 0.020,
@@ -967,12 +1096,21 @@ mod tests {
             "upstream response",
         )));
 
+        let settings = ChatServiceSettings {
+            semantic_cache_enabled: true,
+            exact_cache_enabled: true,
+            exact_cache_fail_open: true,
+            exact_cache_store_enabled: true,
+            semantic_cache_store_enabled: true,
+            semantic_cache_fail_open: true,
+            max_prompt_chars: Some(200_000),
+        };
+
         let service = ChatService::new(
             exact_cache,
             semantic_cache,
             upstream,
-            true,
-            true,
+            settings,
             model_prices(),
             Some(EmbeddingPrice {
                 usd_per_1m_tokens: 0.020,
@@ -997,12 +1135,21 @@ mod tests {
             "upstream response",
         )));
 
+        let settings = ChatServiceSettings {
+            semantic_cache_enabled: true,
+            exact_cache_enabled: true,
+            exact_cache_fail_open: true,
+            exact_cache_store_enabled: true,
+            semantic_cache_store_enabled: true,
+            semantic_cache_fail_open: false,
+            max_prompt_chars: Some(200_000),
+        };
+
         let service = ChatService::new(
             exact_cache,
             semantic_cache,
             upstream,
-            true,
-            false,
+            settings,
             model_prices(),
             Some(EmbeddingPrice {
                 usd_per_1m_tokens: 0.020,

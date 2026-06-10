@@ -404,11 +404,11 @@
               },
               {
                 "color": "yellow",
-                "value": 40
+                "value": 30
               },
               {
                 "color": "green",
-                "value": 70
+                "value": 50
               }
             ]
           },
@@ -419,7 +419,7 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 3,
+        "w": 6,
         "x": 18,
         "y": 0
       },
@@ -449,68 +449,6 @@
         }
       ],
       "title": "Cache Hit Rate",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "bool"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 3,
-        "x": 21,
-        "y": 0
-      },
-      "id": 8,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.4.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "aif_readiness_state",
-          "legendFormat": "",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Readiness",
       "type": "stat"
     },
     {
@@ -1081,8 +1019,8 @@
               }
             ]
           },
-          "unit": "currencyUSD",
-          "decimals": 6
+          "unit": "ops",
+          "decimals": 2
         },
         "overrides": []
       },
@@ -1111,13 +1049,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (model) (rate(aif_model_cost_micro_usd_total[$__rate_interval])) / clamp_min(sum by (model) (rate(aif_model_requests_total[$__rate_interval])), 1) / 1000000",
-          "legendFormat": "{{model}}",
+          "expr": "sum(rate(aif_cache_bypass_requests_total[$__rate_interval])) or vector(0)",
+          "legendFormat": "bypass requests/sec",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Cost per Upstream Request",
+      "title": "Cache Bypass Requests/sec",
       "type": "timeseries"
     },
     {
@@ -1533,7 +1471,7 @@
     "prometheus",
     "runtime",
     "semantic-cache",
-    "v0.2.0"
+    "v0.2.1"
   ],
   "templating": {
     "list": []
@@ -1546,7 +1484,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Overview",
   "uid": "ai-cost-firewall",
-  "version": 5,
+  "version": 6,
   "weekStart": "",
-  "description": "Overview dashboard for AI Cost Firewall v0.2.0: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, and request-level cost indicators."
+  "description": "Overview dashboard for AI Cost Firewall v0.2.1: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, and cache bypass request activity."
 }

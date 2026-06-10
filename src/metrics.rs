@@ -51,6 +51,14 @@ pub static CACHE_MISSES: Lazy<IntCounter> = Lazy::new(|| {
         .expect("metric aif_cache_misses must be valid")
 });
 
+pub static CACHE_BYPASS_REQUESTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_cache_bypass_requests_total",
+        "Requests that explicitly bypassed exact and semantic cache lookup/store",
+    )
+    .expect("metric aif_cache_bypass_requests_total must be valid")
+});
+
 pub static UPSTREAM_CALLS: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new("aif_upstream_calls_total", "Upstream calls")
         .expect("metric aif_upstream_calls_total must be valid")
@@ -366,6 +374,7 @@ pub fn init() {
     Lazy::force(&MODEL_OUTPUT_TOKENS_TOTAL);
     Lazy::force(&MODEL_COST_MICRO_USD_TOTAL);
     Lazy::force(&CACHE_HITS_TOTAL);
+    Lazy::force(&CACHE_BYPASS_REQUESTS_TOTAL);
     Lazy::force(&REQUEST_COST_MICRO_USD_TOTAL);
     Lazy::force(&GROSS_SAVED_MICRO_USD_TOTAL);
     Lazy::force(&NET_SAVED_MICRO_USD_TOTAL);
@@ -382,6 +391,7 @@ pub fn init() {
             Box::new(SEMANTIC_PROVIDER_ERRORS_TOTAL.clone()),
             Box::new(SEMANTIC_SKIPS_TOTAL.clone()),
             Box::new(CACHE_MISSES.clone()),
+            Box::new(CACHE_BYPASS_REQUESTS_TOTAL.clone()),
             Box::new(UPSTREAM_CALLS.clone()),
             Box::new(TOKENS_SAVED.clone()),
             Box::new(CHAT_COST_SAVED_MICRO_USD.clone()),

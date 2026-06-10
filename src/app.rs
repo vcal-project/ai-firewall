@@ -2,14 +2,14 @@ use crate::{core::pricing::is_priced_model, release};
 
 use crate::{
     api,
-    cache::{exact::ExactCache, redis_exact::RedisExactCache},
+    cache::{exact::ExactCache, noop_exact::NoopExactCache, redis_exact::RedisExactCache},
     config::{Config, ProviderKind},
     embeddings::{openai::OpenAiEmbeddingProvider, provider::EmbeddingProvider},
     metrics,
     semantic::{
         noop::NoopSemanticCache, qdrant::QdrantSemanticCache, semantic_cache::SemanticCache,
     },
-    services::chat_service::ChatService,
+    services::chat_service::{ChatService, ChatServiceSettings},
     upstream::build_llm_upstream,
 };
 
@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, State},
-    http::{Request, StatusCode},
+    http::{header, HeaderMap, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -77,10 +77,43 @@ impl ShutdownState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct DependencyState {
+    pub redis_available: Arc<AtomicBool>,
+    pub qdrant_available: Arc<AtomicBool>,
+    pub upstream_available: Arc<AtomicBool>,
+}
+
+impl DependencyState {
+    pub fn new(redis_available: bool, qdrant_available: bool, upstream_available: bool) -> Self {
+        Self {
+            redis_available: Arc::new(AtomicBool::new(redis_available)),
+            qdrant_available: Arc::new(AtomicBool::new(qdrant_available)),
+            upstream_available: Arc::new(AtomicBool::new(upstream_available)),
+        }
+    }
+
+    pub fn update(&self, other: &Self) {
+        self.redis_available.store(
+            other.redis_available.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.qdrant_available.store(
+            other.qdrant_available.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.upstream_available.store(
+            other.upstream_available.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<RwLock<Config>>,
     pub chat_service: Arc<RwLock<Arc<ChatService>>>,
+    pub dependencies: DependencyState,
     pub shutdown: ShutdownState,
 }
 
@@ -142,44 +175,61 @@ fn log_startup_summary(cfg: &Config) {
     tracing::info!("Dependency checks:");
 }
 
-pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
+pub struct RuntimeBuild {
+    pub chat_service: Arc<ChatService>,
+    pub dependencies: DependencyState,
+}
+
+pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     log_startup_summary(cfg);
 
-    let redis_client = redis::Client::open(cfg.redis_url.clone()).with_context(|| {
-        format!(
-            "failed to create Redis client from redis_url '{}'",
-            mask_redis_url_for_logs(&cfg.redis_url)
-        )
-    })?;
+    let mut redis_available = false;
+    let mut qdrant_available = false;
 
-    let redis_conn = match ConnectionManager::new(redis_client).await {
-        Ok(conn) => {
-            tracing::info!(
-                redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
-                "[OK] Redis connected"
-            );
-            conn
-        }
-        Err(e) => {
-            tracing::error!(
-                redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
-                error = %e,
-                "failed to connect to Redis exact cache"
-            );
+    let exact_cache: Arc<dyn ExactCache> = if !cfg.exact_cache_enabled {
+        tracing::info!("[SKIP] Exact cache disabled; Redis is not required");
+        Arc::new(NoopExactCache)
+    } else {
+        let redis_client = redis::Client::open(cfg.redis_url.clone()).with_context(|| {
+            format!(
+                "failed to create Redis client from redis_url '{}'",
+                mask_redis_url_for_logs(&cfg.redis_url)
+            )
+        })?;
 
-            return Err(e).with_context(|| {
-                format!(
-                    "failed to connect to Redis exact cache using redis_url '{}'",
-                    mask_redis_url_for_logs(&cfg.redis_url)
-                )
-            });
+        match ConnectionManager::new(redis_client).await {
+            Ok(conn) => {
+                redis_available = true;
+                tracing::info!(
+                    redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
+                    "[OK] Redis connected"
+                );
+                Arc::new(RedisExactCache::new(conn, cfg.exact_cache_ttl_seconds))
+            }
+            Err(e) if cfg.exact_cache_fail_open => {
+                tracing::warn!(
+                    redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
+                    error = %e,
+                    "Redis exact cache unavailable; exact_cache_fail_open=true so startup continues without exact cache"
+                );
+                Arc::new(NoopExactCache)
+            }
+            Err(e) => {
+                tracing::error!(
+                    redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
+                    error = %e,
+                    "failed to connect to Redis exact cache"
+                );
+
+                return Err(e).with_context(|| {
+                    format!(
+                        "failed to connect to Redis exact cache using redis_url '{}'",
+                        mask_redis_url_for_logs(&cfg.redis_url)
+                    )
+                });
+            }
         }
     };
-
-    let exact_cache: Arc<dyn ExactCache> = Arc::new(RedisExactCache::new(
-        redis_conn,
-        cfg.exact_cache_ttl_seconds,
-    ));
 
     tracing::info!(
         upstream_provider = cfg.upstream_provider.as_str(),
@@ -188,6 +238,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
     );
 
     let upstream = build_llm_upstream(cfg).context("failed to initialize upstream provider")?;
+    let upstream_available = true;
 
     tracing::info!(
         upstream_provider = cfg.upstream_provider.as_str(),
@@ -209,7 +260,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
                     cfg.embedding_base_url.clone(),
                     cfg.embedding_api_key.clone(),
                     cfg.embedding_model.clone(),
-                    Duration::from_secs(cfg.request_timeout_seconds),
+                    Duration::from_secs(cfg.embedding_timeout_seconds),
                 )
                 .context("failed to initialize OpenAI-compatible embedding provider")?;
 
@@ -243,6 +294,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
         .await
         {
             Ok(cache) => {
+                qdrant_available = true;
                 tracing::info!(
                     qdrant_url = %cfg.qdrant_url,
                     qdrant_collection = %cfg.qdrant_collection,
@@ -261,12 +313,19 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
                     "failed to initialize Qdrant semantic cache"
                 );
 
-                return Err(e).with_context(|| {
-                    format!(
-                        "failed to initialize Qdrant semantic cache using qdrant_url '{}' and collection '{}'",
-                        cfg.qdrant_url, cfg.qdrant_collection
-                    )
-                });
+                if cfg.semantic_cache_fail_open {
+                    tracing::warn!(
+                        "semantic_cache_fail_open=true; startup continues without semantic cache"
+                    );
+                    Arc::new(NoopSemanticCache)
+                } else {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "failed to initialize Qdrant semantic cache using qdrant_url '{}' and collection '{}'",
+                            cfg.qdrant_url, cfg.qdrant_collection
+                        )
+                    });
+                }
             }
         }
     } else {
@@ -276,32 +335,47 @@ pub async fn build_runtime(cfg: &Config) -> Result<Arc<ChatService>> {
 
     tracing::info!("[OK] Runtime initialized");
 
-    Ok(Arc::new(ChatService::new(
+    let chat_service_settings = ChatServiceSettings {
+        semantic_cache_enabled: cfg.semantic_cache_enabled,
+        exact_cache_enabled: cfg.exact_cache_enabled,
+        exact_cache_fail_open: cfg.exact_cache_fail_open,
+        exact_cache_store_enabled: cfg.exact_cache_store_enabled,
+        semantic_cache_store_enabled: cfg.semantic_cache_store_enabled,
+        semantic_cache_fail_open: cfg.semantic_cache_fail_open,
+        max_prompt_chars: Some(cfg.max_prompt_chars),
+    };
+
+    let chat_service = Arc::new(ChatService::new(
         exact_cache,
         semantic_cache,
         upstream,
-        cfg.semantic_cache_enabled,
-        cfg.semantic_cache_fail_open,
+        chat_service_settings,
         cfg.model_prices.clone(),
         cfg.embedding_price.clone(),
-    )))
+    ));
+
+    Ok(RuntimeBuild {
+        chat_service,
+        dependencies: DependencyState::new(redis_available, qdrant_available, upstream_available),
+    })
 }
 
 pub async fn build_app(config: Config) -> Result<BuiltApp> {
     metrics::init();
 
-    let chat_service = build_runtime(&config).await?;
+    let runtime = build_runtime(&config).await?;
 
     let state = Arc::new(AppState {
         config: Arc::new(RwLock::new(config.clone())),
-        chat_service: Arc::new(RwLock::new(chat_service)),
+        chat_service: Arc::new(RwLock::new(runtime.chat_service)),
+        dependencies: runtime.dependencies,
         shutdown: ShutdownState::new(),
     });
 
     let router = Router::new()
         .route("/healthz", get(api::health))
         .route("/readyz", get(readyz))
-        .route("/metrics", get(api::metrics))
+        .route("/metrics", get(metrics_handler))
         .route("/version", get(version))
         .route("/v1/chat/completions", post(api::chat::chat_completions))
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
@@ -328,12 +402,74 @@ async fn version() -> Json<serde_json::Value> {
     }))
 }
 
-async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, &'static str) {
-    if state.shutdown.is_ready() {
-        (StatusCode::OK, "ready\n")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
+async fn metrics_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let cfg = state.config.read().await;
+
+    if cfg.metrics_auth_required {
+        let Some(expected_token) = cfg.metrics_auth_token.as_deref() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "metrics authentication is enabled but metrics_auth_token is not configured\n",
+            )
+                .into_response();
+        };
+
+        let authorized = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value == format!("Bearer {expected_token}"))
+            .unwrap_or(false);
+
+        if !authorized {
+            return (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response();
+        }
     }
+
+    drop(cfg);
+    api::metrics().await.into_response()
+}
+
+async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, &'static str) {
+    if !state.shutdown.is_ready() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: shutting down\n",
+        );
+    }
+
+    let cfg = state.config.read().await;
+    let requires_redis = cfg.readiness_requires_redis;
+    let requires_qdrant = cfg.readiness_requires_qdrant;
+    let requires_upstream = cfg.readiness_requires_upstream;
+    drop(cfg);
+
+    if requires_redis && !state.dependencies.redis_available.load(Ordering::Relaxed) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: redis unavailable\n",
+        );
+    }
+
+    if requires_qdrant && !state.dependencies.qdrant_available.load(Ordering::Relaxed) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: qdrant unavailable\n",
+        );
+    }
+
+    if requires_upstream
+        && !state
+            .dependencies
+            .upstream_available
+            .load(Ordering::Relaxed)
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: upstream unavailable\n",
+        );
+    }
+
+    (StatusCode::OK, "ready\n")
 }
 
 async fn shutdown_gate_middleware(

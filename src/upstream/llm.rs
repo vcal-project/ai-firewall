@@ -69,7 +69,7 @@ impl UpstreamErrorKind {
                 "Check upstream_base_url, provider host/port, Docker network membership, firewall rules, and whether the provider process is listening.",
             ),
             UpstreamErrorKind::Timeout => Some(
-                "Increase request_timeout_seconds or check upstream provider latency, model load time, network latency, and provider availability.",
+                "Increase upstream_timeout_seconds or check upstream provider latency, model load time, network latency, and provider availability.",
             ),
             UpstreamErrorKind::HttpStatus => Some(
                 "Check provider response details, upstream_base_url, authentication, rate limits, and OpenAI-compatible API support.",

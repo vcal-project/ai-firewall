@@ -178,7 +178,7 @@ impl SemanticCache for QdrantSemanticCache {
 
                     return Err(err).with_context(|| {
                         format!(
-                            "embedding provider failed during semantic lookup for model '{}'; check embedding_base_url, embedding_model, embedding_api_key, provider availability, and request_timeout_seconds",
+                            "embedding provider failed during semantic lookup for model '{}'; check embedding_base_url, embedding_model, embedding_api_key, provider availability, and embedding_timeout_seconds",
                             model
                         )
                     });
@@ -359,7 +359,7 @@ impl SemanticCache for QdrantSemanticCache {
 
                     return Err(err).with_context(|| {
                         format!(
-                            "embedding provider failed during semantic store for model '{}'; check embedding_base_url, embedding_model, embedding_api_key, provider availability, and request_timeout_seconds",
+                            "embedding provider failed during semantic store for model '{}'; check embedding_base_url, embedding_model, embedding_api_key, provider availability, and embedding_timeout_seconds",
                             model
                         )
                     });

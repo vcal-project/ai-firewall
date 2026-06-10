@@ -40,12 +40,28 @@ qdrant_collection aif_semantic_cache;
 # Must match the dimension of the configured embedding_model.
 qdrant_vector_size 1536;
 
-# Backward-compatible default for both cache layers
+# Backward-compatible default for both cache layers.
 cache_ttl_seconds 2592000;
 
-# Optional explicit lifecycle controls (v0.1.5)
+# Optional explicit lifecycle controls.
 # exact_cache_ttl_seconds 86400;
 # semantic_cache_retention_seconds 604800;
+
+# Exact cache controls.
+# exact_cache_enabled=false disables Redis lookups and writes.
+# exact_cache_fail_open=true skips exact cache if Redis is unavailable.
+exact_cache_enabled true;
+exact_cache_fail_open true;
+exact_cache_store_enabled true;
+
+# Semantic cache controls.
+semantic_cache_enabled true;
+semantic_similarity_threshold 0.92;
+semantic_cache_fail_open true;
+semantic_cache_store_enabled true;
+
+# Higher threshold = stricter similarity (fewer semantic hits)
+# Lower threshold = more reuse (potentially less precise)
 
 # Semantic cache lifecycle behavior:
 # - Entries include inserted_at and expires_at metadata
@@ -55,26 +71,40 @@ cache_ttl_seconds 2592000;
 # To clean up expired entries manually:
 # ai-firewall --prune-expired-semantic-cache
 
+# Timeout controls.
+# request_timeout_seconds is kept as a backward-compatible fallback.
+# Specific timeout values override it.
 request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+embedding_timeout_seconds 30;
 
-semantic_cache_enabled true;
-semantic_similarity_threshold 0.92;
+# Gateway protection controls.
+max_request_body_bytes 1048576;
+max_prompt_chars 200000;
 
-# Higher threshold = stricter similarity (fewer semantic hits)
-# Lower threshold = more reuse (potentially less precise)
+# Per-request troubleshooting bypass.
+# When the configured header is sent with value true, 1, yes, or on,
+# AI Cost Firewall skips exact/semantic lookup and skips cache store.
+cache_bypass_header X-AIF-Cache-Bypass;
 
-# If the embedding/semantic provider is unavailable, skip semantic cache and continue upstream.
-# Default: true
-semantic_cache_fail_open true;
+# Metrics endpoint access control.
+# Default allows Prometheus to scrape /metrics without app authentication.
+metrics_auth_required false;
+# metrics_auth_token replace-with-prometheus-token;
 
-# Model validation behavior
+# Readiness dependency behavior.
+# These checks use dependency status known during startup/reload.
+readiness_requires_redis true;
+readiness_requires_qdrant false;
+readiness_requires_upstream false;
+
+# Model validation behavior.
 # By default, only models defined via `model_price` are allowed.
 # Unknown models will be rejected with 400.
 allow_unknown_models_pass_through false;
 
 # Chat-completion pricing (USD per 1M tokens)
 # model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
-
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 

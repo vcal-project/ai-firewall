@@ -391,6 +391,44 @@ Current behavior:
 
 ---
 
+## Can I disable exact cache?
+
+Yes.
+
+```conf
+exact_cache_enabled false;
+```
+
+This is useful for debugging or for deployments that only want semantic cache or upstream pass-through behavior.
+
+---
+
+## Can I bypass cache for one request?
+
+Yes. By default:
+
+```http
+X-AIF-Cache-Bypass: true
+```
+
+This skips exact lookup, semantic lookup, and cache storage for that request.
+
+---
+
+
+## Can metrics be protected?
+
+Yes.
+
+```conf
+metrics_auth_required true;
+metrics_auth_token your-token;
+```
+
+When enabled, '/metrics' requires a bearer token.
+
+---
+
 ## Are tool-calling and structured outputs cached?
 
 Semantic cache may be skipped for:

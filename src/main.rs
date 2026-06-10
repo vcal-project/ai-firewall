@@ -114,7 +114,7 @@ async fn config_reload_loop(
                 }
 
                 match app::build_runtime(&new_config).await {
-                    Ok(new_chat_service) => {
+                    Ok(runtime) => {
                         {
                             let mut cfg = state.config.write().await;
                             *cfg = new_config.clone();
@@ -122,8 +122,10 @@ async fn config_reload_loop(
 
                         {
                             let mut svc = state.chat_service.write().await;
-                            *svc = new_chat_service;
+                            *svc = runtime.chat_service;
                         }
+
+                        state.dependencies.update(&runtime.dependencies);
 
                         tracing::info!("config and runtime successfully reloaded from {}", path);
                     }

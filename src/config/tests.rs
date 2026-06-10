@@ -46,12 +46,28 @@ fn minimal_valid_config() -> Config {
         semantic_cache_retention_seconds: 86400,
 
         request_timeout_seconds: 120,
+        upstream_timeout_seconds: 120,
+        embedding_timeout_seconds: 30,
         graceful_shutdown_timeout_seconds: 10,
         max_request_body_bytes: 1_048_576,
+        max_prompt_chars: 200_000,
+
+        exact_cache_enabled: true,
+        exact_cache_fail_open: true,
+        exact_cache_store_enabled: true,
 
         semantic_cache_enabled: false,
         semantic_similarity_threshold: 0.92,
         semantic_cache_fail_open: true,
+        semantic_cache_store_enabled: true,
+
+        cache_bypass_header: "X-AIF-Cache-Bypass".to_string(),
+        metrics_auth_required: false,
+        metrics_auth_token: None,
+
+        readiness_requires_redis: true,
+        readiness_requires_qdrant: false,
+        readiness_requires_upstream: false,
 
         model_prices: prices,
         allow_unknown_models_pass_through: false,
