@@ -61,6 +61,16 @@ fn minimal_valid_config() -> Config {
         semantic_cache_fail_open: true,
         semantic_cache_store_enabled: true,
 
+        privacy_guard_enabled: false,
+        privacy_guard_url: "http://127.0.0.1:8090".to_string(),
+        privacy_guard_api_key: None,
+        privacy_guard_mode: PrivacyGuardMode::DetectOnly,
+        privacy_guard_restore_enabled: true,
+        privacy_guard_tenant_id: None,
+        privacy_guard_policy_id: None,
+        privacy_guard_timeout_seconds: 10,
+        guard_fail_open: true,
+
         cache_bypass_header: "X-AIF-Cache-Bypass".to_string(),
         metrics_auth_required: false,
         metrics_auth_token: None,

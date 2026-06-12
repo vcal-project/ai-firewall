@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -8,6 +8,9 @@ pub struct ChatMessage {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,5 +235,111 @@ mod tests {
             .unwrap_err();
 
         assert!(err.contains("no choices"));
+    }
+
+    #[test]
+    fn preserves_request_message_extra_fields() {
+        let body = r#"
+        {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "tool",
+              "content": "tool result",
+              "tool_call_id": "call_123",
+              "provider_metadata": {"trace_id": "abc"}
+            }
+          ]
+        }
+        "#;
+
+        let request: ChatCompletionRequest = serde_json::from_str(body).unwrap();
+        let message = &request.messages[0];
+
+        assert_eq!(
+            message.extra.get("tool_call_id"),
+            Some(&Value::String("call_123".to_string()))
+        );
+        assert_eq!(
+            message.extra.get("provider_metadata"),
+            Some(&serde_json::json!({"trace_id": "abc"}))
+        );
+
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serialized["messages"][0]["tool_call_id"],
+            Value::String("call_123".to_string())
+        );
+        assert_eq!(
+            serialized["messages"][0]["provider_metadata"],
+            serde_json::json!({"trace_id": "abc"})
+        );
+    }
+
+    #[test]
+    fn preserves_response_message_extra_fields_after_normalization() {
+        let body = r#"
+        {
+          "id": "abc",
+          "object": "chat.completion",
+          "created": 123,
+          "model": "local-model",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "hello",
+                "tool_calls": [
+                  {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"}
+                  }
+                ],
+                "provider_metadata": {"trace_id": "abc"}
+              },
+              "finish_reason": "tool_calls"
+            }
+          ]
+        }
+        "#;
+
+        let wire: ChatCompletionWireResponse = serde_json::from_str(body).unwrap();
+        let normalized = wire
+            .into_normalized("local-model", "http://localhost:11434/v1")
+            .unwrap();
+
+        let message = &normalized.choices[0].message;
+        assert_eq!(
+            message.extra.get("tool_calls"),
+            Some(&serde_json::json!([
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"}
+                }
+            ]))
+        );
+        assert_eq!(
+            message.extra.get("provider_metadata"),
+            Some(&serde_json::json!({"trace_id": "abc"}))
+        );
+
+        let serialized = serde_json::to_value(&normalized).unwrap();
+        assert_eq!(
+            serialized["choices"][0]["message"]["tool_calls"],
+            serde_json::json!([
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"}
+                }
+            ])
+        );
+        assert_eq!(
+            serialized["choices"][0]["message"]["provider_metadata"],
+            serde_json::json!({"trace_id": "abc"})
+        );
     }
 }

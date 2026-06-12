@@ -50,6 +50,43 @@ impl std::str::FromStr for ProviderKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PrivacyGuardMode {
+    #[default]
+    DetectOnly,
+    Redact,
+    Anonymize,
+    Block,
+}
+
+impl PrivacyGuardMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DetectOnly => "detect_only",
+            Self::Redact => "redact",
+            Self::Anonymize => "anonymize",
+            Self::Block => "block",
+        }
+    }
+}
+
+impl std::str::FromStr for PrivacyGuardMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "detect_only" | "detect-only" | "detectonly" => Ok(Self::DetectOnly),
+            "redact" => Ok(Self::Redact),
+            "anonymize" | "anonymise" => Ok(Self::Anonymize),
+            "block" => Ok(Self::Block),
+            other => Err(format!(
+                "unsupported privacy_guard_mode '{}'. Supported modes: detect_only, redact, anonymize, block",
+                other
+            )),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub listen_addr: String,
@@ -88,6 +125,16 @@ pub struct Config {
     pub semantic_similarity_threshold: f32,
     pub semantic_cache_fail_open: bool,
     pub semantic_cache_store_enabled: bool,
+
+    pub privacy_guard_enabled: bool,
+    pub privacy_guard_url: String,
+    pub privacy_guard_api_key: Option<String>,
+    pub privacy_guard_mode: PrivacyGuardMode,
+    pub privacy_guard_restore_enabled: bool,
+    pub privacy_guard_tenant_id: Option<String>,
+    pub privacy_guard_policy_id: Option<String>,
+    pub privacy_guard_timeout_seconds: u64,
+    pub guard_fail_open: bool,
 
     pub cache_bypass_header: String,
     pub metrics_auth_required: bool,
@@ -185,6 +232,26 @@ impl Config {
 
         if self.cache_bypass_header.trim().is_empty() {
             errors.push("cache_bypass_header must not be empty".into());
+        }
+
+        if self.privacy_guard_enabled {
+            if self.privacy_guard_url.trim().is_empty() {
+                errors.push(
+                    "privacy_guard_url must not be empty when privacy_guard_enabled=true".into(),
+                );
+            } else if !looks_like_http_url(&self.privacy_guard_url) {
+                errors.push(format!(
+                    "invalid privacy_guard_url '{}': must start with http:// or https://",
+                    self.privacy_guard_url
+                ));
+            }
+
+            if self.privacy_guard_timeout_seconds == 0 {
+                errors.push(
+                    "privacy_guard_timeout_seconds must be > 0 when privacy_guard_enabled=true"
+                        .into(),
+                );
+            }
         }
 
         if self.metrics_auth_required {
@@ -454,6 +521,31 @@ impl Config {
             self.qdrant_vector_size
         ));
 
+        out.push_str("\nVCAL Privacy Guard\n");
+        out.push_str("--------------------------------\n");
+        out.push_str(&format!(
+            "privacy_guard_enabled = {}\n",
+            self.privacy_guard_enabled
+        ));
+        out.push_str(&format!("privacy_guard_url = {}\n", self.privacy_guard_url));
+        out.push_str(&format!(
+            "privacy_guard_api_key = {}\n",
+            mask_optional_secret(&self.privacy_guard_api_key)
+        ));
+        out.push_str(&format!(
+            "privacy_guard_mode = {}\n",
+            self.privacy_guard_mode.as_str()
+        ));
+        out.push_str(&format!(
+            "privacy_guard_restore_enabled = {}\n",
+            self.privacy_guard_restore_enabled
+        ));
+        out.push_str(&format!(
+            "privacy_guard_timeout_seconds = {}\n",
+            self.privacy_guard_timeout_seconds
+        ));
+        out.push_str(&format!("guard_fail_open = {}\n", self.guard_fail_open));
+
         out.push_str("\nLifecycle\n");
         out.push_str("--------------------------------\n");
 
@@ -612,6 +704,28 @@ impl Config {
                 "semantic_cache_store_enabled",
                 true,
             )?,
+
+            privacy_guard_enabled: parse_or_default(&map, "privacy_guard_enabled", false)?,
+            privacy_guard_url: get_or_default(&map, "privacy_guard_url", "http://127.0.0.1:8090"),
+            privacy_guard_api_key: map.get("privacy_guard_api_key").cloned(),
+            privacy_guard_mode: parse_or_default(
+                &map,
+                "privacy_guard_mode",
+                PrivacyGuardMode::DetectOnly,
+            )?,
+            privacy_guard_restore_enabled: parse_or_default(
+                &map,
+                "privacy_guard_restore_enabled",
+                true,
+            )?,
+            privacy_guard_tenant_id: map.get("privacy_guard_tenant_id").cloned(),
+            privacy_guard_policy_id: map.get("privacy_guard_policy_id").cloned(),
+            privacy_guard_timeout_seconds: parse_or_default(
+                &map,
+                "privacy_guard_timeout_seconds",
+                10u64,
+            )?,
+            guard_fail_open: parse_or_default(&map, "guard_fail_open", true)?,
 
             cache_bypass_header: get_or_default(&map, "cache_bypass_header", "X-AIF-Cache-Bypass"),
             metrics_auth_required: parse_or_default(&map, "metrics_auth_required", false)?,
@@ -875,6 +989,60 @@ impl Config {
                 })?
             },
 
+            privacy_guard_enabled: {
+                let raw = env::var("AIF_PRIVACY_GUARD_ENABLED").unwrap_or_else(|_| "false".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_PRIVACY_GUARD_ENABLED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            privacy_guard_url: env::var("AIF_PRIVACY_GUARD_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8090".into()),
+            privacy_guard_api_key: env::var("AIF_PRIVACY_GUARD_API_KEY").ok(),
+            privacy_guard_mode: {
+                let raw =
+                    env::var("AIF_PRIVACY_GUARD_MODE").unwrap_or_else(|_| "detect_only".into());
+                raw.parse::<PrivacyGuardMode>().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_PRIVACY_GUARD_MODE value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            privacy_guard_restore_enabled: {
+                let raw =
+                    env::var("AIF_PRIVACY_GUARD_RESTORE_ENABLED").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_PRIVACY_GUARD_RESTORE_ENABLED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            privacy_guard_tenant_id: env::var("AIF_PRIVACY_GUARD_TENANT_ID").ok(),
+            privacy_guard_policy_id: env::var("AIF_PRIVACY_GUARD_POLICY_ID").ok(),
+            privacy_guard_timeout_seconds: {
+                let raw =
+                    env::var("AIF_PRIVACY_GUARD_TIMEOUT_SECONDS").unwrap_or_else(|_| "10".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_PRIVACY_GUARD_TIMEOUT_SECONDS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            guard_fail_open: {
+                let raw = env::var("AIF_GUARD_FAIL_OPEN").unwrap_or_else(|_| "true".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_GUARD_FAIL_OPEN value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
             cache_bypass_header: env::var("AIF_CACHE_BYPASS_HEADER")
                 .unwrap_or_else(|_| "X-AIF-Cache-Bypass".into()),
             metrics_auth_required: {
@@ -1014,6 +1182,8 @@ impl Config {
             format!("- exact cache TTL: {}s", self.exact_cache_ttl_seconds),
             format!("- exact fail-open: {}", self.exact_cache_fail_open),
             format!("- cache bypass header: {}", self.cache_bypass_header),
+            format!("- privacy guard enabled: {}", self.privacy_guard_enabled),
+            format!("- guard fail-open: {}", self.guard_fail_open),
         ];
 
         if self.semantic_cache_enabled {
@@ -1087,6 +1257,24 @@ impl fmt::Debug for Config {
                 "semantic_cache_store_enabled",
                 &self.semantic_cache_store_enabled,
             )
+            .field("privacy_guard_enabled", &self.privacy_guard_enabled)
+            .field("privacy_guard_url", &self.privacy_guard_url)
+            .field(
+                "privacy_guard_api_key",
+                &self.privacy_guard_api_key.as_ref().map(|k| mask_secret(k)),
+            )
+            .field("privacy_guard_mode", &self.privacy_guard_mode.as_str())
+            .field(
+                "privacy_guard_restore_enabled",
+                &self.privacy_guard_restore_enabled,
+            )
+            .field("privacy_guard_tenant_id", &self.privacy_guard_tenant_id)
+            .field("privacy_guard_policy_id", &self.privacy_guard_policy_id)
+            .field(
+                "privacy_guard_timeout_seconds",
+                &self.privacy_guard_timeout_seconds,
+            )
+            .field("guard_fail_open", &self.guard_fail_open)
             .field("cache_bypass_header", &self.cache_bypass_header)
             .field("metrics_auth_required", &self.metrics_auth_required)
             .field(
@@ -1157,6 +1345,15 @@ fn allowed_directives() -> HashSet<&'static str> {
         "semantic_similarity_threshold",
         "semantic_cache_fail_open",
         "semantic_cache_store_enabled",
+        "privacy_guard_enabled",
+        "privacy_guard_url",
+        "privacy_guard_api_key",
+        "privacy_guard_mode",
+        "privacy_guard_restore_enabled",
+        "privacy_guard_tenant_id",
+        "privacy_guard_policy_id",
+        "privacy_guard_timeout_seconds",
+        "guard_fail_open",
         "cache_bypass_header",
         "metrics_auth_required",
         "metrics_auth_token",
@@ -1416,6 +1613,16 @@ fn warn_if_suspicious(cfg: &Config) {
         tracing::warn!(
             "graceful_shutdown_timeout_seconds={} is very small; in-flight requests may not have enough time to drain cleanly",
             cfg.graceful_shutdown_timeout_seconds
+        );
+    }
+
+    if cfg.privacy_guard_enabled {
+        tracing::info!(
+            privacy_guard_url = cfg.privacy_guard_url,
+            privacy_guard_mode = cfg.privacy_guard_mode.as_str(),
+            privacy_guard_restore_enabled = cfg.privacy_guard_restore_enabled,
+            guard_fail_open = cfg.guard_fail_open,
+            "VCAL Privacy Guard orchestration is enabled"
         );
     }
 

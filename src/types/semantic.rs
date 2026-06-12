@@ -12,6 +12,9 @@ pub struct SemanticCacheRecord {
     pub normalized_prompt: String,
     /// Cached upstream chat-completion response.
     pub response: ChatCompletionResponse,
+    /// Privacy placeholder signature used to prevent cross-mapping semantic hits.
+    /// Empty string means no Privacy Guard placeholder mapping was involved.
+    pub privacy_placeholder_signature: String,
     /// Unix timestamp when the record was inserted.
     pub inserted_at: i64,
     /// Unix timestamp after which the record is considered expired.

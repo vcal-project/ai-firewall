@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod error;
+mod guards;
 mod metrics;
 mod release;
 

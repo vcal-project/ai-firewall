@@ -9,6 +9,7 @@ use crate::{
         pricing::{estimate_embedding_micro_usd, estimate_micro_usd_saved},
     },
     error::AppError,
+    guards::GuardOrchestrator,
     metrics::{
         self, CACHE_TYPE_EXACT, CACHE_TYPE_SEMANTIC, COST_TYPE_CHAT, COST_TYPE_EMBEDDING,
         EMBEDDING_OPERATION_LOOKUP, EMBEDDING_OPERATION_STORE,
@@ -28,6 +29,7 @@ pub struct ChatService {
     exact_cache: Arc<dyn ExactCache>,
     semantic_cache: Arc<dyn SemanticCache>,
     upstream: Arc<dyn LlmUpstream>,
+    guard_orchestrator: Arc<dyn GuardOrchestrator>,
     exact_cache_enabled: bool,
     exact_cache_fail_open: bool,
     exact_cache_store_enabled: bool,
@@ -58,6 +60,7 @@ fn estimate_prompt_chars(req: &ChatCompletionRequest) -> usize {
 }
 
 impl ChatService {
+    #[cfg(test)]
     pub fn new(
         exact_cache: Arc<dyn ExactCache>,
         semantic_cache: Arc<dyn SemanticCache>,
@@ -66,10 +69,31 @@ impl ChatService {
         model_prices: HashMap<String, ModelPrice>,
         embedding_price: Option<EmbeddingPrice>,
     ) -> Self {
+        Self::new_with_guards(
+            exact_cache,
+            semantic_cache,
+            upstream,
+            Arc::new(crate::guards::NoopGuardOrchestrator),
+            settings,
+            model_prices,
+            embedding_price,
+        )
+    }
+
+    pub fn new_with_guards(
+        exact_cache: Arc<dyn ExactCache>,
+        semantic_cache: Arc<dyn SemanticCache>,
+        upstream: Arc<dyn LlmUpstream>,
+        guard_orchestrator: Arc<dyn GuardOrchestrator>,
+        settings: ChatServiceSettings,
+        model_prices: HashMap<String, ModelPrice>,
+        embedding_price: Option<EmbeddingPrice>,
+    ) -> Self {
         Self {
             exact_cache,
             semantic_cache,
             upstream,
+            guard_orchestrator,
             exact_cache_enabled: settings.exact_cache_enabled,
             exact_cache_fail_open: settings.exact_cache_fail_open,
             exact_cache_store_enabled: settings.exact_cache_store_enabled,
@@ -99,13 +123,32 @@ impl ChatService {
         self.validate(&req)?;
 
         if req.stream.unwrap_or(false) {
+            if self.guard_orchestrator.reject_streaming_requests() {
+                tracing::warn!(
+                    model = %req.normalized_model(),
+                    "stream=true rejected because an enabled guard cannot safely process streaming/SSE responses"
+                );
+                return Err(AppError::unprocessable(
+                    "stream=true is not supported when VCAL Privacy Guard is enabled; set stream=false or disable Privacy Guard",
+                ));
+            }
+
             tracing::debug!(model = %req.normalized_model(), "stream request bypasses cache layers");
             return self.forward_only(req).await;
         }
 
+        let guarded = self.guard_orchestrator.before_cache(req).await?;
+        let req = guarded.request;
+        let guard_context = guarded.context;
+        let cache_control = CacheControl {
+            bypass_lookup: cache_control.bypass_lookup || guarded.cache_control.bypass_lookup,
+            bypass_store: cache_control.bypass_store || guarded.cache_control.bypass_store,
+        };
+
         let normalized = normalize_chat_request(&req)
             .map_err(|e| AppError::bad_request(format!("normalize failed: {e}")))?;
         let semantic_text = semantic_text_from_request(&req);
+        let privacy_placeholder_signature = guard_context.privacy_placeholder_signature.as_deref();
 
         let exact_key = self.exact_cache_key(&normalized);
 
@@ -125,7 +168,10 @@ impl ChatService {
                         "exact cache hit"
                     );
 
-                    return Ok(hit);
+                    return self
+                        .guard_orchestrator
+                        .restore_response(&guard_context, hit)
+                        .await;
                 }
                 Ok(None) => {}
                 Err(e) if self.exact_cache_fail_open => {
@@ -152,7 +198,11 @@ impl ChatService {
         {
             match self
                 .semantic_cache
-                .lookup(req.normalized_model(), &semantic_text)
+                .lookup(
+                    req.normalized_model(),
+                    &semantic_text,
+                    privacy_placeholder_signature,
+                )
                 .await
             {
                 Ok(Some(hit)) => {
@@ -195,7 +245,10 @@ impl ChatService {
                             );
                         }
                     }
-                    return Ok(hit.response);
+                    return self
+                        .guard_orchestrator
+                        .restore_response(&guard_context, hit.response)
+                        .await;
                 }
 
                 Ok(None) => {}
@@ -263,7 +316,12 @@ impl ChatService {
         {
             match self
                 .semantic_cache
-                .store(req.normalized_model(), &semantic_text, &response)
+                .store(
+                    req.normalized_model(),
+                    &semantic_text,
+                    &response,
+                    privacy_placeholder_signature,
+                )
                 .await
             {
                 Ok(embedding_usage) => {
@@ -296,7 +354,9 @@ impl ChatService {
             }
         }
 
-        Ok(response)
+        self.guard_orchestrator
+            .restore_response(&guard_context, response)
+            .await
     }
 
     fn validate(&self, req: &ChatCompletionRequest) -> Result<(), AppError> {
@@ -520,6 +580,7 @@ mod tests {
         config::{EmbeddingPrice, ModelPrice},
         core::normalize::normalize_chat_request,
         embeddings::provider::EmbeddingUsage,
+        guards::{GuardContext, GuardOrchestrator, GuardedRequest},
         semantic::semantic_cache::{SemanticCache, SemanticLookupHit},
         types::openai::{
             ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage,
@@ -595,6 +656,8 @@ mod tests {
         last_store_model: Option<String>,
         last_store_prompt: Option<String>,
         last_store_response: Option<ChatCompletionResponse>,
+        last_lookup_privacy_placeholder_signature: Option<String>,
+        last_store_privacy_placeholder_signature: Option<String>,
     }
 
     struct FakeSemanticCache {
@@ -646,9 +709,12 @@ mod tests {
             &self,
             _model: &str,
             _normalized_prompt: &str,
+            privacy_placeholder_signature: Option<&str>,
         ) -> anyhow::Result<Option<SemanticLookupHit>> {
             let mut state = self.state.lock().unwrap();
             state.lookup_calls += 1;
+            state.last_lookup_privacy_placeholder_signature =
+                privacy_placeholder_signature.map(ToOwned::to_owned);
 
             if let Some(err) = &state.lookup_error {
                 anyhow::bail!("{}", err);
@@ -662,9 +728,12 @@ mod tests {
             model: &str,
             normalized_prompt: &str,
             response: &ChatCompletionResponse,
+            privacy_placeholder_signature: Option<&str>,
         ) -> anyhow::Result<Option<EmbeddingUsage>> {
             let mut state = self.state.lock().unwrap();
             state.store_calls += 1;
+            state.last_store_privacy_placeholder_signature =
+                privacy_placeholder_signature.map(ToOwned::to_owned);
 
             if let Some(err) = &state.store_error {
                 anyhow::bail!("{}", err);
@@ -715,6 +784,62 @@ mod tests {
         }
     }
 
+    struct RejectStreamingGuard;
+
+    #[async_trait]
+    impl GuardOrchestrator for RejectStreamingGuard {
+        fn reject_streaming_requests(&self) -> bool {
+            true
+        }
+
+        async fn before_cache(
+            &self,
+            request: ChatCompletionRequest,
+        ) -> Result<GuardedRequest, AppError> {
+            Ok(GuardedRequest {
+                request,
+                context: GuardContext::default(),
+                cache_control: CacheControl::default(),
+            })
+        }
+
+        async fn restore_response(
+            &self,
+            _context: &GuardContext,
+            response: ChatCompletionResponse,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(response)
+        }
+    }
+
+    struct SignatureGuard(&'static str);
+
+    #[async_trait]
+    impl GuardOrchestrator for SignatureGuard {
+        async fn before_cache(
+            &self,
+            request: ChatCompletionRequest,
+        ) -> Result<GuardedRequest, AppError> {
+            Ok(GuardedRequest {
+                request,
+                context: GuardContext {
+                    privacy_mapping_id: Some("mapping-test".to_string()),
+                    privacy_tenant_id: None,
+                    privacy_placeholder_signature: Some(self.0.to_string()),
+                },
+                cache_control: CacheControl::default(),
+            })
+        }
+
+        async fn restore_response(
+            &self,
+            _context: &GuardContext,
+            response: ChatCompletionResponse,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(response)
+        }
+    }
+
     fn request() -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: "gpt-4o-mini-2024-07-18".to_string(),
@@ -722,6 +847,7 @@ mod tests {
                 role: "user".to_string(),
                 content: json!("How do I reset my password?"),
                 name: None,
+                extra: Map::new(),
             }],
             temperature: None,
             top_p: None,
@@ -747,6 +873,7 @@ mod tests {
                     role: "assistant".to_string(),
                     content: json!("Use the reset link on the login page."),
                     name: None,
+                    extra: Map::new(),
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -935,6 +1062,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn guard_placeholder_signature_is_passed_to_semantic_lookup_and_store() {
+        let req = request();
+        let exact_cache = FakeExactCache::new();
+        let semantic_cache = FakeSemanticCache::new();
+        let semantic_state = semantic_cache.state();
+        let upstream = FakeUpstream::new(response_with_usage("upstream-response", 1000, 500));
+
+        let settings = ChatServiceSettings {
+            semantic_cache_enabled: true,
+            exact_cache_enabled: true,
+            exact_cache_fail_open: true,
+            exact_cache_store_enabled: true,
+            semantic_cache_store_enabled: true,
+            semantic_cache_fail_open: true,
+            max_prompt_chars: Some(200_000),
+        };
+
+        let service = ChatService::new_with_guards(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            Arc::new(SignatureGuard("EMAIL:1|IP:1|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|OTHER:0")),
+            settings,
+            model_prices(),
+            Some(EmbeddingPrice {
+                usd_per_1m_tokens: 0.020,
+            }),
+        );
+
+        let result = service.handle(req).await.unwrap();
+
+        assert_eq!(result.id, "upstream-response");
+        let semantic = semantic_state.lock().unwrap();
+        assert_eq!(semantic.lookup_calls, 1);
+        assert_eq!(semantic.store_calls, 1);
+        assert_eq!(
+            semantic.last_lookup_privacy_placeholder_signature.as_deref(),
+            Some("EMAIL:1|IP:1|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|OTHER:0")
+        );
+        assert_eq!(
+            semantic.last_store_privacy_placeholder_signature.as_deref(),
+            Some("EMAIL:1|IP:1|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|OTHER:0")
+        );
+    }
+
+    #[tokio::test]
     async fn stream_requests_bypass_exact_and_semantic_cache() {
         let mut req = request();
         req.stream = Some(true);
@@ -968,6 +1141,56 @@ mod tests {
         let semantic = semantic_state.lock().unwrap();
         assert_eq!(semantic.lookup_calls, 0);
         assert_eq!(semantic.store_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn stream_requests_are_rejected_when_guard_requires_non_streaming() {
+        let mut req = request();
+        req.stream = Some(true);
+
+        let exact_cache = FakeExactCache::new();
+        let exact_state = exact_cache.state();
+
+        let semantic_cache = FakeSemanticCache::new();
+        let semantic_state = semantic_cache.state();
+
+        let upstream = FakeUpstream::new(response_with_usage("stream-upstream", 1000, 500));
+        let upstream_state = upstream.state();
+
+        let settings = ChatServiceSettings {
+            semantic_cache_enabled: true,
+            exact_cache_enabled: true,
+            exact_cache_fail_open: true,
+            exact_cache_store_enabled: true,
+            semantic_cache_store_enabled: true,
+            semantic_cache_fail_open: true,
+            max_prompt_chars: Some(200_000),
+        };
+
+        let service = ChatService::new_with_guards(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            Arc::new(RejectStreamingGuard),
+            settings,
+            model_prices(),
+            Some(EmbeddingPrice {
+                usd_per_1m_tokens: 0.020,
+            }),
+        );
+
+        let err = service.handle(req).await.unwrap_err();
+
+        assert_eq!(
+            err.status_code(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(err
+            .to_string()
+            .contains("stream=true is not supported when VCAL Privacy Guard is enabled"));
+        assert_eq!(upstream_state.lock().unwrap().call_count, 0);
+        assert_eq!(exact_state.lock().unwrap().get_calls, 0);
+        assert_eq!(semantic_state.lock().unwrap().lookup_calls, 0);
     }
 
     #[tokio::test]

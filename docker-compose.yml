@@ -27,7 +27,7 @@ services:
       retries: 10
 
   firewall:
-    image: vcalproject/ai-firewall:v0.2.1
+    image: ai-firewall:v0.2.2
     container_name: ai-firewall
     depends_on:
       redis:

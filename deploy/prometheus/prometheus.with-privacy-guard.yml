@@ -5,3 +5,7 @@ scrape_configs:
   - job_name: "ai-firewall"
     static_configs:
       - targets: ["firewall:8080"]
+
+  - job_name: "vcal-privacy-guard"
+    static_configs:
+      - targets: ["vcal-privacy-guard:8090"]

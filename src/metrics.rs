@@ -357,6 +357,87 @@ pub static SEMANTIC_LOOKUP_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     .expect("metric aif_semantic_lookup_duration_seconds must be valid")
 });
 
+// -----------------------------
+// VCAL Guard orchestration metrics
+// -----------------------------
+
+pub static GUARD_HOOK_CALLS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_hook_calls_total",
+            "AI Firewall guard orchestration hook calls by guard, phase, and outcome",
+        ),
+        &["guard", "phase", "outcome"],
+    )
+    .expect("metric aif_guard_hook_calls_total must be valid")
+});
+
+pub static GUARD_HOOK_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_hook_errors_total",
+            "AI Firewall guard orchestration hook errors by guard and phase",
+        ),
+        &["guard", "phase"],
+    )
+    .expect("metric aif_guard_hook_errors_total must be valid")
+});
+
+pub static GUARD_REJECTIONS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_rejections_total",
+            "Requests rejected by AI Firewall guard orchestration",
+        ),
+        &["guard"],
+    )
+    .expect("metric aif_guard_rejections_total must be valid")
+});
+
+pub static GUARD_FINDINGS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_findings_total",
+            "Privacy/security findings reported to AI Firewall by guard modules",
+        ),
+        &["guard", "kind", "severity"],
+    )
+    .expect("metric aif_guard_findings_total must be valid")
+});
+
+pub static GUARD_TRANSFORMATIONS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_transformations_total",
+            "Request/response transformations performed by AI Firewall guard orchestration",
+        ),
+        &["guard", "phase", "action"],
+    )
+    .expect("metric aif_guard_transformations_total must be valid")
+});
+
+pub static GUARD_MAPPINGS_CREATED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_mappings_created_total",
+            "Placeholder mappings created by guard modules and tracked by AI Firewall",
+        ),
+        &["guard"],
+    )
+    .expect("metric aif_guard_mappings_created_total must be valid")
+});
+
+pub static GUARD_NON_STRING_CONTENT_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_non_string_content_total",
+            "Non-string OpenAI message content left unchanged by guard adapters",
+        ),
+        &["guard", "phase"],
+    )
+    .expect("metric aif_guard_non_string_content_total must be valid")
+});
+
 pub fn init() {
     Lazy::force(&SEMANTIC_STORE_TOTAL);
     Lazy::force(&SEMANTIC_STORE_ERRORS_TOTAL);
@@ -367,6 +448,13 @@ pub fn init() {
     Lazy::force(&SEMANTIC_THRESHOLD_RESULTS_TOTAL);
     Lazy::force(&SEMANTIC_LOOKUP_DURATION_SECONDS);
     Lazy::force(&SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL);
+    Lazy::force(&GUARD_HOOK_CALLS_TOTAL);
+    Lazy::force(&GUARD_HOOK_ERRORS_TOTAL);
+    Lazy::force(&GUARD_REJECTIONS_TOTAL);
+    Lazy::force(&GUARD_FINDINGS_TOTAL);
+    Lazy::force(&GUARD_TRANSFORMATIONS_TOTAL);
+    Lazy::force(&GUARD_MAPPINGS_CREATED_TOTAL);
+    Lazy::force(&GUARD_NON_STRING_CONTENT_TOTAL);
     Lazy::force(&EMBEDDING_TIMEOUTS_TOTAL);
     Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
     Lazy::force(&MODEL_REQUESTS_TOTAL);
@@ -417,6 +505,13 @@ pub fn init() {
             Box::new(SEMANTIC_THRESHOLD_RESULTS_TOTAL.clone()),
             Box::new(SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL.clone()),
             Box::new(SEMANTIC_LOOKUP_DURATION_SECONDS.clone()),
+            Box::new(GUARD_HOOK_CALLS_TOTAL.clone()),
+            Box::new(GUARD_HOOK_ERRORS_TOTAL.clone()),
+            Box::new(GUARD_REJECTIONS_TOTAL.clone()),
+            Box::new(GUARD_FINDINGS_TOTAL.clone()),
+            Box::new(GUARD_TRANSFORMATIONS_TOTAL.clone()),
+            Box::new(GUARD_MAPPINGS_CREATED_TOTAL.clone()),
+            Box::new(GUARD_NON_STRING_CONTENT_TOTAL.clone()),
             Box::new(EMBEDDING_TIMEOUTS_TOTAL.clone()),
             Box::new(EMBEDDING_REQUEST_DURATION_SECONDS.clone()),
         ];

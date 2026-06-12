@@ -159,6 +159,7 @@ impl SemanticCache for QdrantSemanticCache {
         &self,
         model: &str,
         normalized_prompt: &str,
+        privacy_placeholder_signature: Option<&str>,
     ) -> Result<Option<SemanticLookupHit>> {
         let started = Instant::now();
 
@@ -189,6 +190,7 @@ impl SemanticCache for QdrantSemanticCache {
             let embedding_usage = embedding_result.usage.clone();
 
             let now = Utc::now().timestamp();
+            let privacy_placeholder_signature = privacy_placeholder_signature.unwrap_or("");
 
             let search_result = self
                 .client
@@ -224,6 +226,23 @@ impl SemanticCache for QdrantSemanticCache {
                                             range: Some(Range {
                                                 gt: Some(now as f64),
                                                 ..Default::default()
+                                            }),
+                                            ..Default::default()
+                                        },
+                                    ),
+                                ),
+                            },
+                            Condition {
+                                condition_one_of: Some(
+                                    qdrant_client::qdrant::condition::ConditionOneOf::Field(
+                                        FieldCondition {
+                                            key: "privacy_placeholder_signature".to_string(),
+                                            r#match: Some(Match {
+                                                match_value: Some(
+                                                    qdrant_client::qdrant::r#match::MatchValue::Keyword(
+                                                        privacy_placeholder_signature.to_string(),
+                                                    ),
+                                                ),
                                             }),
                                             ..Default::default()
                                         },
@@ -340,6 +359,7 @@ impl SemanticCache for QdrantSemanticCache {
         model: &str,
         normalized_prompt: &str,
         response: &ChatCompletionResponse,
+        privacy_placeholder_signature: Option<&str>,
     ) -> Result<Option<crate::embeddings::provider::EmbeddingUsage>> {
         metrics::SEMANTIC_STORE_TOTAL.inc();
 
@@ -370,6 +390,7 @@ impl SemanticCache for QdrantSemanticCache {
             let vector = embedding_result.embedding;
 
             let request_hash = sha256_hex(normalized_prompt);
+            let privacy_placeholder_signature = privacy_placeholder_signature.unwrap_or("").to_string();
 
             let inserted_at = Utc::now().timestamp();
             let expires_at = inserted_at + self.semantic_retention_seconds as i64;
@@ -379,6 +400,7 @@ impl SemanticCache for QdrantSemanticCache {
                 model: model.to_string(),
                 normalized_prompt: normalized_prompt.to_string(),
                 response: response.clone(),
+                privacy_placeholder_signature,
                 inserted_at,
                 expires_at,
             };
@@ -406,6 +428,10 @@ impl SemanticCache for QdrantSemanticCache {
                     (
                         "normalized_prompt",
                         json_to_proto_value(JsonValue::String(record.normalized_prompt)),
+                    ),
+                    (
+                        "privacy_placeholder_signature",
+                        json_to_proto_value(JsonValue::String(record.privacy_placeholder_signature)),
                     ),
                     (
                         "inserted_at",

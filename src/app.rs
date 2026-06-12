@@ -5,6 +5,7 @@ use crate::{
     cache::{exact::ExactCache, noop_exact::NoopExactCache, redis_exact::RedisExactCache},
     config::{Config, ProviderKind},
     embeddings::{openai::OpenAiEmbeddingProvider, provider::EmbeddingProvider},
+    guards::build_guard_orchestrator,
     metrics,
     semantic::{
         noop::NoopSemanticCache, qdrant::QdrantSemanticCache, semantic_cache::SemanticCache,
@@ -345,10 +346,13 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         max_prompt_chars: Some(cfg.max_prompt_chars),
     };
 
-    let chat_service = Arc::new(ChatService::new(
+    let guard_orchestrator = build_guard_orchestrator(cfg);
+
+    let chat_service = Arc::new(ChatService::new_with_guards(
         exact_cache,
         semantic_cache,
         upstream,
+        guard_orchestrator,
         chat_service_settings,
         cfg.model_prices.clone(),
         cfg.embedding_price.clone(),

@@ -110,3 +110,24 @@ model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 
 # Embedding pricing (optional, used for net cost estimation only)
 embedding_price 0.020;
+
+# Privacy Guard integration
+# Disabled by default because VCAL Privacy Guard is an optional enterprise add-on.
+privacy_guard_enabled false;
+privacy_guard_url http://vcal-privacy-guard:8090;
+# privacy_guard_api_key your-privacy-guard-api-key;
+privacy_guard_mode detect_only;
+privacy_guard_restore_enabled true;
+guard_fail_open true;
+
+# Strict enterprise privacy profile:
+#
+# privacy_guard_enabled true;
+# privacy_guard_url http://vcal-privacy-guard:8090;
+# privacy_guard_api_key your-privacy-guard-api-key;
+# privacy_guard_mode anonymize;
+# privacy_guard_restore_enabled true;
+# guard_fail_open false;
+#
+# Use this when VCAL Privacy Guard is deployed and requests must fail closed
+# if anonymization or restoration is unavailable.
