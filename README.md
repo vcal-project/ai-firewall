@@ -54,32 +54,19 @@ Supported OpenAI-compatible providers include:
 
 ---
 
-# v0.2.1 Release Focus
+# Current Release Focus
 
-AI Cost Firewall v0.2.1 builds on the v0.2.0 pilot-ready baseline with additional gateway controls, clearer fail-open behavior, and improved deployment diagnostics.
+AI Cost Firewall v0.2.2 adds optional VCAL Privacy Guard orchestration hooks while keeping the default open-source deployment focused on LLM caching, cost control, and observability.
 
-This release focuses on:
+This release adds support for privacy scan and restore phases, guard metrics, placeholder mapping, stream rejection when Privacy Guard is enabled, and safer handling of OpenAI-compatible message metadata.
 
-* configurable exact cache enable/disable behavior
-* explicit Redis/exact-cache fail-open behavior
-* separate upstream and embedding timeout controls
-* request body and prompt-size protection
-* independent exact and semantic cache store controls
-* per-request cache bypass using `X-AIF-Cache-Bypass`
-* metrics endpoint access-control configuration
-* configurable readiness dependency behavior for Redis, Qdrant, and upstream providers
-* improved Grafana Overview and Diagnostics dashboards
-* cache-bypass visibility in Prometheus and Grafana
-* cleaner Docker runtime image for release testing
-* continued support for OpenAI-compatible chat and embedding APIs
-
-v0.2.1 is an operational hardening release. It keeps the v0.2.0 architecture stable while making the gateway easier to test, debug, and deploy in pilot and production-like environments.
+VCAL Privacy Guard is an optional paid add-on and is not required to run AI Cost Firewall.
 
 ---
 
 # Included Dashboards
 
-AI Cost Firewall v0.2.1 includes Grafana dashboards for cost visibility, cache effectiveness, and operational diagnostics.
+AI Cost Firewall includes Grafana dashboards for cost visibility, cache effectiveness, and operational diagnostics.
 
 The dashboards are included in the Docker deployment files and are automatically provisioned by Grafana when using the provided Docker Compose setup.
 
@@ -310,6 +297,31 @@ AI Cost Firewall includes operational safeguards and observability features desi
 
 ---
 
+## Optional VCAL Privacy Guard Integration
+
+AI Cost Firewall can optionally orchestrate VCAL Privacy Guard before forwarding non-streaming chat requests upstream.
+
+When enabled, sensitive values can be replaced with placeholders before the upstream LLM call and restored in the final response.
+
+Example flow:
+
+```text
+Original request:
+Analyze login from 185.23.10.5 by john@example.com
+
+Sent upstream:
+Analyze login from [IP_1] by [EMAIL_1]
+
+Returned response:
+john@example.com logged in from 185.23.10.5
+```
+
+Streaming requests are rejected while Privacy Guard is enabled because streaming/SSE responses has not bee implemented in the current guard contract.
+
+Privacy Guard is disabled by default in `configs/ai-firewall.conf.example`.
+
+---
+
 ## Health Endpoints
 
 | Endpoint | Purpose |
@@ -430,6 +442,11 @@ aif_model_cost_micro_usd_total
 aif_gross_saved_micro_usd_total
 aif_net_saved_micro_usd_total
 aif_embedding_overhead_micro_usd_total
+aif_guard_hook_calls_total
+aif_guard_transformations_total
+aif_guard_findings_total
+aif_guard_mappings_created_total
+aif_guard_rejections_total
 ```
 
 AI Cost Firewall reports:
