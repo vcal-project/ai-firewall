@@ -15,7 +15,7 @@ AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM
 
 Only cache misses are forwarded to the upstream LLM endpoint.
 
-v0.2.0 is the first pilot-ready milestone of AI Cost Firewall. It consolidates the v0.1.x work into a stable OpenAI-compatible gateway model for caching, cost visibility, and operational diagnostics.
+AI Cost Firewall also supports optional guard orchestration for privacy-focused deployments, while remaining fully usable as a standalone caching and cost-control gateway.
 
 AI Cost Firewall is developed and maintained by VCAL Labs, Inc.
 
