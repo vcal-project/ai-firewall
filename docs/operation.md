@@ -57,7 +57,7 @@ Example:
 redis_url redis://redis:6379;
 ```
 
-In v0.2.1 and newer, exact cache behavior is configurable:
+In v0.2.x, exact cache behavior is configurable:
 
 ```conf
 exact_cache_enabled true;

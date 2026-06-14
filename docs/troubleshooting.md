@@ -2,11 +2,9 @@
 
 AI Cost Firewall is designed to fail fast during startup, expose clear runtime errors, and make cache, provider, and cost behavior observable.
 
-This document covers common deployment and operational issues for v0.2.1.
+This document covers common deployment and operational issues for v0.2.x.
 
-AI Cost Firewall v0.2.1 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
-
-v0.2.1 adds practical gateway-control improvements, including exact-cache enable/disable controls, exact-cache fail-open behavior, split upstream and embedding timeouts, request-size protection, per-request cache bypass, metrics endpoint access control, and configurable readiness dependency behavior.
+AI Cost Firewall v0.2.x supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
 
 ---
 
@@ -874,7 +872,7 @@ upstream_timeout_seconds 120;
 embedding_timeout_seconds 30;
 ```
 
-`request_timeout_seconds` remains a backward-compatible fallback. In v0.2.1 and newer, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+`request_timeout_seconds` remains a backward-compatible fallback. In v0.2.x, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 Inspect latency metrics:
 
@@ -1018,7 +1016,7 @@ aif_embedding_timeouts_total
 
 # Provider Compatibility Notes
 
-AI Cost Firewall v0.2.1 supports OpenAI-compatible provider patterns.
+AI Cost Firewall v0.2.x supports OpenAI-compatible provider patterns.
 
 The expected configuration model is:
 
@@ -1031,9 +1029,9 @@ This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
 
 It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
 
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.1. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.x. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
 
-Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.2.1 scope.
+Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.2.x scope.
 
 ## OpenAI
 

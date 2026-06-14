@@ -810,7 +810,7 @@ Default:
 120
 ```
 
-In v0.2.1 and newer, prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+In v0.2.x, prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 ---
 

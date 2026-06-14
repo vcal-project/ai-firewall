@@ -73,29 +73,6 @@ Each example includes:
 
 ---
 
-# v0.2.1 Release Focus
-
-AI Cost Firewall v0.2.1 builds on the v0.2.0 pilot-ready baseline with additional gateway controls, clearer fail-open behavior, and improved deployment diagnostics.
-
-This release focuses on:
-
-- configurable exact cache enable/disable behavior
-- explicit Redis/exact-cache fail-open behavior
-- separate upstream and embedding timeout controls
-- request body and prompt-size protection
-- independent exact and semantic cache store controls
-- per-request cache bypass using `X-AIF-Cache-Bypass`
-- metrics endpoint access-control configuration
-- configurable readiness dependency behavior for Redis, Qdrant, and upstream providers
-- improved Grafana Overview and Diagnostics dashboards
-- cache-bypass visibility in Prometheus and Grafana
-- cleaner Docker runtime image for release testing
-- continued support for OpenAI-compatible chat and embedding APIs
-
-v0.2.1 is an operational hardening release. It keeps the v0.2.0 architecture stable while making the gateway easier to test, debug, and deploy in pilot and production-like environments.
-
----
-
 # Quickest Start with Docker
 
 ## Prerequisites
@@ -289,7 +266,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 # Per-request Cache Bypass
 
-v0.2.1 supports bypassing cache for one request.
+v0.2.x supports bypassing cache for one request.
 
 Default header:
 

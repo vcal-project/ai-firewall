@@ -17,8 +17,6 @@ using a two-layer caching strategy:
 
 Only requests that miss all enabled cache layers are forwarded upstream.
 
-AI Cost Firewall v0.2.1 also adds more explicit gateway controls, including per-request cache bypass, independent cache store controls, configurable readiness dependencies, request-size protection, and separate upstream and embedding timeouts.
-
 ---
 
 # Architectural Goals
