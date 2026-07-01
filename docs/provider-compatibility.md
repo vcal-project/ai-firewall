@@ -3,7 +3,7 @@
 
 AI Cost Firewall supports practical OpenAI-compatible model and embedding providers while keeping a flat, provider-agnostic configuration model.
 
-This document describes tested provider patterns, compatibility notes, operational recommendations, and common deployment considerations.
+This document describes tested provider patterns, compatibility notes, operational recommendations, guard-orchestration notes, and common deployment considerations.
 
 ---
 
@@ -417,16 +417,32 @@ Higher thresholds:
 
 ---
 
+# Guard Orchestration and Provider Compatibility
+
+VCAL Security Guard and VCAL Privacy Guard operate at the AI Firewall layer and are independent of the selected OpenAI-compatible upstream provider.
+
+Provider compatibility still matters for OpenAI-compatible chat request/response shape, model naming, streaming behavior, tool/function response formats, and embedding endpoint behavior when semantic cache is enabled.
+
+The current guard modules inspect text content. Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+
+When guards are enabled, use non-streaming chat requests unless your deployed version explicitly documents streaming-safe guard handling.
+
+---
 # Streaming Compatibility
 
-AI Cost Firewall forwards streaming requests upstream.
+In standalone caching mode, AI Cost Firewall forwards streaming requests upstream.
 
-Current behavior:
+Standalone behavior:
 
 - streaming responses are forwarded
 - streaming responses are not stored in semantic cache
 
 Exact cache behavior may vary depending on deployment flow.
+
+Guard-enabled behavior:
+
+- streaming requests are rejected in the current v0.3.0 guard contract
+- use non-streaming requests when Security Guard or Privacy Guard is enabled
 
 ---
 

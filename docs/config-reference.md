@@ -57,6 +57,7 @@ The configuration is logically divided into:
 | Per-request Controls | Cache bypass behavior |
 | Model Pricing | Cost tracking |
 | Metrics & Observability | Prometheus metrics and metrics endpoint access |
+| Guard Orchestration | Optional VCAL Security Guard and VCAL Privacy Guard integration |
 | Readiness Behavior | Dependency-aware readiness checks |
 | Operational Settings | Shutdown, reload, and maintenance behavior |
 
@@ -101,6 +102,21 @@ max_request_body_bytes 1M;
 max_prompt_chars 200000;
 
 cache_bypass_header X-AIF-Cache-Bypass;
+
+# Optional enterprise guard orchestration.
+security_guard_enabled false;
+# security_guard_url http://vcal-security-guard:8091;
+# security_guard_api_key replace-with-security-guard-key;
+security_guard_timeout_seconds 3;
+
+privacy_guard_enabled false;
+# privacy_guard_url http://vcal-privacy-guard:8090;
+# privacy_guard_api_key replace-with-privacy-guard-key;
+privacy_guard_mode anonymize;
+privacy_guard_restore_enabled true;
+privacy_guard_timeout_seconds 3;
+
+guard_fail_open false;
 
 metrics_auth_required false;
 # metrics_auth_token replace-with-prometheus-token;
@@ -810,7 +826,7 @@ Default:
 120
 ```
 
-In v0.2.x, prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+In v0.3.x, prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 ---
 
@@ -892,6 +908,154 @@ aif_cache_bypass_requests_total
 
 ---
 
+# Guard Orchestration
+
+AI Firewall v0.3.0 can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard.
+
+Supported modes:
+
+```text
+AI Firewall only
+AI Firewall + VCAL Security Guard
+AI Firewall + VCAL Privacy Guard
+AI Firewall + VCAL Security Guard + VCAL Privacy Guard
+```
+
+Recommended full enterprise order:
+
+```text
+Security Guard request scan
+→ Privacy Guard scan/anonymize/redact
+→ exact/semantic cache lookup or upstream LLM
+→ Security Guard response scan
+→ Privacy Guard restore
+```
+
+## security_guard_enabled
+
+Enable VCAL Security Guard orchestration.
+
+```conf
+security_guard_enabled true;
+```
+
+Default: `false`.
+
+## security_guard_url
+
+Base URL for VCAL Security Guard.
+
+```conf
+security_guard_url http://vcal-security-guard:8091;
+```
+
+Do not include `/v1/scan`; AI Firewall appends the endpoint internally.
+
+## security_guard_api_key
+
+Service-to-service API key for VCAL Security Guard.
+
+```conf
+security_guard_api_key your-security-guard-key;
+```
+
+## security_guard_timeout_seconds
+
+Timeout for Security Guard calls.
+
+```conf
+security_guard_timeout_seconds 3;
+```
+
+## privacy_guard_enabled
+
+Enable VCAL Privacy Guard orchestration.
+
+```conf
+privacy_guard_enabled true;
+```
+
+Default: `false`.
+
+## privacy_guard_url
+
+Base URL for VCAL Privacy Guard.
+
+```conf
+privacy_guard_url http://vcal-privacy-guard:8090;
+```
+
+Do not include `/v1/scan` or `/v1/restore`; AI Firewall appends endpoints internally.
+
+## privacy_guard_api_key
+
+Service-to-service API key for VCAL Privacy Guard.
+
+```conf
+privacy_guard_api_key your-privacy-guard-key;
+```
+
+## privacy_guard_mode
+
+Privacy Guard scan mode.
+
+```conf
+privacy_guard_mode anonymize;
+```
+
+Common values are `detect_only`, `redact`, and `anonymize`.
+
+## privacy_guard_restore_enabled
+
+Enable placeholder restoration on assistant responses.
+
+```conf
+privacy_guard_restore_enabled true;
+```
+
+## privacy_guard_timeout_seconds
+
+Timeout for Privacy Guard scan and restore calls.
+
+```conf
+privacy_guard_timeout_seconds 3;
+```
+
+## guard_fail_open
+
+Controls what AI Firewall does when an enabled guard is unavailable, times out, or returns an invalid contract.
+
+```conf
+guard_fail_open false;
+```
+
+For security-sensitive or privacy-sensitive deployments, fail-closed is recommended.
+
+## Full enterprise example
+
+```conf
+security_guard_enabled true;
+security_guard_url http://vcal-security-guard:8091;
+security_guard_api_key dev-security-key;
+security_guard_timeout_seconds 3;
+
+privacy_guard_enabled true;
+privacy_guard_url http://vcal-privacy-guard:8090;
+privacy_guard_api_key dev-privacy-key;
+privacy_guard_mode anonymize;
+privacy_guard_restore_enabled true;
+privacy_guard_timeout_seconds 3;
+
+guard_fail_open false;
+```
+
+Security Guard should normally run in enforce mode for production-like AI Firewall tests:
+
+```text
+VCAL_SECURITY_GUARD_DEFAULT_MODE=enforce
+```
+
+---
 # Model Validation
 
 By default:
@@ -1141,6 +1305,20 @@ AIF_EMBEDDING_MODEL=text-embedding-3-small
 AIF_MAX_REQUEST_BODY_BYTES=2M
 AIF_MAX_PROMPT_CHARS=200000
 AIF_CACHE_BYPASS_HEADER=X-AIF-Cache-Bypass
+
+AIF_SECURITY_GUARD_ENABLED=true
+AIF_SECURITY_GUARD_URL=http://vcal-security-guard:8091
+AIF_SECURITY_GUARD_API_KEY=your-security-guard-key
+AIF_SECURITY_GUARD_TIMEOUT_SECONDS=3
+
+AIF_PRIVACY_GUARD_ENABLED=true
+AIF_PRIVACY_GUARD_URL=http://vcal-privacy-guard:8090
+AIF_PRIVACY_GUARD_API_KEY=your-privacy-guard-key
+AIF_PRIVACY_GUARD_MODE=anonymize
+AIF_PRIVACY_GUARD_RESTORE_ENABLED=true
+AIF_PRIVACY_GUARD_TIMEOUT_SECONDS=3
+
+AIF_GUARD_FAIL_OPEN=false
 ```
 
 `.env` files load automatically in development environments.
@@ -1235,6 +1413,15 @@ aif_model_cost_micro_usd_total
 aif_gross_saved_micro_usd_total
 aif_embedding_overhead_micro_usd_total
 aif_net_saved_micro_usd_total
+```
+
+Guard orchestration metrics:
+
+```text
+aif_guard_requests_total
+aif_guard_latency_seconds
+aif_security_blocks_total
+aif_privacy_restore_skipped_total
 ```
 
 

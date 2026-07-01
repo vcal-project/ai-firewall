@@ -1,6 +1,6 @@
 # How AI Cost Firewall Works
 
-This document explains how AI Cost Firewall processes requests, evaluates cache reuse, communicates with OpenAI-compatible providers, and reduces LLM API cost and latency.
+This document explains how AI Cost Firewall processes requests, optionally orchestrates enterprise guard modules, evaluates cache reuse, communicates with OpenAI-compatible providers, and reduces LLM API cost and latency.
 
 AI Cost Firewall sits between client applications and LLM providers and applies a two-layer cache strategy:
 
@@ -19,6 +19,8 @@ Client Applications
         ▼
 AI Cost Firewall
         │
+        ├── VCAL Security Guard (optional)
+        ├── VCAL Privacy Guard (optional)
         ├── Redis (exact cache)
         ├── Qdrant (semantic cache)
         │
@@ -43,12 +45,16 @@ AI Cost Firewall evaluates requests in stages:
 
 1. parse and validate request limits
 2. normalize request
-3. evaluate per-request cache bypass
-4. exact cache lookup, if enabled
-5. semantic cache lookup, if enabled and not bypassed
-6. upstream request on miss or bypass
-7. cache storage, if store controls allow it
-8. response return
+3. call Security Guard request scan, if enabled
+4. call Privacy Guard scan/anonymize/redact, if enabled
+5. evaluate per-request cache bypass
+6. exact cache lookup, if enabled
+7. semantic cache lookup, if enabled and not bypassed
+8. upstream request on miss or bypass
+9. call Security Guard response scan, if enabled
+10. call Privacy Guard restore, if enabled and mapping exists
+11. cache storage, if store controls allow it
+12. response return
 
 ---
 
@@ -133,6 +139,26 @@ flowchart TD
 
 ---
 
+# Guard Orchestration Flow
+
+AI Firewall v0.3.0 can run as a guard orchestrator in addition to a cache gateway.
+
+When both VCAL Security Guard and VCAL Privacy Guard are enabled, the flow is:
+
+```text
+Client request
+→ AI Firewall validates request limits
+→ Security Guard scans request text
+→ block with HTTP 403 if Security Guard rejects the request
+→ Privacy Guard anonymizes or redacts sensitive text
+→ exact/semantic cache lookup or upstream request
+→ Security Guard scans assistant response text
+→ block response if Security Guard rejects the output
+→ Privacy Guard restores placeholders, if a mapping exists
+→ AI Firewall returns final response
+```
+
+---
 # Example Request
 
 Client applications use the standard OpenAI-compatible API.
@@ -635,7 +661,9 @@ Applications do not need special cache-awareness logic.
 
 # Streaming Behavior
 
-Streaming requests are forwarded upstream normally.
+In standalone caching mode, streaming requests can be forwarded upstream.
+
+When Security Guard or Privacy Guard orchestration is enabled, streaming requests are rejected in the current v0.3.0 guard contract because safe streaming scan/restore behavior is not implemented yet.
 
 Example:
 
@@ -693,6 +721,15 @@ In this mode:
 
 ---
 
+# Non-text Content
+
+The current guard modules inspect text content only.
+
+Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+
+Text extracted by the client application, such as OCR text or captions, can be scanned and anonymized normally if it is sent as text content.
+
+---
 # Metrics and Observability
 
 AI Cost Firewall exposes Prometheus metrics:
@@ -798,6 +835,16 @@ These metrics distinguish:
 
 ---
 
+# Guard Metrics
+
+```text
+aif_guard_requests_total
+aif_guard_latency_seconds
+aif_security_blocks_total
+aif_privacy_restore_skipped_total
+```
+
+---
 # Included Dashboards
 
 AI Cost Firewall includes pre-configured Grafana dashboards in the Docker deployment files.

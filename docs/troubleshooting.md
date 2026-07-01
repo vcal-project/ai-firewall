@@ -2,12 +2,15 @@
 
 AI Cost Firewall is designed to fail fast during startup, expose clear runtime errors, and make cache, provider, and cost behavior observable.
 
-This document covers common deployment and operational issues for v0.2.x.
+This document covers common deployment and operational issues for v0.3.0.
 
-AI Cost Firewall v0.2.x supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
+AI Cost Firewall v0.3.0 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
 
 ---
 
+AI Firewall v0.3.0 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
+
+---
 # Validate Configuration First
 
 Before debugging runtime behavior, validate the configuration:
@@ -666,6 +669,111 @@ When bypass is enabled for a request:
 
 ---
 
+# Security Guard Blocks or Errors
+
+## Symptoms
+
+Requests return `HTTP 403` or an error type similar to:
+
+```text
+security_request_blocked
+security_response_blocked
+security_guard_unavailable
+security_guard_timeout
+```
+
+## Common Causes
+
+- Security Guard detected prompt injection, jailbreak, or system-prompt extraction text
+- Security Guard is running in `enforce` mode
+- Security Guard is unavailable and `guard_fail_open false`
+- API key mismatch between AI Firewall and Security Guard
+- wrong `security_guard_url`
+- Security Guard default mode is still `detect_only` when blocking was expected
+
+## Recommended Checks
+
+```conf
+security_guard_enabled true;
+security_guard_url http://vcal-security-guard:8091;
+security_guard_api_key dev-security-key;
+security_guard_timeout_seconds 3;
+guard_fail_open false;
+```
+
+```text
+VCAL_SECURITY_GUARD_DEFAULT_MODE=enforce
+```
+
+```bash
+curl http://localhost:8091/healthz
+curl http://localhost:8091/readyz
+curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total'
+```
+
+---
+
+# Privacy Guard Restore or Anonymization Errors
+
+## Symptoms
+
+Requests return errors similar to:
+
+```text
+privacy_guard_unavailable
+privacy_guard_timeout
+privacy_restore_failed
+guard_contract_violation
+```
+
+or final responses contain placeholders such as `[EMAIL_1]` or `[IP_1]`.
+
+## Common Causes
+
+- Privacy Guard unavailable and `guard_fail_open false`
+- API key mismatch between AI Firewall and Privacy Guard
+- wrong `privacy_guard_url`
+- expired or missing mapping ID
+- restore disabled
+- response was blocked by Security Guard before restore
+- non-text content was expected to be scanned or restored
+
+## Recommended Checks
+
+```conf
+privacy_guard_enabled true;
+privacy_guard_url http://vcal-privacy-guard:8090;
+privacy_guard_api_key dev-privacy-key;
+privacy_guard_mode anonymize;
+privacy_guard_restore_enabled true;
+privacy_guard_timeout_seconds 3;
+guard_fail_open false;
+```
+
+```bash
+curl http://localhost:8090/healthz
+curl http://localhost:8090/readyz
+curl -s http://localhost:8090/metrics | grep vcal_privacy
+curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_privacy_restore_skipped_total'
+```
+
+---
+
+# Guarded Streaming Requests Rejected
+
+A request with `"stream": true` returns a validation response, often HTTP 422, when Security Guard or Privacy Guard orchestration is enabled.
+
+Use non-streaming requests when guard modules are enabled.
+
+---
+
+# Non-text Content Not Scanned
+
+The current guard modules inspect text content only. Images, audio, video, and binary payloads are not scanned, anonymized, or classified by AI Firewall guard modules.
+
+Extract text before sending it through AI Firewall if you need text-oriented guard protection for non-text assets.
+
+---
 # Grafana Dashboards Are Empty
 
 ## Symptoms
@@ -872,7 +980,7 @@ upstream_timeout_seconds 120;
 embedding_timeout_seconds 30;
 ```
 
-`request_timeout_seconds` remains a backward-compatible fallback. In v0.2.x, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+`request_timeout_seconds` remains a backward-compatible fallback. In v0.3.0, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 Inspect latency metrics:
 
@@ -1012,11 +1120,20 @@ aif_upstream_timeouts_total
 aif_embedding_timeouts_total
 ```
 
+## Guard Orchestration
+
+```text
+aif_guard_requests_total
+aif_guard_latency_seconds
+aif_security_blocks_total
+aif_privacy_restore_skipped_total
+```
+
 ---
 
 # Provider Compatibility Notes
 
-AI Cost Firewall v0.2.x supports OpenAI-compatible provider patterns.
+AI Cost Firewall v0.3.0 supports OpenAI-compatible provider patterns.
 
 The expected configuration model is:
 
@@ -1029,9 +1146,9 @@ This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
 
 It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
 
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.2.x. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.3.0. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
 
-Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.2.x scope.
+Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.3.0 scope.
 
 ## OpenAI
 

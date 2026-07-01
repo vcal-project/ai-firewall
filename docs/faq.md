@@ -1,6 +1,6 @@
 # AI Cost Firewall — FAQ
 
-This FAQ is for users browsing the `docs/` directory in the AI Cost Firewall GitHub repository. It gives quick answers for installation, configuration, caching, observability, troubleshooting, and optional VCAL Privacy Guard integration.
+This FAQ is for users browsing the `docs/` directory in the AI Cost Firewall GitHub repository. It gives quick answers for installation, configuration, caching, observability, troubleshooting, and optional VCAL Security Guard / VCAL Privacy Guard integration.
 
 For full configuration details, see:
 
@@ -26,6 +26,7 @@ Typical flow:
 ```text
 Application
 → AI Cost Firewall
+→ optional Security Guard / Privacy Guard orchestration
 → cache lookup
 → upstream LLM provider only when needed
 ```
@@ -36,7 +37,7 @@ The firewall behaves similarly to:
 nginx for LLM APIs
 ```
 
-but with LLM-specific controls such as exact cache, semantic cache, model pricing, token-cost metrics, request limits, and optional privacy guard orchestration.
+but with LLM-specific controls such as exact cache, semantic cache, model pricing, token-cost metrics, request limits, and optional Security Guard / Privacy Guard orchestration.
 
 ---
 
@@ -717,6 +718,63 @@ for compatibility.
 
 ---
 
+## VCAL Security Guard
+
+### What is VCAL Security Guard?
+
+VCAL Security Guard is an optional enterprise security module that can be integrated with AI Firewall.
+
+It uses deterministic, auditable rules to detect text-based LLM security risks such as prompt injection, jailbreak attempts, system-prompt extraction attempts, unsafe tool-use instructions, data-exfiltration attempts, and common cyber-abuse patterns.
+
+It is a rule-based first control layer. It should not be described as complete prompt-injection or universal jailbreak prevention.
+
+---
+
+### Is VCAL Security Guard required to use AI Firewall?
+
+No. AI Firewall can run without VCAL Security Guard.
+
+---
+
+### How does VCAL Security Guard work with AI Firewall?
+
+When enabled, AI Firewall can call Security Guard before cache lookup or upstream forwarding.
+
+If the request is blocked, AI Firewall returns a structured error such as:
+
+```json
+{
+  "error": {
+    "code": 403,
+    "guard": "security",
+    "type": "security_request_blocked",
+    "stage": "request",
+    "rule_id": "VSG-PA-003"
+  }
+}
+```
+
+Security Guard can also scan assistant responses before Privacy Guard restore and before the response is returned to the client.
+
+---
+
+### What Security Guard settings are used by AI Firewall?
+
+```conf
+security_guard_enabled true;
+security_guard_url http://vcal-security-guard:8091;
+security_guard_api_key your-shared-api-key;
+security_guard_timeout_seconds 3;
+guard_fail_open false;
+```
+
+For production-like enforcement tests, Security Guard should normally use:
+
+```text
+VCAL_SECURITY_GUARD_DEFAULT_MODE=enforce
+```
+
+---
 ## VCAL Privacy Guard
 
 ### What is VCAL Privacy Guard?
@@ -898,6 +956,44 @@ Deployments should still review cache-retention settings, access controls, metri
 
 ---
 
+## Full Security + Privacy Mode
+
+### Can AI Firewall use Security Guard and Privacy Guard together?
+
+Yes. AI Firewall v0.3.0 can orchestrate both modules in a single request/response flow:
+
+```text
+Client
+→ AI Firewall
+→ Security Guard request scan
+→ Privacy Guard anonymize/redact
+→ exact/semantic cache or upstream LLM
+→ Security Guard response scan
+→ Privacy Guard restore
+→ Client
+```
+
+This lets the firewall block malicious prompts before privacy mapping or upstream processing, while still anonymizing sensitive text before it reaches Redis, Qdrant, semantic cache payloads, or the upstream LLM.
+
+---
+
+### What happens to streaming requests when guards are enabled?
+
+Guarded streaming requests are rejected in the current guard contract.
+
+Use non-streaming requests when Security Guard or Privacy Guard orchestration is enabled.
+
+---
+
+### What happens if a request contains images or other non-text content?
+
+The current guard modules inspect text content only.
+
+Non-text content such as images, audio, video, and binary payloads may be preserved where possible and forwarded upstream, but it is not scanned, anonymized, or classified by AI Firewall guard modules.
+
+If the client application extracts OCR text, captions, or metadata from non-text content and sends that extracted text through AI Firewall, that extracted text can be scanned and anonymized normally.
+
+---
 ## Troubleshooting
 
 ### Why do I get `upstream_not_found`?

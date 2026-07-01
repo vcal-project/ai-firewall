@@ -1,6 +1,6 @@
 # AI Cost Firewall Architecture
 
-AI Cost Firewall is a lightweight OpenAI-compatible gateway for LLM cost reduction, semantic caching, operational control, and observability.
+AI Cost Firewall is a lightweight OpenAI-compatible gateway for LLM cost reduction, semantic caching, operational control, observability, and optional enterprise guard orchestration.
 
 Instead of applications calling LLM providers directly, requests pass through AI Cost Firewall first.
 
@@ -10,7 +10,9 @@ The firewall reduces:
 - latency
 - repeated token usage
 
-using a two-layer caching strategy:
+and can optionally add request/response guard controls through VCAL Security Guard and VCAL Privacy Guard.
+
+The default open-source deployment uses a two-layer caching strategy:
 
 1. exact cache (Redis / Valkey)
 2. semantic cache (Qdrant)
@@ -54,6 +56,24 @@ without requiring provider-specific configuration blocks.
 
 ---
 
+## Enterprise Guard Orchestration
+
+AI Cost Firewall v0.3.0 can orchestrate optional VCAL enterprise modules while keeping the core gateway focused on caching and cost control.
+
+Supported modes:
+
+```text
+AI Firewall only
+AI Firewall + VCAL Security Guard
+AI Firewall + VCAL Privacy Guard
+AI Firewall + VCAL Security Guard + VCAL Privacy Guard
+```
+
+When both guards are enabled, the firewall becomes the orchestrator for request-side Security Guard scanning, Privacy Guard anonymization/redaction, exact and semantic cache lookup, upstream forwarding on cache miss, response-side Security Guard scanning, and Privacy Guard restoration before returning the final response.
+
+VCAL Security Guard and VCAL Privacy Guard are optional commercial add-ons and are not required for standalone AI Firewall caching deployments.
+
+---
 ## Operational Visibility
 
 Prometheus metrics and Grafana dashboards provide visibility into:
@@ -78,7 +98,11 @@ flowchart LR
 
     Client[Client Applications]
 
-    Firewall[AI Cost Firewall<br/>Rust + Axum]
+    Firewall[AI Cost Firewall<br/>Rust + Axum<br/>Gateway + Orchestrator]
+
+    Security[VCAL Security Guard<br/>optional]
+
+    Privacy[VCAL Privacy Guard<br/>optional]
 
     Redis[Redis / Valkey<br/>Exact Cache]
 
@@ -94,6 +118,9 @@ flowchart LR
 
     Client --> Firewall
 
+    Firewall --> Security
+    Firewall --> Privacy
+
     Firewall --> Redis
     Firewall --> Qdrant
 
@@ -101,6 +128,8 @@ flowchart LR
     Firewall --> Embedding
 
     Firewall --> Prom
+    Security --> Prom
+    Privacy --> Prom
     Prom --> Graf
 ```
 
@@ -118,11 +147,15 @@ Every request follows a staged pipeline.
 receive request
 → enforce request body and prompt-size limits
 → normalize request
+→ Security Guard request scan, if enabled
+→ Privacy Guard scan/anonymize/redact, if enabled
 → check per-request cache bypass
 → exact cache lookup, if enabled
 → semantic cache lookup, if enabled
 → upstream request on miss or bypass
-→ cache storage, if enabled
+→ Security Guard response scan, if enabled
+→ Privacy Guard restore, if enabled and mapping exists
+→ cache storage, if enabled and allowed by the guard path
 → response return
 ```
 
@@ -216,6 +249,28 @@ flowchart TD
 
 ---
 
+# Full Enterprise Guard Flow
+
+When VCAL Security Guard and VCAL Privacy Guard are both enabled, the recommended v0.3.0 flow is:
+
+```text
+Client
+  -> AI Cost Firewall
+      -> VCAL Security Guard request scan
+          -> block unsafe request with HTTP 403, if needed
+      -> VCAL Privacy Guard scan
+          -> anonymize or redact sensitive text
+      -> Redis/Qdrant cache lookup or upstream LLM
+      -> VCAL Security Guard response scan
+          -> block unsafe model output, if needed
+      -> VCAL Privacy Guard restore
+          -> restore placeholders in the final assistant response
+      -> Client
+```
+
+Guard ordering matters: Security Guard runs before Privacy Guard on the request path, Privacy Guard runs before cache/upstream processing, Security Guard scans output before restore, and Privacy Guard restore is the final transformation before returning the response to the client.
+
+---
 # Core Components
 
 ---
@@ -252,6 +307,33 @@ POST /v1/chat/completions
 
 ---
 
+# VCAL Security Guard — Optional
+
+VCAL Security Guard is an optional enterprise module called by AI Firewall for text-oriented security scans.
+
+Typical request-side detections include prompt injection, jailbreak attempts, system-prompt extraction attempts, unsafe tool-use instructions, data-exfiltration attempts, and common cyber-abuse patterns.
+
+In `enforce` mode, Security Guard can return a blocking decision that AI Firewall converts into a structured HTTP error such as `403 security_request_blocked`.
+
+Security Guard is deterministic and rule-based in the current release. It should be described as an auditable first control layer, not as complete jailbreak or prompt-injection prevention.
+
+---
+
+# VCAL Privacy Guard — Optional
+
+VCAL Privacy Guard is an optional enterprise module called by AI Firewall for text-oriented privacy protection.
+
+Supported modes include:
+
+```text
+detect_only
+redact
+anonymize
+```
+
+In `anonymize` mode, sensitive values can be replaced with placeholders before cache/upstream processing. When restore is enabled, AI Firewall calls `/v1/restore` after the upstream/cache response path to replace placeholders with the original values before returning the final response to the client.
+
+---
 # Redis / Valkey — Exact Cache
 
 Redis stores exact request-response matches.
@@ -738,7 +820,9 @@ flowchart LR
 
 # Streaming Behavior
 
-Streaming requests are forwarded upstream normally.
+In standalone caching mode, streaming requests can be forwarded upstream.
+
+When Security Guard or Privacy Guard orchestration is enabled, streaming requests are rejected in the current v0.3.0 guard contract because streaming-safe scanning and streaming-safe Privacy Guard restoration are not implemented yet.
 
 Example:
 
@@ -988,6 +1072,26 @@ Actual performance depends on:
 
 ---
 
+# Non-text Content
+
+The current guard modules inspect text content. Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+
+If a chatbot extracts OCR text, captions, or metadata from non-text assets and sends that extracted text through AI Firewall, the extracted text can be scanned and anonymized normally.
+
+---
+
+# Guard Orchestration Metrics
+
+```text
+aif_guard_requests_total
+aif_guard_latency_seconds
+aif_security_blocks_total
+aif_privacy_restore_skipped_total
+```
+
+These metrics show guard calls by guard/stage/result, guard latency, Security Guard blocks by stage/rule ID, and skipped Privacy Guard restore when a response is blocked before restore.
+
+---
 # Summary
 
 AI Cost Firewall acts as a lightweight LLM gateway that:

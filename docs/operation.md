@@ -23,6 +23,8 @@ AI Cost Firewall provides:
 - structured runtime error classification
 - per-request cache bypass support
 - request body and prompt-size protection
+- optional VCAL Security Guard and VCAL Privacy Guard orchestration
+- configurable guard fail-open/fail-closed behavior
 
 ---
 
@@ -34,6 +36,8 @@ Client Applications
         ▼
 AI Cost Firewall
         │
+        ├── VCAL Security Guard (optional)
+        ├── VCAL Privacy Guard (optional)
         ├── Redis (exact cache)
         ├── Qdrant (semantic cache)
         │
@@ -57,7 +61,7 @@ Example:
 redis_url redis://redis:6379;
 ```
 
-In v0.2.x, exact cache behavior is configurable:
+Exact cache behavior is configurable:
 
 ```conf
 exact_cache_enabled true;
@@ -178,6 +182,53 @@ It does not bypass invalid configuration validation. Dependency startup behavior
 
 ---
 
+# Guard Runtime Behavior
+
+AI Firewall v0.3.0 can orchestrate VCAL Security Guard and VCAL Privacy Guard.
+
+Recommended full enterprise order:
+
+```text
+Security Guard request scan
+→ Privacy Guard scan/anonymize/redact
+→ exact/semantic cache lookup or upstream LLM
+→ Security Guard response scan
+→ Privacy Guard restore
+```
+
+## guard_fail_open Behavior
+
+`guard_fail_open` controls what happens when an enabled guard is unavailable, times out, or returns an invalid response contract.
+
+```conf
+guard_fail_open false;
+```
+
+For enterprise security and privacy deployments, fail-closed is recommended.
+
+## Security Guard Blocks
+
+When Security Guard blocks a request, AI Firewall returns a structured error such as:
+
+```json
+{
+  "error": {
+    "code": 403,
+    "guard": "security",
+    "type": "security_request_blocked",
+    "stage": "request",
+    "rule_id": "VSG-PA-003"
+  }
+}
+```
+
+Request-side blocks happen before Privacy Guard, cache lookup, or upstream forwarding.
+
+## Privacy Guard Restore
+
+When Privacy Guard runs in `anonymize` mode, AI Firewall stores the returned `mapping_id` for the request flow and calls `/v1/restore` on assistant output when restoration is enabled and a mapping exists.
+
+---
 # Health & Readiness Endpoints
 
 AI Cost Firewall exposes two operational endpoints.
@@ -669,6 +720,24 @@ Notes:
 
 ---
 
+# Guard Metrics
+
+Guard orchestration exposes additional metrics:
+
+```text
+aif_guard_requests_total
+aif_guard_latency_seconds
+aif_security_blocks_total
+aif_privacy_restore_skipped_total
+```
+
+Useful checks:
+
+```bash
+curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total|aif_privacy_restore_skipped_total'
+```
+
+---
 # Metrics
 
 Metrics endpoint:
@@ -815,6 +884,26 @@ journalctl -u ai-firewall > logs.txt
 
 ---
 
+# Guard Operational Checks
+
+When guard modules are enabled, useful health checks include:
+
+```bash
+curl http://localhost:8091/healthz
+curl http://localhost:8091/readyz
+curl http://localhost:8090/healthz
+curl http://localhost:8090/readyz
+```
+
+Typical full-stack metrics checks:
+
+```bash
+curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total'
+curl -s http://localhost:8091/metrics | grep vcal_security
+curl -s http://localhost:8090/metrics | grep vcal_privacy
+```
+
+---
 # Maintenance Recommendations
 
 Recommended operational tasks:
@@ -1002,6 +1091,11 @@ See also:
 
 ---
 
+# Non-text Content
+
+The current guard modules inspect text content only. Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+
+---
 # Operational Notes
 
 - reload happens only via `SIGHUP`
@@ -1014,4 +1108,4 @@ See also:
 - `request_timeout_seconds` is a backward-compatible fallback
 - `upstream_timeout_seconds` controls chat-completion upstream calls
 - `embedding_timeout_seconds` controls embedding provider calls
-- upstream or embedding requests exceeding timeout are aborted
+- upstream, embedding, or guard requests exceeding timeout are aborted
