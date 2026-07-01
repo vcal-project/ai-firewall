@@ -126,6 +126,11 @@ pub struct Config {
     pub semantic_cache_fail_open: bool,
     pub semantic_cache_store_enabled: bool,
 
+    pub security_guard_enabled: bool,
+    pub security_guard_url: String,
+    pub security_guard_api_key: Option<String>,
+    pub security_guard_timeout_seconds: u64,
+
     pub privacy_guard_enabled: bool,
     pub privacy_guard_url: String,
     pub privacy_guard_api_key: Option<String>,
@@ -232,6 +237,26 @@ impl Config {
 
         if self.cache_bypass_header.trim().is_empty() {
             errors.push("cache_bypass_header must not be empty".into());
+        }
+
+        if self.security_guard_enabled {
+            if self.security_guard_url.trim().is_empty() {
+                errors.push(
+                    "security_guard_url must not be empty when security_guard_enabled=true".into(),
+                );
+            } else if !looks_like_http_url(&self.security_guard_url) {
+                errors.push(format!(
+                    "invalid security_guard_url '{}': must start with http:// or https://",
+                    self.security_guard_url
+                ));
+            }
+
+            if self.security_guard_timeout_seconds == 0 {
+                errors.push(
+                    "security_guard_timeout_seconds must be > 0 when security_guard_enabled=true"
+                        .into(),
+                );
+            }
         }
 
         if self.privacy_guard_enabled {
@@ -521,6 +546,25 @@ impl Config {
             self.qdrant_vector_size
         ));
 
+        out.push_str("\nVCAL Security Guard\n");
+        out.push_str("--------------------------------\n");
+        out.push_str(&format!(
+            "security_guard_enabled = {}\n",
+            self.security_guard_enabled
+        ));
+        out.push_str(&format!(
+            "security_guard_url = {}\n",
+            self.security_guard_url
+        ));
+        out.push_str(&format!(
+            "security_guard_api_key = {}\n",
+            mask_optional_secret(&self.security_guard_api_key)
+        ));
+        out.push_str(&format!(
+            "security_guard_timeout_seconds = {}\n",
+            self.security_guard_timeout_seconds
+        ));
+
         out.push_str("\nVCAL Privacy Guard\n");
         out.push_str("--------------------------------\n");
         out.push_str(&format!(
@@ -703,6 +747,15 @@ impl Config {
                 &map,
                 "semantic_cache_store_enabled",
                 true,
+            )?,
+
+            security_guard_enabled: parse_or_default(&map, "security_guard_enabled", false)?,
+            security_guard_url: get_or_default(&map, "security_guard_url", "http://127.0.0.1:8091"),
+            security_guard_api_key: map.get("security_guard_api_key").cloned(),
+            security_guard_timeout_seconds: parse_or_default(
+                &map,
+                "security_guard_timeout_seconds",
+                10u64,
             )?,
 
             privacy_guard_enabled: parse_or_default(&map, "privacy_guard_enabled", false)?,
@@ -989,6 +1042,29 @@ impl Config {
                 })?
             },
 
+            security_guard_enabled: {
+                let raw = env::var("AIF_SECURITY_GUARD_ENABLED").unwrap_or_else(|_| "false".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_SECURITY_GUARD_ENABLED value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            security_guard_url: env::var("AIF_SECURITY_GUARD_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8091".into()),
+            security_guard_api_key: env::var("AIF_SECURITY_GUARD_API_KEY").ok(),
+            security_guard_timeout_seconds: {
+                let raw =
+                    env::var("AIF_SECURITY_GUARD_TIMEOUT_SECONDS").unwrap_or_else(|_| "10".into());
+                raw.parse().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_SECURITY_GUARD_TIMEOUT_SECONDS value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+
             privacy_guard_enabled: {
                 let raw = env::var("AIF_PRIVACY_GUARD_ENABLED").unwrap_or_else(|_| "false".into());
                 raw.parse().map_err(|e| {
@@ -1182,6 +1258,7 @@ impl Config {
             format!("- exact cache TTL: {}s", self.exact_cache_ttl_seconds),
             format!("- exact fail-open: {}", self.exact_cache_fail_open),
             format!("- cache bypass header: {}", self.cache_bypass_header),
+            format!("- security guard enabled: {}", self.security_guard_enabled),
             format!("- privacy guard enabled: {}", self.privacy_guard_enabled),
             format!("- guard fail-open: {}", self.guard_fail_open),
         ];
@@ -1256,6 +1333,16 @@ impl fmt::Debug for Config {
             .field(
                 "semantic_cache_store_enabled",
                 &self.semantic_cache_store_enabled,
+            )
+            .field("security_guard_enabled", &self.security_guard_enabled)
+            .field("security_guard_url", &self.security_guard_url)
+            .field(
+                "security_guard_api_key",
+                &self.security_guard_api_key.as_ref().map(|k| mask_secret(k)),
+            )
+            .field(
+                "security_guard_timeout_seconds",
+                &self.security_guard_timeout_seconds,
             )
             .field("privacy_guard_enabled", &self.privacy_guard_enabled)
             .field("privacy_guard_url", &self.privacy_guard_url)
@@ -1345,6 +1432,10 @@ fn allowed_directives() -> HashSet<&'static str> {
         "semantic_similarity_threshold",
         "semantic_cache_fail_open",
         "semantic_cache_store_enabled",
+        "security_guard_enabled",
+        "security_guard_url",
+        "security_guard_api_key",
+        "security_guard_timeout_seconds",
         "privacy_guard_enabled",
         "privacy_guard_url",
         "privacy_guard_api_key",
@@ -1613,6 +1704,14 @@ fn warn_if_suspicious(cfg: &Config) {
         tracing::warn!(
             "graceful_shutdown_timeout_seconds={} is very small; in-flight requests may not have enough time to drain cleanly",
             cfg.graceful_shutdown_timeout_seconds
+        );
+    }
+
+    if cfg.security_guard_enabled {
+        tracing::info!(
+            security_guard_url = cfg.security_guard_url,
+            guard_fail_open = cfg.guard_fail_open,
+            "VCAL Security Guard orchestration is enabled"
         );
     }
 

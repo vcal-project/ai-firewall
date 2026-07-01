@@ -6,7 +6,7 @@
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
 ![Status](https://img.shields.io/badge/status-pilot--ready-blue)
 
-## Pilot-ready OpenAI-compatible gateway for LLM caching, cost control, and observability
+## OpenAI-compatible gateway for LLM caching, cost control, observability, and guard orchestration
 
 AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM API cost and latency through two cache layers:
 
@@ -15,7 +15,7 @@ AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM
 
 Only cache misses are forwarded to the upstream LLM endpoint.
 
-AI Cost Firewall also supports optional guard orchestration for privacy-focused deployments, while remaining fully usable as a standalone caching and cost-control gateway.
+AI Cost Firewall also supports optional guard orchestration for enterprise privacy and security deployments, while remaining fully usable as a standalone caching and cost-control gateway.
 
 AI Cost Firewall is developed and maintained by VCAL Labs, Inc.
 
@@ -56,11 +56,20 @@ Supported OpenAI-compatible providers include:
 
 # Current Release Focus
 
-AI Cost Firewall v0.2.2 adds optional VCAL Privacy Guard orchestration hooks while keeping the default open-source deployment focused on LLM caching, cost control, and observability.
+AI Cost Firewall v0.3.0 adds modular guard orchestration for optional VCAL enterprise modules while keeping the default open-source deployment focused on LLM caching, cost control, and observability.
 
-This release adds support for privacy scan and restore phases, guard metrics, placeholder mapping, stream rejection when Privacy Guard is enabled, and safer handling of OpenAI-compatible message metadata.
+This release adds support for:
 
-VCAL Privacy Guard is an optional paid add-on and is not required to run AI Cost Firewall.
+- VCAL Security Guard request-side and response-side scan orchestration;
+- VCAL Privacy Guard anonymize/restore orchestration;
+- combined Security + Privacy enterprise flow;
+- fail-closed guard behavior for enterprise deployments;
+- structured guard error responses;
+- guard orchestration metrics;
+- non-streaming guard contract enforcement;
+- safer preservation of OpenAI-compatible request/response metadata.
+
+VCAL Security Guard and VCAL Privacy Guard are optional commercial add-ons. They are not required to run AI Cost Firewall as a standalone caching and cost-control gateway.
 
 ---
 
@@ -170,10 +179,13 @@ Client applications send requests to AI Cost Firewall instead of directly to the
 The firewall:
 
 1. validates requests
-2. checks exact cache
-3. checks semantic cache
-4. forwards only cache misses upstream
-5. exposes metrics and operational diagnostics
+2. optionally calls VCAL Security Guard before cache/upstream processing
+3. optionally calls VCAL Privacy Guard to anonymize or redact sensitive text
+4. checks exact cache
+5. checks semantic cache
+6. forwards only cache misses upstream
+7. optionally scans assistant responses before Privacy Guard restore
+8. exposes metrics and operational diagnostics
 
 Full architecture documentation:
 
@@ -294,31 +306,69 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - request size protection
 - runtime diagnostics
 - configurable semantic cache fail-open behavior
+- optional Security Guard and Privacy Guard orchestration
+- configurable guard fail-open/fail-closed behavior
 
 ---
 
-## Optional VCAL Privacy Guard Integration
+## Optional VCAL Guard Integration
 
-AI Cost Firewall can optionally orchestrate VCAL Privacy Guard before forwarding non-streaming chat requests upstream.
+AI Cost Firewall can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard before forwarding non-streaming chat requests upstream.
 
-When enabled, sensitive values can be replaced with placeholders before the upstream LLM call and restored in the final response.
+Supported deployment modes:
 
-Example flow:
+```text
+AI Firewall only
+AI Firewall + VCAL Security Guard
+AI Firewall + VCAL Privacy Guard
+AI Firewall + VCAL Security Guard + VCAL Privacy Guard
+```
+
+When both enterprise guards are enabled, the recommended request/response flow is:
+
+```text
+Client
+  -> AI Cost Firewall
+      -> VCAL Security Guard request scan
+      -> VCAL Privacy Guard anonymize/redact
+      -> exact/semantic cache lookup or upstream LLM
+      -> VCAL Security Guard response scan
+      -> VCAL Privacy Guard restore
+      -> Client
+```
+
+Security Guard can block malicious request-side prompts before Privacy Guard, cache, or upstream processing. Privacy Guard can replace sensitive values with placeholders before cache/upstream processing and restore them in the final response.
+
+Example Privacy Guard transformation:
 
 ```text
 Original request:
 Analyze login from 185.23.10.5 by john@example.com
 
-Sent upstream:
+Sent upstream/cache path:
 Analyze login from [IP_1] by [EMAIL_1]
 
 Returned response:
 john@example.com logged in from 185.23.10.5
 ```
 
-Streaming requests are rejected while Privacy Guard is enabled because streaming/SSE responses has not bee implemented in the current guard contract.
+Example Security Guard block returned by AI Firewall:
 
-Privacy Guard is disabled by default in `configs/ai-firewall.conf.example`.
+```json
+{
+  "error": {
+    "code": 403,
+    "guard": "security",
+    "type": "security_request_blocked",
+    "stage": "request",
+    "rule_id": "VSG-PA-003"
+  }
+}
+```
+
+Streaming requests are rejected while guard modules are enabled because streaming/SSE guard handling and safe streaming restore are not implemented in the current guard contract.
+
+Security Guard and Privacy Guard are disabled by default in `configs/ai-firewall.conf.example`.
 
 ---
 
@@ -410,9 +460,9 @@ The upstream provider and embedding provider may use different OpenAI-compatible
 Important limitations:
 
 * AI Cost Firewall does not claim universal compatibility with every OpenAI-like API.
-* Native Anthropic, Gemini, Mistral, and Cohere APIs are not directly supported in v0.2.0.
+* Native Anthropic, Gemini, Mistral, and Cohere APIs are not directly supported in v0.3.0.
 * Mistral, Anthropic, Gemini, or other providers may be used only when exposed through an OpenAI-compatible layer such as LiteLLM, OpenRouter, or another compatible gateway.
-* Provider-specific config blocks, fallback chains, native provider transformations, and provider-specific pricing catalogs are intentionally postponed until after v0.2.0.
+* Provider-specific config blocks, fallback chains, native provider transformations, and provider-specific pricing catalogs are intentionally postponed until after v0.3.0.
 
 See:
 
@@ -438,15 +488,16 @@ Example metrics:
 aif_requests_total
 aif_cache_exact_hits
 aif_cache_semantic_hits
+aif_cache_hits_total
+aif_cache_bypass_requests_total
 aif_model_cost_micro_usd_total
 aif_gross_saved_micro_usd_total
 aif_net_saved_micro_usd_total
 aif_embedding_overhead_micro_usd_total
-aif_guard_hook_calls_total
-aif_guard_transformations_total
-aif_guard_findings_total
-aif_guard_mappings_created_total
-aif_guard_rejections_total
+aif_guard_requests_total
+aif_guard_latency_seconds
+aif_security_blocks_total
+aif_privacy_restore_skipped_total
 ```
 
 AI Cost Firewall reports:
@@ -457,6 +508,9 @@ AI Cost Firewall reports:
 - cache hit ratios
 - semantic cache diagnostics
 - per-model traffic and cost metrics
+- guard request counts by guard, stage, and result
+- Security Guard block counts by stage and rule ID
+- Privacy Guard restore-skip counters when response Security blocks occur
 
 ---
 
@@ -488,7 +542,7 @@ Full documentation:
 
 ## Benchmarks
 
-AI Cost Firewall v0.2.0 has been benchmarked with a local simulated OpenAI-compatible upstream provider to isolate gateway behavior, Redis/Qdrant integration, cache effectiveness, and Prometheus metrics without external API cost or provider rate-limit noise.
+AI Cost Firewall has been benchmarked with a local simulated OpenAI-compatible upstream provider to isolate gateway behavior, Redis/Qdrant integration, cache effectiveness, and Prometheus metrics without external API cost or provider rate-limit noise.
 
 In a 30-minute cache-effectiveness benchmark, AI Cost Firewall sustained 30 RPS with 0% request failures, p95 latency of 9.03 ms, and a 98.86% aggregate cache-hit rate.
 
@@ -497,6 +551,23 @@ In a single-VM high-load benchmark, AI Cost Firewall sustained approximately 500
 See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limitations, and detailed results.
 
 ---
+
+# v0.3.0 Integrated Guard Validation
+
+AI Cost Firewall v0.3.0 was validated with VCAL Privacy Guard and VCAL Security Guard using an OpenAI-compatible upstream and mixed traffic.
+
+Validated behavior includes:
+
+- safe requests are allowed through AI Firewall;
+- request-side prompt attacks are blocked by VCAL Security Guard with HTTP 403;
+- sensitive text is anonymized by VCAL Privacy Guard before cache/upstream processing;
+- placeholders are restored before the final client response;
+- streaming requests are rejected with HTTP 422 when guard modules are enabled;
+- cache bypass requests still run through guard orchestration;
+- Prometheus metrics are emitted for Security Guard, Privacy Guard, and AI Firewall guard stages;
+- the short mixed-traffic simulation completed with no unexpected HTTP errors.
+
+The current guard modules inspect text content. Non-text content such as images, audio, video, or binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
 
 # Troubleshooting
 
@@ -566,6 +637,10 @@ AI Cost Firewall includes tests for:
 - environment variable parsing
 - request size parsing
 - cost accounting logic
+- guard configuration parsing
+- Privacy Guard orchestration
+- Security Guard orchestration
+- OpenAI-compatible metadata preservation
 
 ---
 

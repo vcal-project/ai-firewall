@@ -4,6 +4,8 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+
+    #[serde(default)]
     pub content: Value,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -30,7 +32,7 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
 
-    #[serde(flatten)]
+    #[serde(default, flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
 
@@ -45,7 +47,7 @@ pub struct ChatCompletionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 
-    #[serde(flatten)]
+    #[serde(default, flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
 
@@ -69,7 +71,7 @@ pub struct ChatCompletionWireResponse {
     #[serde(default)]
     pub usage: Option<Usage>,
 
-    #[serde(flatten)]
+    #[serde(default, flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
 
@@ -127,6 +129,9 @@ pub struct Choice {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
+
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +144,9 @@ pub struct Usage {
 
     #[serde(default)]
     pub total_tokens: u32,
+
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 impl ChatCompletionRequest {
@@ -340,6 +348,157 @@ mod tests {
         assert_eq!(
             serialized["choices"][0]["message"]["provider_metadata"],
             serde_json::json!({"trace_id": "abc"})
+        );
+    }
+    #[test]
+    fn preserves_request_extra_fields_and_non_string_content() {
+        let body = r#"
+        {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {"type": "text", "text": "hello john@example.com"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+              ]
+            }
+          ],
+          "temperature": 0.2,
+          "tools": [
+            {
+              "type": "function",
+              "function": {"name": "lookup", "parameters": {"type": "object"}}
+            }
+          ],
+          "tool_choice": "auto",
+          "metadata": {"tenant": "demo"},
+          "response_format": {"type": "json_object"},
+          "reasoning_effort": "low"
+        }
+        "#;
+
+        let request: ChatCompletionRequest = serde_json::from_str(body).unwrap();
+
+        assert!(request.messages[0].content.is_array());
+        assert_eq!(
+            request.extra.get("tools"),
+            Some(&serde_json::json!([
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}}
+                }
+            ]))
+        );
+        assert_eq!(
+            request.extra.get("tool_choice"),
+            Some(&Value::String("auto".to_string()))
+        );
+        assert_eq!(
+            request.extra.get("metadata"),
+            Some(&serde_json::json!({"tenant": "demo"}))
+        );
+        assert_eq!(
+            request.extra.get("response_format"),
+            Some(&serde_json::json!({"type": "json_object"}))
+        );
+        assert_eq!(
+            request.extra.get("reasoning_effort"),
+            Some(&Value::String("low".to_string()))
+        );
+
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serialized["messages"][0]["content"],
+            request.messages[0].content
+        );
+        assert_eq!(serialized["tools"], request.extra["tools"]);
+        assert_eq!(serialized["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn preserves_choice_and_usage_extra_fields() {
+        let body = r#"
+        {
+          "id": "abc",
+          "object": "chat.completion",
+          "created": 123,
+          "model": "local-model",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "hello"
+              },
+              "finish_reason": "stop",
+              "logprobs": {"content": []},
+              "provider_choice_metadata": {"rank": 1}
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": 3}
+          }
+        }
+        "#;
+
+        let wire: ChatCompletionWireResponse = serde_json::from_str(body).unwrap();
+        let normalized = wire
+            .into_normalized("local-model", "http://localhost:11434/v1")
+            .unwrap();
+
+        let choice = &normalized.choices[0];
+        assert_eq!(
+            choice.extra.get("logprobs"),
+            Some(&serde_json::json!({"content": []}))
+        );
+        assert_eq!(
+            choice.extra.get("provider_choice_metadata"),
+            Some(&serde_json::json!({"rank": 1}))
+        );
+
+        let usage = normalized.usage.unwrap();
+        assert_eq!(
+            usage.extra.get("prompt_tokens_details"),
+            Some(&serde_json::json!({"cached_tokens": 3}))
+        );
+    }
+
+    #[test]
+    fn accepts_messages_without_content() {
+        let body = r#"
+        {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "id": "call_123",
+                  "type": "function",
+                  "function": {"name": "lookup", "arguments": "{}"}
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let request: ChatCompletionRequest = serde_json::from_str(body).unwrap();
+
+        assert!(request.messages[0].content.is_null());
+        assert_eq!(
+            request.messages[0].extra.get("tool_calls"),
+            Some(&serde_json::json!([
+                {
+                  "id": "call_123",
+                  "type": "function",
+                  "function": {"name": "lookup", "arguments": "{}"}
+                }
+            ]))
         );
     }
 }

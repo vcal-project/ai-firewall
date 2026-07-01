@@ -1471,7 +1471,7 @@
     "prometheus",
     "runtime",
     "semantic-cache",
-    "v0.2.2"
+    "v0.3.0"
   ],
   "templating": {
     "list": []
@@ -1486,5 +1486,5 @@
   "uid": "ai-cost-firewall",
   "version": 6,
   "weekStart": "",
-  "description": "Overview dashboard for AI Cost Firewall v0.2.2: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, and cache bypass request activity."
+  "description": "Overview dashboard for AI Cost Firewall v0.3.0: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, and cache bypass request activity."
 }

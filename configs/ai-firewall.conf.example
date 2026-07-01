@@ -80,7 +80,7 @@ embedding_timeout_seconds 30;
 
 # Gateway protection controls.
 max_request_body_bytes 1048576;
-max_prompt_chars 200000;
+max_prompt_chars 65536;
 
 # Per-request troubleshooting bypass.
 # When the configured header is sent with value true, 1, yes, or on,

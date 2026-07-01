@@ -94,6 +94,7 @@ mod tests {
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
+            extra: serde_json::Map::new(),
         }
     }
 

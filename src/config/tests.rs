@@ -71,6 +71,11 @@ fn minimal_valid_config() -> Config {
         privacy_guard_timeout_seconds: 10,
         guard_fail_open: true,
 
+        security_guard_enabled: false,
+        security_guard_url: "http://vcal-security-guard:8091".to_string(),
+        security_guard_api_key: None,
+        security_guard_timeout_seconds: 3,
+
         cache_bypass_header: "X-AIF-Cache-Bypass".to_string(),
         metrics_auth_required: false,
         metrics_auth_token: None,

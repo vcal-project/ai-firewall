@@ -9,7 +9,7 @@ use crate::{
         pricing::{estimate_embedding_micro_usd, estimate_micro_usd_saved},
     },
     error::AppError,
-    guards::GuardOrchestrator,
+    guards::{GuardContext, GuardOrchestrator},
     metrics::{
         self, CACHE_TYPE_EXACT, CACHE_TYPE_SEMANTIC, COST_TYPE_CHAT, COST_TYPE_EMBEDDING,
         EMBEDDING_OPERATION_LOOKUP, EMBEDDING_OPERATION_STORE,
@@ -129,7 +129,7 @@ impl ChatService {
                     "stream=true rejected because an enabled guard cannot safely process streaming/SSE responses"
                 );
                 return Err(AppError::unprocessable(
-                    "stream=true is not supported when VCAL Privacy Guard is enabled; set stream=false or disable Privacy Guard",
+                    "stream=true is not supported when a VCAL guard module is enabled; set stream=false or disable guard modules",
                 ));
             }
 
@@ -168,10 +168,7 @@ impl ChatService {
                         "exact cache hit"
                     );
 
-                    return self
-                        .guard_orchestrator
-                        .restore_response(&guard_context, hit)
-                        .await;
+                    return self.finalize_guarded_response(&guard_context, hit).await;
                 }
                 Ok(None) => {}
                 Err(e) if self.exact_cache_fail_open => {
@@ -246,8 +243,7 @@ impl ChatService {
                         }
                     }
                     return self
-                        .guard_orchestrator
-                        .restore_response(&guard_context, hit.response)
+                        .finalize_guarded_response(&guard_context, hit.response)
                         .await;
                 }
 
@@ -354,8 +350,28 @@ impl ChatService {
             }
         }
 
+        self.finalize_guarded_response(&guard_context, response)
+            .await
+    }
+
+    async fn finalize_guarded_response(
+        &self,
+        guard_context: &GuardContext,
+        response: ChatCompletionResponse,
+    ) -> Result<ChatCompletionResponse, AppError> {
+        // Response path guard order is intentional:
+        // 1. Security Guard scans the current assistant response.
+        //    If Privacy Guard is enabled, this response is still anonymized.
+        //    If Privacy Guard is disabled, this response is the original assistant response.
+        // 2. If Security Guard blocks the response, return the security error and do not restore.
+        // 3. Privacy Guard restores only responses that passed the response security scan.
+        let response = self
+            .guard_orchestrator
+            .before_response_restore(guard_context, response)
+            .await?;
+
         self.guard_orchestrator
-            .restore_response(&guard_context, response)
+            .restore_response(guard_context, response)
             .await
     }
 
@@ -876,11 +892,13 @@ mod tests {
                     extra: Map::new(),
                 },
                 finish_reason: Some("stop".to_string()),
+                extra: serde_json::Map::new(),
             }],
             usage: Some(Usage {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens: prompt_tokens + completion_tokens,
+                extra: serde_json::Map::new(),
             }),
             extra: Map::new(),
         }
@@ -1144,7 +1162,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_requests_are_rejected_when_guard_requires_non_streaming() {
+    async fn stream_requests_are_rejected_when_any_guard_requires_non_streaming() {
         let mut req = request();
         req.stream = Some(true);
 
@@ -1185,12 +1203,28 @@ mod tests {
             err.status_code(),
             axum::http::StatusCode::UNPROCESSABLE_ENTITY
         );
-        assert!(err
-            .to_string()
-            .contains("stream=true is not supported when VCAL Privacy Guard is enabled"));
-        assert_eq!(upstream_state.lock().unwrap().call_count, 0);
-        assert_eq!(exact_state.lock().unwrap().get_calls, 0);
-        assert_eq!(semantic_state.lock().unwrap().lookup_calls, 0);
+        assert_eq!(err.metrics_class(), "validation");
+        assert!(
+            err.message().contains("stream=true is not supported"),
+            "unexpected error message: {}",
+            err.message()
+        );
+
+        assert_eq!(
+            upstream_state.lock().unwrap().call_count,
+            0,
+            "streaming request should be rejected before upstream"
+        );
+        assert_eq!(
+            exact_state.lock().unwrap().get_calls,
+            0,
+            "streaming request should be rejected before exact cache lookup"
+        );
+        assert_eq!(
+            semantic_state.lock().unwrap().lookup_calls,
+            0,
+            "streaming request should be rejected before semantic cache lookup"
+        );
     }
 
     #[tokio::test]

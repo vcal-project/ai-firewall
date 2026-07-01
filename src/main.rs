@@ -62,6 +62,37 @@ fn parse_prune_expired_semantic_cache() -> bool {
     std::env::args().any(|a| a == "--prune-expired-semantic-cache")
 }
 
+fn log_guard_configuration(cfg: &config::Config) {
+    let security_enabled = cfg.security_guard_enabled;
+    let privacy_enabled = cfg.privacy_guard_enabled;
+
+    match (security_enabled, privacy_enabled) {
+        (false, false) => {
+            tracing::info!("guard pipeline: disabled; running AI Cost Firewall core only");
+        }
+        (false, true) => {
+            tracing::info!(
+                privacy_restore_enabled = cfg.privacy_guard_restore_enabled,
+                guard_fail_open = cfg.guard_fail_open,
+                "guard pipeline: Privacy Guard only"
+            );
+        }
+        (true, false) => {
+            tracing::info!(
+                guard_fail_open = cfg.guard_fail_open,
+                "guard pipeline: Security Guard only"
+            );
+        }
+        (true, true) => {
+            tracing::info!(
+                privacy_restore_enabled = cfg.privacy_guard_restore_enabled,
+                guard_fail_open = cfg.guard_fail_open,
+                "guard pipeline: Security Guard -> Privacy Guard -> cache/upstream -> Security Guard -> Privacy restore"
+            );
+        }
+    }
+}
+
 async fn config_reload_loop(
     state: Arc<app::AppState>,
     config_path: Option<String>,
@@ -271,6 +302,8 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("semantic cache prune maintenance mode completed");
         return Ok(());
     }
+
+    log_guard_configuration(&cfg);
 
     let listen_addr = cfg.listen_addr.clone();
     let shutdown_timeout = Duration::from_secs(cfg.graceful_shutdown_timeout_seconds);

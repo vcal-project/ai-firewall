@@ -176,6 +176,47 @@ fn log_startup_summary(cfg: &Config) {
     tracing::info!("Dependency checks:");
 }
 
+fn log_guard_pipeline_summary(cfg: &Config) {
+    let mode = match (cfg.security_guard_enabled, cfg.privacy_guard_enabled) {
+        (false, false) => "core_only",
+        (false, true) => "privacy_only",
+        (true, false) => "security_only",
+        (true, true) => "security_and_privacy",
+    };
+
+    tracing::info!(
+        mode = mode,
+        security_guard_enabled = cfg.security_guard_enabled,
+        security_guard_url = %cfg.security_guard_url,
+        privacy_guard_enabled = cfg.privacy_guard_enabled,
+        privacy_guard_url = %cfg.privacy_guard_url,
+        privacy_guard_mode = ?cfg.privacy_guard_mode,
+        privacy_guard_restore_enabled = cfg.privacy_guard_restore_enabled,
+        guard_fail_open = cfg.guard_fail_open,
+        "guard orchestration pipeline selected"
+    );
+
+    if !cfg.privacy_guard_enabled && cfg.privacy_guard_restore_enabled {
+        tracing::warn!(
+            "privacy_guard_restore_enabled=true has no effect because privacy_guard_enabled=false"
+        );
+    }
+
+    if cfg.security_guard_enabled && cfg.privacy_guard_enabled {
+        tracing::info!(
+            "guard order: security request scan -> privacy anonymize -> cache/upstream -> security response scan -> privacy restore"
+        );
+    } else if cfg.security_guard_enabled {
+        tracing::info!(
+            "guard order: security request scan -> cache/upstream -> security response scan"
+        );
+    } else if cfg.privacy_guard_enabled {
+        tracing::info!("guard order: privacy anonymize -> cache/upstream -> privacy restore");
+    } else {
+        tracing::info!("guard order: cache/upstream only");
+    }
+}
+
 pub struct RuntimeBuild {
     pub chat_service: Arc<ChatService>,
     pub dependencies: DependencyState,
@@ -334,7 +375,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         Arc::new(NoopSemanticCache)
     };
 
-    tracing::info!("[OK] Runtime initialized");
+    log_guard_pipeline_summary(cfg);
 
     let chat_service_settings = ChatServiceSettings {
         semantic_cache_enabled: cfg.semantic_cache_enabled,
@@ -347,6 +388,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     };
 
     let guard_orchestrator = build_guard_orchestrator(cfg);
+    tracing::info!("[OK] Guard orchestrator initialized");
 
     let chat_service = Arc::new(ChatService::new_with_guards(
         exact_cache,
@@ -357,6 +399,8 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         cfg.model_prices.clone(),
         cfg.embedding_price.clone(),
     ));
+
+    tracing::info!("[OK] Runtime initialized");
 
     Ok(RuntimeBuild {
         chat_service,

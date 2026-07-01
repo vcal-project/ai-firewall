@@ -27,7 +27,7 @@ services:
       retries: 10
 
   firewall:
-    image: ai-firewall:v0.2.2
+    image: ai-firewall:v0.3.0
     container_name: ai-firewall
     depends_on:
       redis:

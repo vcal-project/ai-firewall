@@ -84,7 +84,7 @@ impl PrivacyGuardOrchestrator {
             );
             Ok(())
         } else {
-            Err(AppError::internal(format!(
+            Err(AppError::privacy_anonymization_failed(format!(
                 "Privacy Guard {phase} failed and guard_fail_open=false: {error}"
             )))
         }
@@ -102,7 +102,7 @@ impl PrivacyGuardOrchestrator {
             "Privacy Guard restore failed; failing closed to avoid returning placeholder-only output"
         );
 
-        AppError::internal(format!(
+        AppError::privacy_restore_failed(format!(
             "Privacy Guard restore failed; response was not returned because restored output could not be produced: {error}"
         ))
     }
@@ -231,7 +231,8 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
             metrics::GUARD_HOOK_CALLS_TOTAL
                 .with_label_values(&[GUARD_NAME, PHASE_SCAN, "block"])
                 .inc();
-            return Err(AppError::unprocessable(
+
+            return Err(AppError::guard_contract_violation(
                 "request blocked by VCAL Privacy Guard",
             ));
         }
@@ -240,12 +241,26 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
             if let Err(error) =
                 validate_privacy_message_contract(PHASE_SCAN, &messages, &scan.messages)
             {
-                self.guard_unavailable(PHASE_SCAN, error)?;
-                return Ok(GuardedRequest {
-                    request,
-                    context: GuardContext::default(),
-                    cache_control: CacheControl::default(),
-                });
+                metrics::GUARD_HOOK_ERRORS_TOTAL
+                    .with_label_values(&[GUARD_NAME, PHASE_SCAN])
+                    .inc();
+
+                if self.fail_open {
+                    tracing::warn!(
+                        guard = GUARD_NAME,
+                        phase = PHASE_SCAN,
+                        error = %error,
+                        "Privacy Guard scan contract violation; guard_fail_open=true so request continues unchanged"
+                    );
+
+                    return Ok(GuardedRequest {
+                        request,
+                        context: GuardContext::default(),
+                        cache_control: CacheControl::default(),
+                    });
+                }
+
+                return Err(AppError::guard_contract_violation(error));
             }
 
             apply_request_string_messages(&mut request, &indexes, &scan.messages);
@@ -362,7 +377,11 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
             if let Err(error) =
                 validate_privacy_message_contract(PHASE_RESTORE, &messages, &restored.messages)
             {
-                return Err(self.restore_unavailable(error));
+                metrics::GUARD_HOOK_ERRORS_TOTAL
+                    .with_label_values(&[GUARD_NAME, PHASE_RESTORE])
+                    .inc();
+
+                return Err(AppError::guard_contract_violation(error));
             }
 
             apply_response_string_messages(&mut response, &indexes, &restored.messages);
@@ -680,9 +699,213 @@ mod tests {
 
         let error = guard.restore_unavailable("simulated restore outage".to_string());
 
+        assert_eq!(error.metrics_class(), "privacy_restore_failed");
+        assert_eq!(error.status_code(), axum::http::StatusCode::BAD_GATEWAY);
         assert!(error
             .message()
             .contains("Privacy Guard restore failed; response was not returned"));
         assert!(error.message().contains("simulated restore outage"));
+    }
+
+    use crate::guards::GuardContext;
+    use crate::types::openai::{
+        ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage,
+    };
+    use serde_json::{json, Map};
+
+    fn openai_request_with_mixed_content() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "gpt-4o-mini-2024-07-18".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: json!("Email john@example.com"),
+                    name: None,
+                    extra: Map::new(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: json!([
+                        {
+                            "type": "text",
+                            "text": "This non-string content should remain unchanged"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://example.com/image.png"
+                            }
+                        }
+                    ]),
+                    name: None,
+                    extra: Map::new(),
+                },
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: json!({
+                        "type": "structured",
+                        "value": "leave unchanged"
+                    }),
+                    name: None,
+                    extra: Map::new(),
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            extra: Map::new(),
+        }
+    }
+
+    fn openai_response_with_mixed_content() -> ChatCompletionResponse {
+        ChatCompletionResponse {
+            id: "chatcmpl-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1_711_111_111,
+            model: "gpt-4o-mini-2024-07-18".to_string(),
+            choices: vec![
+                Choice {
+                    index: 0,
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: json!("Response for [EMAIL_1]"),
+                        name: None,
+                        extra: Map::new(),
+                    },
+                    finish_reason: Some("stop".to_string()),
+                    extra: Map::new(),
+                },
+                Choice {
+                    index: 1,
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: json!([
+                            {
+                                "type": "text",
+                                "text": "non-string assistant content"
+                            }
+                        ]),
+                        name: None,
+                        extra: Map::new(),
+                    },
+                    finish_reason: Some("stop".to_string()),
+                    extra: Map::new(),
+                },
+            ],
+            usage: Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                extra: Map::new(),
+            }),
+            extra: Map::new(),
+        }
+    }
+
+    #[test]
+    fn request_collection_skips_non_string_content() {
+        let request = openai_request_with_mixed_content();
+
+        let (messages, indexes) = collect_request_string_messages(&request);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(indexes, vec![0]);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "Email john@example.com");
+    }
+
+    #[test]
+    fn request_apply_replaces_only_string_message_content() {
+        let mut request = openai_request_with_mixed_content();
+
+        let original_non_string_array = request.messages[1].content.clone();
+        let original_non_string_object = request.messages[2].content.clone();
+
+        let (_messages, indexes) = collect_request_string_messages(&request);
+
+        let anonymized = vec![PrivacyChatMessage {
+            role: "user".to_string(),
+            content: "Email [EMAIL_1]".to_string(),
+        }];
+
+        apply_request_string_messages(&mut request, &indexes, &anonymized);
+
+        assert_eq!(request.messages[0].content, json!("Email [EMAIL_1]"));
+        assert_eq!(
+            request.messages[1].content, original_non_string_array,
+            "array content must remain unchanged"
+        );
+        assert_eq!(
+            request.messages[2].content, original_non_string_object,
+            "object content must remain unchanged"
+        );
+    }
+
+    #[test]
+    fn response_collection_skips_non_string_content() {
+        let response = openai_response_with_mixed_content();
+
+        let (messages, indexes) = collect_response_string_messages(&response);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(indexes, vec![0]);
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[0].content, "Response for [EMAIL_1]");
+    }
+
+    #[test]
+    fn response_apply_replaces_only_string_message_content() {
+        let mut response = openai_response_with_mixed_content();
+
+        let original_non_string_content = response.choices[1].message.content.clone();
+
+        let (_messages, indexes) = collect_response_string_messages(&response);
+
+        let restored = vec![PrivacyChatMessage {
+            role: "assistant".to_string(),
+            content: "Response for john@example.com".to_string(),
+        }];
+
+        apply_response_string_messages(&mut response, &indexes, &restored);
+
+        assert_eq!(
+            response.choices[0].message.content,
+            json!("Response for john@example.com")
+        );
+        assert_eq!(
+            response.choices[1].message.content, original_non_string_content,
+            "non-string assistant content must remain unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_response_without_mapping_id_is_noop() {
+        let guard = PrivacyGuardOrchestrator::new(
+            "http://127.0.0.1:8090".to_string(),
+            None,
+            PrivacyGuardMode::Anonymize,
+            true,
+            None,
+            None,
+            false,
+            Duration::from_secs(1),
+        );
+
+        let response = openai_response_with_mixed_content();
+
+        let restored = guard
+            .restore_response(&GuardContext::default(), response.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            restored.choices[0].message.content,
+            response.choices[0].message.content
+        );
+        assert_eq!(
+            restored.choices[1].message.content,
+            response.choices[1].message.content
+        );
     }
 }

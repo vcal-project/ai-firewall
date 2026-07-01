@@ -2,8 +2,8 @@
 
 use once_cell::sync::Lazy;
 use prometheus::{
-    core::Collector, Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge,
-    Registry, TextEncoder,
+    core::Collector, Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec,
+    IntGauge, Registry, TextEncoder,
 };
 use std::sync::Once;
 
@@ -438,6 +438,74 @@ pub static GUARD_NON_STRING_CONTENT_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric aif_guard_non_string_content_total must be valid")
 });
 
+pub static GUARD_REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_guard_requests_total",
+            "AI Firewall guard orchestration requests by guard, stage, and result",
+        ),
+        &["guard", "stage", "result"],
+    )
+    .expect("metric aif_guard_requests_total must be valid")
+});
+
+pub static GUARD_LATENCY_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "aif_guard_latency_seconds",
+            "AI Firewall guard orchestration latency in seconds by guard and stage",
+        ),
+        &["guard", "stage"],
+    )
+    .expect("metric aif_guard_latency_seconds must be valid")
+});
+
+pub static SECURITY_BLOCKS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_security_blocks_total",
+            "Security Guard blocks observed by AI Firewall by stage and rule ID",
+        ),
+        &["stage", "rule_id"],
+    )
+    .expect("metric aif_security_blocks_total must be valid")
+});
+
+pub static PRIVACY_RESTORE_SKIPPED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_privacy_restore_skipped_total",
+            "Privacy Guard restore operations skipped by AI Firewall by reason",
+        ),
+        &["reason"],
+    )
+    .expect("metric aif_privacy_restore_skipped_total must be valid")
+});
+
+pub fn observe_guard_request(guard: &str, stage: &str, result: &str) {
+    GUARD_REQUESTS_TOTAL
+        .with_label_values(&[guard, stage, result])
+        .inc();
+}
+
+pub fn observe_guard_latency_seconds(guard: &str, stage: &str, seconds: f64) {
+    GUARD_LATENCY_SECONDS
+        .with_label_values(&[guard, stage])
+        .observe(seconds);
+}
+
+pub fn observe_security_block(stage: &str, rule_id: Option<&str>) {
+    SECURITY_BLOCKS_TOTAL
+        .with_label_values(&[stage, rule_id.unwrap_or("unknown")])
+        .inc();
+}
+
+pub fn observe_privacy_restore_skipped(reason: &str) {
+    PRIVACY_RESTORE_SKIPPED_TOTAL
+        .with_label_values(&[reason])
+        .inc();
+}
+
 pub fn init() {
     Lazy::force(&SEMANTIC_STORE_TOTAL);
     Lazy::force(&SEMANTIC_STORE_ERRORS_TOTAL);
@@ -455,6 +523,10 @@ pub fn init() {
     Lazy::force(&GUARD_TRANSFORMATIONS_TOTAL);
     Lazy::force(&GUARD_MAPPINGS_CREATED_TOTAL);
     Lazy::force(&GUARD_NON_STRING_CONTENT_TOTAL);
+    Lazy::force(&GUARD_REQUESTS_TOTAL);
+    Lazy::force(&GUARD_LATENCY_SECONDS);
+    Lazy::force(&SECURITY_BLOCKS_TOTAL);
+    Lazy::force(&PRIVACY_RESTORE_SKIPPED_TOTAL);
     Lazy::force(&EMBEDDING_TIMEOUTS_TOTAL);
     Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
     Lazy::force(&MODEL_REQUESTS_TOTAL);
@@ -512,6 +584,10 @@ pub fn init() {
             Box::new(GUARD_TRANSFORMATIONS_TOTAL.clone()),
             Box::new(GUARD_MAPPINGS_CREATED_TOTAL.clone()),
             Box::new(GUARD_NON_STRING_CONTENT_TOTAL.clone()),
+            Box::new(GUARD_REQUESTS_TOTAL.clone()),
+            Box::new(GUARD_LATENCY_SECONDS.clone()),
+            Box::new(SECURITY_BLOCKS_TOTAL.clone()),
+            Box::new(PRIVACY_RESTORE_SKIPPED_TOTAL.clone()),
             Box::new(EMBEDDING_TIMEOUTS_TOTAL.clone()),
             Box::new(EMBEDDING_REQUEST_DURATION_SECONDS.clone()),
         ];
