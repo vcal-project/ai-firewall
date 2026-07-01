@@ -26,20 +26,13 @@ COPY src ./src
 RUN cargo build --release --locked
 
 # ---------- runtime ----------
-FROM debian:12.13-slim AS runtime
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r aif \
-    && useradd -r -g aif -u 10001 aif
+COPY --from=builder /app/target/release/ai-firewall /usr/local/bin/ai-firewall
 
-COPY --from=builder --chown=10001:10001 /app/target/release/ai-firewall /usr/local/bin/ai-firewall
-
-USER 10001:10001
+USER nonroot:nonroot
 
 EXPOSE 8080
 
