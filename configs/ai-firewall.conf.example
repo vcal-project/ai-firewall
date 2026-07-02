@@ -111,23 +111,57 @@ model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
 # Embedding pricing (optional, used for net cost estimation only)
 embedding_price 0.020;
 
+# Security Guard integration
+# Disabled by default because VCAL Security Guard is an optional enterprise add-on.
+#
+# When enabled, AI Firewall sends request text to VCAL Security Guard before
+# Privacy Guard, cache lookup, or upstream forwarding. AI Firewall can also
+# scan assistant responses before Privacy Guard restoration.
+security_guard_enabled false;
+security_guard_url http://vcal-security-guard:8091;
+# security_guard_api_key your-security-guard-api-key;
+security_guard_timeout_seconds 3;
+
 # Privacy Guard integration
 # Disabled by default because VCAL Privacy Guard is an optional enterprise add-on.
+#
+# When enabled, AI Firewall can detect, redact, or anonymize sensitive text
+# before Redis, Qdrant, semantic-cache storage, or upstream LLM calls.
 privacy_guard_enabled false;
 privacy_guard_url http://vcal-privacy-guard:8090;
 # privacy_guard_api_key your-privacy-guard-api-key;
 privacy_guard_mode detect_only;
 privacy_guard_restore_enabled true;
+privacy_guard_timeout_seconds 3;
+
+# Shared guard failure behavior.
+# true  = fail open if an enabled guard is unavailable
+# false = fail closed if an enabled guard is unavailable
 guard_fail_open true;
 
-# Strict enterprise privacy profile:
+# Full enterprise guard profile:
+#
+# security_guard_enabled true;
+# security_guard_url http://vcal-security-guard:8091;
+# security_guard_api_key your-security-guard-api-key;
+# security_guard_timeout_seconds 3;
 #
 # privacy_guard_enabled true;
 # privacy_guard_url http://vcal-privacy-guard:8090;
 # privacy_guard_api_key your-privacy-guard-api-key;
 # privacy_guard_mode anonymize;
 # privacy_guard_restore_enabled true;
+# privacy_guard_timeout_seconds 3;
+#
 # guard_fail_open false;
 #
-# Use this when VCAL Privacy Guard is deployed and requests must fail closed
-# if anonymization or restoration is unavailable.
+# Enterprise guard flow:
+# 1. Security Guard request scan
+# 2. Privacy Guard anonymize/redact
+# 3. exact/semantic cache lookup or upstream LLM call
+# 4. Security Guard response scan
+# 5. Privacy Guard restore
+#
+# Current guard modules inspect text content only. Non-text content such as
+# images, audio, video, or binary payloads is preserved where possible but is
+# not scanned, anonymized, or classified by AI Firewall guard modules.
