@@ -56,18 +56,21 @@ Supported OpenAI-compatible providers include:
 
 # Current Release Focus
 
-AI Cost Firewall v0.3.0 adds modular guard orchestration for optional VCAL enterprise modules while keeping the default open-source deployment focused on LLM caching, cost control, and observability.
+AI Cost Firewall v0.4.0 adds structured evidence events, complete request lifecycle traceability, and hardened non-streaming request handling while preserving the modular guard orchestration introduced in v0.3.0.
 
-This release adds support for:
+This release adds or finalizes:
 
-- VCAL Security Guard request-side and response-side scan orchestration;
+- `vcal.evidence.event` schema v1.1 application-log events;
+- stable `trace_id` correlation across request processing stages;
+- exactly one terminal `request.completed` or `request.failed` event for every trace that emits `request.received`;
+- request-side and response-side VCAL Security Guard orchestration;
 - VCAL Privacy Guard anonymize/restore orchestration;
-- combined Security + Privacy enterprise flow;
-- fail-closed guard behavior for enterprise deployments;
-- structured guard error responses;
-- guard orchestration metrics;
-- non-streaming guard contract enforcement;
-- safer preservation of OpenAI-compatible request/response metadata.
+- propagation of Security Guard `rule_id` values into responses, metrics, and evidence events;
+- explicit Privacy Guard restore skipping after response-side Security Guard blocks;
+- guard orchestration metrics and latency histograms;
+- global rejection of `stream=true` requests with HTTP 422;
+- safer preservation of OpenAI-compatible request and response metadata;
+- sanitized upstream error handling that does not expose upstream response bodies.
 
 VCAL Security Guard and VCAL Privacy Guard are optional commercial add-ons. They are not required to run AI Cost Firewall as a standalone caching and cost-control gateway.
 
@@ -75,9 +78,11 @@ VCAL Security Guard and VCAL Privacy Guard are optional commercial add-ons. They
 
 # Included Dashboards
 
-AI Cost Firewall includes Grafana dashboards for cost visibility, cache effectiveness, and operational diagnostics.
+AI Cost Firewall includes Grafana dashboards for cost visibility, cache effectiveness, runtime diagnostics, and high-level guard orchestration health.
 
 The dashboards are included in the Docker deployment files and are automatically provisioned by Grafana when using the provided Docker Compose setup.
+
+Detailed Privacy Guard and Security Guard findings remain in their product-specific dashboards. Future VCAL Audit dashboards will focus on stored evidence, trace search, lifecycle completeness, retention, and SIEM/SOAR export status.
 
 ## Cost Savings Overview
 
@@ -136,6 +141,8 @@ It demonstrates:
 - semantic store health
 - runtime and provider pressure signals
 - provider error classes
+- guard orchestration outcomes by guard, stage, and result
+- guard orchestration latency
 
 This dashboard is intended for troubleshooting, tuning semantic similarity thresholds, validating fail-open behavior, and understanding runtime cache behavior during pilots.
 
@@ -185,7 +192,8 @@ The firewall:
 5. checks semantic cache
 6. forwards only cache misses upstream
 7. optionally scans assistant responses before Privacy Guard restore
-8. exposes metrics and operational diagnostics
+8. emits structured evidence events and Prometheus metrics
+9. exposes operational diagnostics
 
 Full architecture documentation:
 
@@ -270,6 +278,10 @@ The `/version` endpoint returns release metadata, including the AI Cost Firewall
 
 ---
 
+## Streaming behavior
+
+AI Cost Firewall v0.4.0 supports non-streaming chat completions only. Requests with `"stream": true` are rejected with HTTP `422` before cache, guard, or upstream processing.
+
 ## Example Request
 
 ```bash
@@ -308,6 +320,8 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - configurable semantic cache fail-open behavior
 - optional Security Guard and Privacy Guard orchestration
 - configurable guard fail-open/fail-closed behavior
+- structured evidence events with trace correlation
+- exactly one terminal request lifecycle event per received trace
 
 ---
 
@@ -366,7 +380,7 @@ Example Security Guard block returned by AI Firewall:
 }
 ```
 
-Streaming requests are rejected while guard modules are enabled because streaming/SSE guard handling and safe streaming restore are not implemented in the current guard contract.
+Streaming requests are rejected globally in v0.4.0, regardless of whether guard modules are enabled. Requests with `stream=true` return HTTP 422 before cache, guard, or upstream processing.
 
 Security Guard and Privacy Guard are disabled by default in `configs/ai-firewall.conf.example`.
 
@@ -460,9 +474,9 @@ The upstream provider and embedding provider may use different OpenAI-compatible
 Important limitations:
 
 * AI Cost Firewall does not claim universal compatibility with every OpenAI-like API.
-* Native Anthropic, Gemini, Mistral, and Cohere APIs are not directly supported in v0.3.0.
+* Native Anthropic, Gemini, Mistral, and Cohere APIs are not directly supported in v0.4.0.
 * Mistral, Anthropic, Gemini, or other providers may be used only when exposed through an OpenAI-compatible layer such as LiteLLM, OpenRouter, or another compatible gateway.
-* Provider-specific config blocks, fallback chains, native provider transformations, and provider-specific pricing catalogs are intentionally postponed until after v0.3.0.
+* Provider-specific config blocks, fallback chains, native provider transformations, and provider-specific pricing catalogs are not included in v0.4.0.
 
 See:
 
@@ -512,6 +526,12 @@ AI Cost Firewall reports:
 - Security Guard block counts by stage and rule ID
 - Privacy Guard restore-skip counters when response Security blocks occur
 
+Evidence events are emitted through application logs rather than Prometheus. Enable them with:
+
+```text
+RUST_LOG=info,vcal_evidence=info
+```
+
 ---
 
 # Configuration
@@ -552,9 +572,9 @@ See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limit
 
 ---
 
-# v0.3.0 Integrated Guard Validation
+# v0.4.0 Validation
 
-AI Cost Firewall v0.3.0 was validated with VCAL Privacy Guard and VCAL Security Guard using an OpenAI-compatible upstream and mixed traffic.
+AI Cost Firewall v0.4.0 was validated with VCAL Privacy Guard and VCAL Security Guard modules.
 
 Validated behavior includes:
 
@@ -562,12 +582,49 @@ Validated behavior includes:
 - request-side prompt attacks are blocked by VCAL Security Guard with HTTP 403;
 - sensitive text is anonymized by VCAL Privacy Guard before cache/upstream processing;
 - placeholders are restored before the final client response;
-- streaming requests are rejected with HTTP 422 when guard modules are enabled;
+- streaming requests are rejected globally with HTTP 422 before cache, guard, or upstream processing;
 - cache bypass requests still run through guard orchestration;
 - Prometheus metrics are emitted for Security Guard, Privacy Guard, and AI Firewall guard stages;
+- response-side Security Guard blocks skip Privacy Guard restore;
+- failure paths emit `request.failed` exactly once;
+- successful upstream requests emit `request.completed` exactly once;
+- Security Guard rule IDs are preserved in responses, metrics, and evidence events;
 - the short mixed-traffic simulation completed with no unexpected HTTP errors.
 
 The current guard modules inspect text content. Non-text content such as images, audio, video, or binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+
+# Evidence Events
+
+AI Cost Firewall v0.4.0 emits structured application-log events using schema:
+
+```text
+vcal.evidence.event
+schema_version: 1.1
+```
+
+Each request trace that emits `request.received` ends with exactly one terminal event:
+
+```text
+request.completed
+```
+
+or:
+
+```text
+request.failed
+```
+
+Evidence events use a stable `trace_id` to correlate request validation, cache activity, upstream calls, guard decisions, and terminal outcomes.
+
+Inspect evidence events with:
+
+```bash
+docker compose logs firewall | grep 'VCAL evidence event'
+```
+
+VCAL Audit is planned as a separate evidence consumer and will provide retained trace search, lifecycle analysis, export, and SIEM/SOAR integration.
+
+---
 
 # Troubleshooting
 
@@ -641,6 +698,9 @@ AI Cost Firewall includes tests for:
 - Privacy Guard orchestration
 - Security Guard orchestration
 - OpenAI-compatible metadata preservation
+- evidence lifecycle completion
+- request and response Security Guard block evidence
+- global streaming rejection
 
 ---
 

@@ -23,14 +23,14 @@ pub struct SecurityGuardClient {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SecurityScanStage {
+pub enum SecurityScanDirection {
     Request,
     Response,
 }
 
 #[derive(Debug, Serialize)]
 struct SecurityScanRequest<'a> {
-    stage: SecurityScanStage,
+    direction: SecurityScanDirection,
     messages: Vec<SecurityScanMessage<'a>>,
 }
 
@@ -40,12 +40,6 @@ struct SecurityScanMessage<'a> {
     content: &'a str,
 }
 
-/// Tolerant response model for VCAL Security Guard.
-///
-/// The client treats any of these as a block:
-/// - `allowed == false`
-/// - `blocked == true`
-/// - `action == "block" | "deny" | "reject"`
 #[derive(Debug, Deserialize)]
 struct SecurityScanResponse {
     #[serde(default)]
@@ -110,7 +104,7 @@ impl SecurityGuardClient {
             })
             .collect::<Vec<_>>();
 
-        self.scan(SecurityScanStage::Request, messages).await
+        self.scan(SecurityScanDirection::Request, messages).await
     }
 
     /// Scan the current assistant response before it is returned.
@@ -130,27 +124,27 @@ impl SecurityGuardClient {
             })
             .collect::<Vec<_>>();
 
-        self.scan(SecurityScanStage::Response, messages).await
+        self.scan(SecurityScanDirection::Response, messages).await
     }
 
     async fn scan(
         &self,
-        stage: SecurityScanStage,
+        direction: SecurityScanDirection,
         messages: Vec<SecurityScanMessage<'_>>,
     ) -> Result<(), GuardError> {
-        // No string content means there is nothing text-based to scan.
-        // Non-string OpenAI-compatible content is preserved by AI Firewall and
-        // can be handled later by a multimodal-aware Security Guard contract.
         if messages.is_empty() {
             tracing::debug!(
-                ?stage,
+                ?direction,
                 "Security Guard scan skipped; no string content found"
             );
             return Ok(());
         }
 
         let url = format!("{}{}", self.base_url, self.scan_path);
-        let payload = SecurityScanRequest { stage, messages };
+        let payload = SecurityScanRequest {
+            direction,
+            messages,
+        };
 
         let mut request = self.http.post(&url).json(&payload);
         if let Some(api_key) = self.api_key.as_deref() {
@@ -158,7 +152,7 @@ impl SecurityGuardClient {
         }
 
         let response = request.send().await.map_err(|e| {
-            let stage_label = security_stage_label(stage);
+            let stage_label = security_direction_label(direction);
 
             if e.is_timeout() {
                 AppError::security_guard_timeout(
@@ -175,7 +169,7 @@ impl SecurityGuardClient {
 
         let status = response.status();
         let body = response.text().await.map_err(|e| {
-            let stage_label = security_stage_label(stage);
+            let stage_label = security_direction_label(direction);
 
             AppError::security_guard_unavailable(
                 stage_label,
@@ -184,11 +178,11 @@ impl SecurityGuardClient {
         })?;
 
         if !status.is_success() {
-            return Err(security_guard_http_error(stage, status, &body));
+            return Err(security_guard_http_error(direction, status, &body));
         }
 
         let decision: SecurityScanResponse = serde_json::from_str(&body).map_err(|e| {
-            let stage_label = security_stage_label(stage);
+            let stage_label = security_direction_label(direction);
 
             AppError::guard_contract_violation(format!(
                 "failed to decode Security Guard decision during {stage_label} scan: {e}; body={}",
@@ -197,7 +191,7 @@ impl SecurityGuardClient {
         })?;
 
         if decision.is_blocked() {
-            return Err(security_guard_blocked_error(stage, decision));
+            return Err(security_guard_blocked_error(direction, decision));
         }
 
         Ok(())
@@ -229,7 +223,7 @@ impl SecurityScanResponse {
         false
     }
 
-    fn reason_or_default(&self, stage: SecurityScanStage) -> String {
+    fn reason_or_default(&self, stage: SecurityScanDirection) -> String {
         self.reason
             .clone()
             .or_else(|| self.message.clone())
@@ -238,10 +232,10 @@ impl SecurityScanResponse {
 }
 
 fn security_guard_blocked_error(
-    stage: SecurityScanStage,
+    stage: SecurityScanDirection,
     decision: SecurityScanResponse,
 ) -> GuardError {
-    let stage_label = security_stage_label(stage);
+    let stage_label = security_direction_label(stage);
 
     let mut message = format!(
         "VCAL Security Guard blocked {stage_label}: {}",
@@ -257,20 +251,22 @@ fn security_guard_blocked_error(
     }
 
     match stage {
-        SecurityScanStage::Request => AppError::security_request_blocked(message, decision.rule_id),
-        SecurityScanStage::Response => {
+        SecurityScanDirection::Request => {
+            AppError::security_request_blocked(message, decision.rule_id)
+        }
+        SecurityScanDirection::Response => {
             AppError::security_response_blocked(message, decision.rule_id)
         }
     }
 }
 
 fn security_guard_http_error(
-    stage: SecurityScanStage,
+    stage: SecurityScanDirection,
     status: StatusCode,
     body: &str,
 ) -> GuardError {
     let body = truncate_for_log(body, 512);
-    let stage_label = security_stage_label(stage);
+    let stage_label = security_direction_label(stage);
 
     match status {
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
@@ -279,10 +275,10 @@ fn security_guard_http_error(
             );
 
             match stage {
-                SecurityScanStage::Request => {
+                SecurityScanDirection::Request => {
                     AppError::security_request_blocked(message, None)
                 }
-                SecurityScanStage::Response => {
+                SecurityScanDirection::Response => {
                     AppError::security_response_blocked(message, None)
                 }
             }
@@ -321,10 +317,10 @@ fn security_guard_http_error(
     }
 }
 
-fn security_stage_label(stage: SecurityScanStage) -> &'static str {
+fn security_direction_label(stage: SecurityScanDirection) -> &'static str {
     match stage {
-        SecurityScanStage::Request => "request",
-        SecurityScanStage::Response => "response",
+        SecurityScanDirection::Request => "request",
+        SecurityScanDirection::Response => "response",
     }
 }
 
@@ -441,7 +437,7 @@ mod tests {
 
     #[test]
     fn request_block_maps_to_security_request_blocked_403() {
-        let err = security_guard_blocked_error(SecurityScanStage::Request, blocked_decision());
+        let err = security_guard_blocked_error(SecurityScanDirection::Request, blocked_decision());
 
         assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
         assert_eq!(err.metrics_class(), "security_request_blocked");
@@ -451,7 +447,7 @@ mod tests {
 
     #[test]
     fn response_block_maps_to_security_response_blocked_403() {
-        let err = security_guard_blocked_error(SecurityScanStage::Response, blocked_decision());
+        let err = security_guard_blocked_error(SecurityScanDirection::Response, blocked_decision());
 
         assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
         assert_eq!(err.metrics_class(), "security_response_blocked");
@@ -462,7 +458,7 @@ mod tests {
     #[test]
     fn security_guard_403_http_response_maps_to_request_block() {
         let err = security_guard_http_error(
-            SecurityScanStage::Request,
+            SecurityScanDirection::Request,
             StatusCode::FORBIDDEN,
             r#"{"error":"blocked by policy"}"#,
         );
@@ -475,7 +471,7 @@ mod tests {
     #[test]
     fn security_guard_422_http_response_maps_to_guard_contract_violation() {
         let err = security_guard_http_error(
-            SecurityScanStage::Request,
+            SecurityScanDirection::Request,
             StatusCode::UNPROCESSABLE_ENTITY,
             r#"{"error":"invalid scan payload"}"#,
         );
@@ -488,7 +484,7 @@ mod tests {
     #[test]
     fn security_guard_5xx_http_response_maps_to_unavailable_502() {
         let err = security_guard_http_error(
-            SecurityScanStage::Response,
+            SecurityScanDirection::Response,
             StatusCode::BAD_GATEWAY,
             "upstream security service failed",
         );

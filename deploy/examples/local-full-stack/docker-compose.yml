@@ -11,10 +11,10 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:v1.17.0
+    image: qdrant/qdrant:v1.18.2
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
@@ -33,7 +33,7 @@ services:
     restart: unless-stopped
 
   firewall:
-    image: ${AIF_IMAGE:-vcalproject/ai-firewall:v0.1.9}
+    image: ${AIF_IMAGE:-vcalproject/ai-firewall:v0.4.0}
     depends_on:
       redis:
         condition: service_healthy
@@ -46,12 +46,9 @@ services:
     volumes:
       - ./ai-firewall.conf:/configs/ai-firewall.conf:ro
     command: ["--config", "/configs/ai-firewall.conf"]
+    environment:
+      RUST_LOG: "info,vcal_evidence=info"
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
 
   prometheus:
     image: prom/prometheus:v3.10.0

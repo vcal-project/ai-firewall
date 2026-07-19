@@ -1458,6 +1458,73 @@
       ],
       "title": "Embedding Overhead by Operation",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 42
+      },
+      "id": 20,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(increase(aif_guard_requests_total{result=\"error\"}[$__range])) or vector(0)",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Guard Orchestration Errors",
+      "type": "stat"
     }
   ],
   "refresh": "30s",
@@ -1471,7 +1538,8 @@
     "prometheus",
     "runtime",
     "semantic-cache",
-    "v0.3.0"
+    "v0.4.0",
+    "guard-orchestration"
   ],
   "templating": {
     "list": []
@@ -1484,7 +1552,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Overview",
   "uid": "ai-cost-firewall",
-  "version": 6,
+  "version": 7,
   "weekStart": "",
-  "description": "Overview dashboard for AI Cost Firewall v0.3.0: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, and cache bypass request activity."
+  "description": "Overview dashboard for AI Cost Firewall v0.4.0: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, and a high-level guard orchestration error indicator."
 }

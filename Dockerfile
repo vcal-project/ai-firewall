@@ -1,5 +1,5 @@
 # ---------- planner ----------
-FROM rust:1.92.0-bookworm AS planner
+FROM rust:1.96.0-bookworm AS planner
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ COPY src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ---------- builder ----------
-FROM rust:1.92.0-bookworm AS builder
+FROM rust:1.96.0-bookworm AS builder
 
 WORKDIR /app
 

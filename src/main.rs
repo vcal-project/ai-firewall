@@ -9,6 +9,7 @@ mod api;
 mod cache;
 mod core;
 mod embeddings;
+mod evidence;
 mod semantic;
 mod services;
 mod types;

@@ -23,10 +23,6 @@ pub struct CompositeGuardOrchestrator {
 
 #[async_trait]
 impl GuardOrchestrator for CompositeGuardOrchestrator {
-    fn reject_streaming_requests(&self) -> bool {
-        self.security.is_some() || self.privacy.is_some()
-    }
-
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
@@ -50,15 +46,24 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                     );
                 }
                 Err(err) => {
-                    metrics::observe_guard_request("security", "request", "error");
+                    let result = if err.is_security_block() {
+                        "block"
+                    } else {
+                        "error"
+                    };
+
+                    metrics::observe_guard_request("security", "request", result);
                     metrics::observe_guard_latency_seconds(
                         "security",
                         "request",
                         started.elapsed().as_secs_f64(),
                     );
 
-                    if err.metrics_class() == "security_request_blocked" {
-                        metrics::observe_security_block("request", None);
+                    if err.is_security_block() {
+                        metrics::observe_security_block(
+                            err.security_block_stage().unwrap_or("request"),
+                            err.security_block_rule_id(),
+                        );
                     }
 
                     return Err(err);
@@ -112,15 +117,24 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                     );
                 }
                 Err(err) => {
-                    metrics::observe_guard_request("security", "response", "error");
+                    let result = if err.is_security_block() {
+                        "block"
+                    } else {
+                        "error"
+                    };
+
+                    metrics::observe_guard_request("security", "response", result);
                     metrics::observe_guard_latency_seconds(
                         "security",
                         "response",
                         started.elapsed().as_secs_f64(),
                     );
 
-                    if err.metrics_class() == "security_response_blocked" {
-                        metrics::observe_security_block("response", None);
+                    if err.is_security_block() {
+                        metrics::observe_security_block(
+                            err.security_block_stage().unwrap_or("response"),
+                            err.security_block_rule_id(),
+                        );
 
                         if self.privacy.is_some() {
                             metrics::observe_privacy_restore_skipped("security_response_blocked");
@@ -187,10 +201,6 @@ pub struct GuardedRequest {
 
 #[async_trait]
 pub trait GuardOrchestrator: Send + Sync {
-    fn reject_streaming_requests(&self) -> bool {
-        false
-    }
-
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
@@ -372,54 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn builds_core_only_orchestrator() {
-        let cfg = test_config(false, false);
-
-        let orchestrator = build_guard_orchestrator(&cfg);
-
-        assert!(
-            !orchestrator.reject_streaming_requests(),
-            "core-only AI Firewall mode should not reject streaming because no guard module is enabled"
-        );
-    }
-
-    #[test]
-    fn builds_privacy_only_orchestrator() {
-        let cfg = test_config(false, true);
-
-        let orchestrator = build_guard_orchestrator(&cfg);
-
-        assert!(
-            orchestrator.reject_streaming_requests(),
-            "Privacy Guard mode should reject streaming until guarded streaming is implemented"
-        );
-    }
-
-    #[test]
-    fn builds_security_only_orchestrator() {
-        let cfg = test_config(true, false);
-
-        let orchestrator = build_guard_orchestrator(&cfg);
-
-        assert!(
-            orchestrator.reject_streaming_requests(),
-            "Security Guard mode should reject streaming until guarded streaming is implemented"
-        );
-    }
-
-    #[test]
-    fn builds_security_and_privacy_orchestrator() {
-        let cfg = test_config(true, true);
-
-        let orchestrator = build_guard_orchestrator(&cfg);
-
-        assert!(
-            orchestrator.reject_streaming_requests(),
-            "Security + Privacy Guard mode should reject streaming until guarded streaming is implemented"
-        );
-    }
-
-    #[test]
     fn all_four_guard_module_combinations_build_successfully() {
         let combinations = [
             (false, false, "core_only"),
@@ -430,15 +392,9 @@ mod tests {
 
         for (security_enabled, privacy_enabled, mode) in combinations {
             let cfg = test_config(security_enabled, privacy_enabled);
-            let orchestrator = build_guard_orchestrator(&cfg);
+            let _orchestrator = build_guard_orchestrator(&cfg);
 
-            let expected_stream_rejection = security_enabled || privacy_enabled;
-
-            assert_eq!(
-                orchestrator.reject_streaming_requests(),
-                expected_stream_rejection,
-                "unexpected streaming rejection behavior for mode {mode}"
-            );
+            tracing::debug!(mode, "guard orchestrator built successfully");
         }
     }
 }

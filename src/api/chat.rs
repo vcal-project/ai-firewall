@@ -11,6 +11,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
@@ -42,7 +43,16 @@ pub async fn chat_completions(
     let cache_control = cache_control_from_headers(&state, &headers).await;
     let service = state.chat_service().await;
 
-    match service.handle_with_cache_control(req, cache_control).await {
+    let trace_id = headers
+        .get("x-vcal-trace-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .unwrap_or_else(Uuid::new_v4);
+
+    match service
+        .handle_with_evidence(req, cache_control, trace_id)
+        .await
+    {
         Ok(response) => Ok(Json(response)),
         Err(err) => {
             metrics::ERRORS_TOTAL

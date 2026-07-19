@@ -177,6 +177,23 @@ impl AppError {
         }
     }
 
+    /// Stable, payload-free reason code for VCAL Audit and Compliance evidence.
+    pub fn evidence_reason_code(&self) -> &'static str {
+        match self {
+            AppError::Upstream { kind, .. } => match kind {
+                UpstreamErrorKind::Dns => "UPSTREAM_DNS_ERROR",
+                UpstreamErrorKind::Connect | UpstreamErrorKind::Tls => "UPSTREAM_CONNECT_ERROR",
+                UpstreamErrorKind::Timeout => "UPSTREAM_TIMEOUT",
+                UpstreamErrorKind::Authentication
+                | UpstreamErrorKind::NotFound
+                | UpstreamErrorKind::RateLimited
+                | UpstreamErrorKind::HttpStatus => "UPSTREAM_HTTP_ERROR",
+                UpstreamErrorKind::Other => "UPSTREAM_RESPONSE_DECODE_ERROR",
+            },
+            _ => "REQUEST_PROCESSING_ERROR",
+        }
+    }
+
     /// Stable classification for Prometheus labels and Grafana panels.
     pub fn metrics_class(&self) -> &'static str {
         match self {
@@ -190,6 +207,38 @@ impl AppError {
             AppError::PrivacyRestoreFailed { .. } => "privacy_restore_failed",
             AppError::GuardContractViolation { .. } => "guard_contract_violation",
             AppError::Internal { .. } => "internal",
+        }
+    }
+
+    /// Returns true only for intentional Security Guard policy blocks.
+    ///
+    /// Transport failures, timeouts, and contract violations are operational
+    /// errors and must continue to be recorded with `result="error"`.
+    pub fn is_security_block(&self) -> bool {
+        matches!(
+            self,
+            AppError::SecurityRequestBlocked { .. } | AppError::SecurityResponseBlocked { .. }
+        )
+    }
+
+    /// Returns the request/response stage for an intentional Security Guard block.
+    pub fn security_block_stage(&self) -> Option<&'static str> {
+        match self {
+            AppError::SecurityRequestBlocked { .. } => Some("request"),
+            AppError::SecurityResponseBlocked { .. } => Some("response"),
+            _ => None,
+        }
+    }
+
+    /// Returns the rule ID associated with an intentional Security Guard block.
+    ///
+    /// The value is borrowed from the structured error so orchestration code can
+    /// preserve it in `aif_security_blocks_total` instead of using `unknown`.
+    pub fn security_block_rule_id(&self) -> Option<&str> {
+        match self {
+            AppError::SecurityRequestBlocked { rule_id, .. }
+            | AppError::SecurityResponseBlocked { rule_id, .. } => rule_id.as_deref(),
+            _ => None,
         }
     }
 

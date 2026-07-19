@@ -1599,6 +1599,193 @@
       ],
       "title": "Provider Error Classes",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 50
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (guard, stage, result) (rate(aif_guard_requests_total[$__rate_interval]))",
+          "legendFormat": "{{guard}} {{stage}} {{result}}/sec",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Guard Orchestration Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 50
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by (guard, stage, le) (rate(aif_guard_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{guard}} {{stage}} p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (guard, stage, le) (rate(aif_guard_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{guard}} {{stage}} p95",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Guard Orchestration Latency",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -1611,7 +1798,8 @@
     "prometheus",
     "semantic-cache",
     "cost-intelligence",
-    "v0.3.0"
+    "v0.4.0",
+    "guard-orchestration"
   ],
   "templating": {
     "list": []
@@ -1624,7 +1812,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Diagnostics",
   "uid": "ai-cost-firewall-diagnostics",
-  "version": 7,
+  "version": 8,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall v0.3.0 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, and operational health."
+  "description": "Diagnostics dashboard for AI Cost Firewall v0.4.0 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, guard orchestration outcomes and latency, and operational health. Detailed Privacy Guard and Security Guard findings remain in their product-specific dashboards."
 }

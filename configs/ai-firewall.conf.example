@@ -13,6 +13,8 @@ redis_url redis://redis:6379;
 # Chat upstream provider
 # Default: openai_compatible
 # Supports OpenAI-compatible /v1/chat/completions endpoints.
+# Streaming is not currently supported.
+# Requests with stream=true are rejected with HTTP 422 before cache, guard, or upstream processing.
 upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-api-key;
@@ -94,13 +96,22 @@ metrics_auth_required false;
 
 # Readiness dependency behavior.
 # These checks use dependency status known during startup/reload.
+
+# Redis is required for readiness even though exact-cache request processing
+# is configured to fail open. Set this to false when Redis outages should not
+# make the AI Firewall instance unready.
 readiness_requires_redis true;
+
+# Qdrant is not required for readiness because semantic_cache_fail_open=true.
+# Set readiness_requires_qdrant=true when semantic cache availability is mandatory.
 readiness_requires_qdrant false;
+
 readiness_requires_upstream false;
 
 # Model validation behavior.
-# By default, only models defined via `model_price` are allowed.
-# Unknown models will be rejected with 400.
+# By default, only models defined through model_price are accepted.
+# For local or custom OpenAI-compatible models, either add a model_price entry
+# or set allow_unknown_models_pass_through true.
 allow_unknown_models_pass_through false;
 
 # Chat-completion pricing (USD per 1M tokens)
@@ -165,3 +176,11 @@ guard_fail_open true;
 # Current guard modules inspect text content only. Non-text content such as
 # images, audio, video, or binary payloads is preserved where possible but is
 # not scanned, anonymized, or classified by AI Firewall guard modules.
+
+# VCAL evidence events
+#
+# AI Firewall emits structured vcal.evidence.event schema v1.1 events through application logs.
+# Each request trace that emits request.received ends with exactly one request.completed or request.failed event.
+#
+# Enable evidence events in container logs with:
+# RUST_LOG=info,vcal_evidence=info

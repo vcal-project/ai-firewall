@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use crate::{
     cache::exact::ExactCache,
@@ -9,6 +9,10 @@ use crate::{
         pricing::{estimate_embedding_micro_usd, estimate_micro_usd_saved},
     },
     error::AppError,
+    evidence::{
+        CacheEvidence, DecisionEvidence, EventCategory, EventOutcome, EvidenceEvent, EvidenceSink,
+        EvidenceSource, NoopEvidenceSink, UpstreamEvidence,
+    },
     guards::{GuardContext, GuardOrchestrator},
     metrics::{
         self, CACHE_TYPE_EXACT, CACHE_TYPE_SEMANTIC, COST_TYPE_CHAT, COST_TYPE_EMBEDDING,
@@ -39,6 +43,23 @@ pub struct ChatService {
     max_prompt_chars: Option<usize>,
     model_prices: HashMap<String, ModelPrice>,
     embedding_price: Option<EmbeddingPrice>,
+    evidence_sink: Arc<dyn EvidenceSink>,
+    upstream_metadata: UpstreamMetadata,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpstreamMetadata {
+    pub provider_type: String,
+    pub provider_name: String,
+}
+
+pub struct ChatServiceDeps {
+    pub exact_cache: Arc<dyn ExactCache>,
+    pub semantic_cache: Arc<dyn SemanticCache>,
+    pub upstream: Arc<dyn LlmUpstream>,
+    pub guard_orchestrator: Arc<dyn GuardOrchestrator>,
+    pub evidence_sink: Arc<dyn EvidenceSink>,
+    pub upstream_metadata: UpstreamMetadata,
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +101,8 @@ impl ChatService {
         )
     }
 
+    #[allow(dead_code)]
+    // Retained for unit tests and compatibility with callers that do not provide a custom evidence sink.
     pub fn new_with_guards(
         exact_cache: Arc<dyn ExactCache>,
         semantic_cache: Arc<dyn SemanticCache>,
@@ -89,20 +112,49 @@ impl ChatService {
         model_prices: HashMap<String, ModelPrice>,
         embedding_price: Option<EmbeddingPrice>,
     ) -> Self {
+        Self::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache,
+                semantic_cache,
+                upstream,
+                guard_orchestrator,
+                evidence_sink: Arc::new(NoopEvidenceSink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".to_string(),
+                    provider_name: "test".to_string(),
+                },
+            },
+            settings,
+            model_prices,
+            embedding_price,
+        )
+    }
+
+    pub fn new_with_guards_and_evidence(
+        deps: ChatServiceDeps,
+        settings: ChatServiceSettings,
+        model_prices: HashMap<String, ModelPrice>,
+        embedding_price: Option<EmbeddingPrice>,
+    ) -> Self {
         Self {
-            exact_cache,
-            semantic_cache,
-            upstream,
-            guard_orchestrator,
+            exact_cache: deps.exact_cache,
+            semantic_cache: deps.semantic_cache,
+            upstream: deps.upstream,
+            guard_orchestrator: deps.guard_orchestrator,
+
             exact_cache_enabled: settings.exact_cache_enabled,
             exact_cache_fail_open: settings.exact_cache_fail_open,
             exact_cache_store_enabled: settings.exact_cache_store_enabled,
+
             semantic_cache_enabled: settings.semantic_cache_enabled,
             semantic_cache_fail_open: settings.semantic_cache_fail_open,
             semantic_cache_store_enabled: settings.semantic_cache_store_enabled,
+
             max_prompt_chars: settings.max_prompt_chars,
             model_prices,
             embedding_price,
+            evidence_sink: deps.evidence_sink,
+            upstream_metadata: deps.upstream_metadata,
         }
     }
 
@@ -111,30 +163,51 @@ impl ChatService {
         &self,
         req: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, AppError> {
-        self.handle_with_cache_control(req, CacheControl::default())
+        self.handle_with_evidence(req, CacheControl::default(), uuid::Uuid::new_v4())
             .await
     }
 
-    pub async fn handle_with_cache_control(
+    pub async fn handle_with_evidence(
         &self,
         req: ChatCompletionRequest,
         cache_control: CacheControl,
+        trace_id: uuid::Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
         self.validate(&req)?;
+        self.emit(EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Request,
+            "request.received",
+            EventOutcome::Started,
+        ))
+        .await;
 
+        let result = self
+            .handle_after_request_received(req, cache_control, trace_id)
+            .await;
+
+        if let Err(error) = &result {
+            self.emit(self.request_failed_event(trace_id, error)).await;
+        }
+
+        result
+    }
+
+    async fn handle_after_request_received(
+        &self,
+        req: ChatCompletionRequest,
+        cache_control: CacheControl,
+        trace_id: uuid::Uuid,
+    ) -> Result<ChatCompletionResponse, AppError> {
         if req.stream.unwrap_or(false) {
-            if self.guard_orchestrator.reject_streaming_requests() {
-                tracing::warn!(
-                    model = %req.normalized_model(),
-                    "stream=true rejected because an enabled guard cannot safely process streaming/SSE responses"
-                );
-                return Err(AppError::unprocessable(
-                    "stream=true is not supported when a VCAL guard module is enabled; set stream=false or disable guard modules",
-                ));
-            }
-
-            tracing::debug!(model = %req.normalized_model(), "stream request bypasses cache layers");
-            return self.forward_only(req).await;
+            tracing::warn!(
+                model = %req.normalized_model(),
+                "stream=true rejected because AI Firewall does not support streaming responses"
+            );
+            return Err(AppError::unprocessable(
+                "stream=true is not supported by AI Firewall; set stream=false",
+            ));
         }
 
         let guarded = self.guard_orchestrator.before_cache(req).await?;
@@ -150,7 +223,8 @@ impl ChatService {
         let semantic_text = semantic_text_from_request(&req);
         let privacy_placeholder_signature = guard_context.privacy_placeholder_signature.as_deref();
 
-        let exact_key = self.exact_cache_key(&normalized);
+        let exact_key_hash = sha256_hex(&normalized);
+        let exact_key = format!("chatcmpl:v1:{exact_key_hash}");
 
         if self.exact_cache_enabled && !cache_control.bypass_lookup {
             match self.exact_cache.get(&exact_key).await {
@@ -168,9 +242,50 @@ impl ChatService {
                         "exact cache hit"
                     );
 
-                    return self.finalize_guarded_response(&guard_context, hit).await;
+                    let mut event = EvidenceEvent::new(
+                        trace_id,
+                        EvidenceSource::AiFirewall,
+                        EventCategory::Cache,
+                        "cache.exact.lookup",
+                        EventOutcome::Hit,
+                    );
+                    event.cache = Some(CacheEvidence {
+                        cache_type: "exact".into(),
+                        operation: "lookup".into(),
+                        outcome: EventOutcome::Hit,
+                        cache_key_hash: Some(exact_key_hash.clone()),
+                        record_id: None,
+                        similarity_score: None,
+                        threshold: None,
+                        upstream_called: false,
+                    });
+                    self.emit(event).await;
+
+                    let response = self.finalize_guarded_response(&guard_context, hit).await?;
+                    self.emit(self.request_completed_event(trace_id, "exact_cache"))
+                        .await;
+                    return Ok(response);
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    let mut event = EvidenceEvent::new(
+                        trace_id,
+                        EvidenceSource::AiFirewall,
+                        EventCategory::Cache,
+                        "cache.exact.lookup",
+                        EventOutcome::Miss,
+                    );
+                    event.cache = Some(CacheEvidence {
+                        cache_type: "exact".into(),
+                        operation: "lookup".into(),
+                        outcome: EventOutcome::Miss,
+                        cache_key_hash: Some(exact_key_hash.clone()),
+                        record_id: None,
+                        similarity_score: None,
+                        threshold: None,
+                        upstream_called: false,
+                    });
+                    self.emit(event).await;
+                }
                 Err(e) if self.exact_cache_fail_open => {
                     tracing::warn!(
                         model = %req.normalized_model(),
@@ -187,6 +302,14 @@ impl ChatService {
                 model = %req.normalized_model(),
                 "cache lookup bypass requested"
             );
+            self.emit(EvidenceEvent::new(
+                trace_id,
+                EvidenceSource::AiFirewall,
+                EventCategory::Cache,
+                "cache.lookup.bypassed",
+                EventOutcome::Bypassed,
+            ))
+            .await;
         }
 
         if self.semantic_cache_enabled
@@ -217,6 +340,24 @@ impl ChatService {
                         model = %req.normalized_model(),
                         "semantic cache hit"
                     );
+                    let mut event = EvidenceEvent::new(
+                        trace_id,
+                        EvidenceSource::AiFirewall,
+                        EventCategory::Cache,
+                        "cache.semantic.lookup",
+                        EventOutcome::Hit,
+                    );
+                    event.cache = Some(CacheEvidence {
+                        cache_type: "semantic".into(),
+                        operation: "lookup".into(),
+                        outcome: EventOutcome::Hit,
+                        cache_key_hash: None,
+                        record_id: None,
+                        similarity_score: None,
+                        threshold: None,
+                        upstream_called: false,
+                    });
+                    self.emit(event).await;
 
                     if self.exact_cache_enabled
                         && self.exact_cache_store_enabled
@@ -242,12 +383,34 @@ impl ChatService {
                             );
                         }
                     }
-                    return self
+                    let response = self
                         .finalize_guarded_response(&guard_context, hit.response)
+                        .await?;
+                    self.emit(self.request_completed_event(trace_id, "semantic_cache"))
                         .await;
+                    return Ok(response);
                 }
 
-                Ok(None) => {}
+                Ok(None) => {
+                    let mut event = EvidenceEvent::new(
+                        trace_id,
+                        EvidenceSource::AiFirewall,
+                        EventCategory::Cache,
+                        "cache.semantic.lookup",
+                        EventOutcome::Miss,
+                    );
+                    event.cache = Some(CacheEvidence {
+                        cache_type: "semantic".into(),
+                        operation: "lookup".into(),
+                        outcome: EventOutcome::Miss,
+                        cache_key_hash: None,
+                        record_id: None,
+                        similarity_score: None,
+                        threshold: None,
+                        upstream_called: false,
+                    });
+                    self.emit(event).await;
+                }
 
                 Err(e) if self.semantic_cache_fail_open => {
                     self.record_semantic_skip("lookup_error");
@@ -275,13 +438,88 @@ impl ChatService {
         }
 
         metrics::CACHE_MISSES.inc();
+        self.emit(EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Cache,
+            "cache.lookup.completed",
+            EventOutcome::Miss,
+        ))
+        .await;
 
         tracing::debug!(
             model = %req.normalized_model(),
             "cache miss; forwarding request upstream"
         );
 
-        let response = self.upstream.chat_completion(&req).await?;
+        let mut upstream_event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.request.sent",
+            EventOutcome::Started,
+        );
+        upstream_event.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: req.normalized_model().to_string(),
+            endpoint_class: Some("chat_completions".into()),
+            response_status: None,
+            latency_ms: None,
+        });
+        self.emit(upstream_event).await;
+
+        let upstream_started = Instant::now();
+        let response = match self.upstream.chat_completion(&req).await {
+            Ok(response) => response,
+            Err(error) => {
+                let latency_ms = upstream_started.elapsed().as_millis() as u64;
+                let reason_code = error.evidence_reason_code();
+
+                let mut upstream_failed = EvidenceEvent::new(
+                    trace_id,
+                    EvidenceSource::AiFirewall,
+                    EventCategory::Upstream,
+                    "upstream.request.failed",
+                    EventOutcome::Failed,
+                );
+                upstream_failed.upstream = Some(UpstreamEvidence {
+                    provider_type: self.upstream_metadata.provider_type.clone(),
+                    provider_name: self.upstream_metadata.provider_name.clone(),
+                    model: req.normalized_model().to_string(),
+                    endpoint_class: Some("chat_completions".into()),
+                    response_status: None,
+                    latency_ms: Some(latency_ms),
+                });
+                upstream_failed.decision = Some(DecisionEvidence {
+                    action: "fail_request".into(),
+                    reason_code: reason_code.into(),
+                    rule_id: None,
+                    severity: None,
+                });
+                self.emit(upstream_failed).await;
+
+                return Err(error);
+            }
+        };
+
+        let latency_ms = upstream_started.elapsed().as_millis() as u64;
+        let mut upstream_received = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.response.received",
+            EventOutcome::Completed,
+        );
+        upstream_received.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: response.model.clone(),
+            endpoint_class: Some("chat_completions".into()),
+            response_status: Some(200),
+            latency_ms: Some(latency_ms),
+        });
+        self.emit(upstream_received).await;
 
         self.record_upstream_model_cost(&response);
 
@@ -350,8 +588,12 @@ impl ChatService {
             }
         }
 
-        self.finalize_guarded_response(&guard_context, response)
-            .await
+        let response = self
+            .finalize_guarded_response(&guard_context, response)
+            .await?;
+        self.emit(self.request_completed_event(trace_id, "upstream"))
+            .await;
+        Ok(response)
     }
 
     async fn finalize_guarded_response(
@@ -373,6 +615,56 @@ impl ChatService {
         self.guard_orchestrator
             .restore_response(guard_context, response)
             .await
+    }
+
+    fn request_failed_event(&self, trace_id: uuid::Uuid, error: &AppError) -> EvidenceEvent {
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Request,
+            "request.failed",
+            EventOutcome::Failed,
+        );
+        event.decision = Some(DecisionEvidence {
+            action: if error.is_security_block() {
+                "block".into()
+            } else {
+                "fail_request".into()
+            },
+            reason_code: error.evidence_reason_code().into(),
+            rule_id: error.security_block_rule_id().map(str::to_string),
+            severity: None,
+        });
+        event.attributes.insert(
+            "error_class".to_string(),
+            serde_json::Value::String(error.metrics_class().to_string()),
+        );
+        event
+    }
+
+    fn request_completed_event(
+        &self,
+        trace_id: uuid::Uuid,
+        delivery_path: &'static str,
+    ) -> EvidenceEvent {
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Request,
+            "request.completed",
+            EventOutcome::Completed,
+        );
+        event.attributes.insert(
+            "delivery_path".to_string(),
+            serde_json::Value::String(delivery_path.to_string()),
+        );
+        event
+    }
+
+    async fn emit(&self, event: EvidenceEvent) {
+        if let Err(error) = self.evidence_sink.emit(event).await {
+            tracing::warn!(error = %error, "failed to emit VCAL evidence event");
+        }
     }
 
     fn validate(&self, req: &ChatCompletionRequest) -> Result<(), AppError> {
@@ -411,19 +703,6 @@ impl ChatService {
         }
 
         true
-    }
-
-    async fn forward_only(
-        &self,
-        req: ChatCompletionRequest,
-    ) -> Result<ChatCompletionResponse, AppError> {
-        let response = self.upstream.chat_completion(&req).await?;
-        self.record_upstream_model_cost(&response);
-        Ok(response)
-    }
-
-    fn exact_cache_key(&self, normalized: &str) -> String {
-        format!("chatcmpl:v1:{}", sha256_hex(normalized))
     }
 
     fn record_upstream_model_cost(&self, response: &ChatCompletionResponse) {
@@ -800,34 +1079,6 @@ mod tests {
         }
     }
 
-    struct RejectStreamingGuard;
-
-    #[async_trait]
-    impl GuardOrchestrator for RejectStreamingGuard {
-        fn reject_streaming_requests(&self) -> bool {
-            true
-        }
-
-        async fn before_cache(
-            &self,
-            request: ChatCompletionRequest,
-        ) -> Result<GuardedRequest, AppError> {
-            Ok(GuardedRequest {
-                request,
-                context: GuardContext::default(),
-                cache_control: CacheControl::default(),
-            })
-        }
-
-        async fn restore_response(
-            &self,
-            _context: &GuardContext,
-            response: ChatCompletionResponse,
-        ) -> Result<ChatCompletionResponse, AppError> {
-            Ok(response)
-        }
-    }
-
     struct SignatureGuard(&'static str);
 
     #[async_trait]
@@ -950,9 +1201,9 @@ mod tests {
         )
     }
 
-    fn exact_key_for(service: &ChatService, req: &ChatCompletionRequest) -> String {
+    fn exact_key_for(req: &ChatCompletionRequest) -> String {
         let normalized = normalize_chat_request(req).unwrap();
-        service.exact_cache_key(&normalized)
+        format!("chatcmpl:v1:{}", sha256_hex(&normalized))
     }
 
     #[tokio::test]
@@ -960,13 +1211,7 @@ mod tests {
         let req = request();
         let cached = response_with_usage("exact-hit", 1000, 500);
 
-        let probe_service = build_service(
-            Arc::new(FakeExactCache::new()),
-            Arc::new(FakeSemanticCache::new()),
-            Arc::new(FakeUpstream::new(response_with_usage("unused", 1, 1))),
-            true,
-        );
-        let key = exact_key_for(&probe_service, &req);
+        let key = exact_key_for(&req);
 
         let exact_cache = FakeExactCache::with_entry(key, serde_json::to_string(&cached).unwrap());
         let exact_state = exact_cache.state();
@@ -1126,7 +1371,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_requests_bypass_exact_and_semantic_cache() {
+    async fn stream_requests_are_rejected_in_core_only_mode() {
         let mut req = request();
         req.stream = Some(true);
 
@@ -1146,57 +1391,6 @@ mod tests {
             true,
         );
 
-        let result = service.handle(req).await.unwrap();
-
-        assert_eq!(result.id, "stream-upstream");
-        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
-
-        let exact = exact_state.lock().unwrap();
-        assert_eq!(exact.get_calls, 0);
-        assert_eq!(exact.set_calls, 0);
-        drop(exact);
-
-        let semantic = semantic_state.lock().unwrap();
-        assert_eq!(semantic.lookup_calls, 0);
-        assert_eq!(semantic.store_calls, 0);
-    }
-
-    #[tokio::test]
-    async fn stream_requests_are_rejected_when_any_guard_requires_non_streaming() {
-        let mut req = request();
-        req.stream = Some(true);
-
-        let exact_cache = FakeExactCache::new();
-        let exact_state = exact_cache.state();
-
-        let semantic_cache = FakeSemanticCache::new();
-        let semantic_state = semantic_cache.state();
-
-        let upstream = FakeUpstream::new(response_with_usage("stream-upstream", 1000, 500));
-        let upstream_state = upstream.state();
-
-        let settings = ChatServiceSettings {
-            semantic_cache_enabled: true,
-            exact_cache_enabled: true,
-            exact_cache_fail_open: true,
-            exact_cache_store_enabled: true,
-            semantic_cache_store_enabled: true,
-            semantic_cache_fail_open: true,
-            max_prompt_chars: Some(200_000),
-        };
-
-        let service = ChatService::new_with_guards(
-            Arc::new(exact_cache),
-            Arc::new(semantic_cache),
-            Arc::new(upstream),
-            Arc::new(RejectStreamingGuard),
-            settings,
-            model_prices(),
-            Some(EmbeddingPrice {
-                usd_per_1m_tokens: 0.020,
-            }),
-        );
-
         let err = service.handle(req).await.unwrap_err();
 
         assert_eq!(
@@ -1204,10 +1398,9 @@ mod tests {
             axum::http::StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(err.metrics_class(), "validation");
-        assert!(
-            err.message().contains("stream=true is not supported"),
-            "unexpected error message: {}",
-            err.message()
+        assert_eq!(
+            err.message(),
+            "stream=true is not supported by AI Firewall; set stream=false"
         );
 
         assert_eq!(

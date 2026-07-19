@@ -136,7 +136,7 @@ impl LlmUpstream for OpenAiUpstream {
                 upstream_status = status.as_u16(),
                 upstream_base_url = %self.base_url,
                 model = %req.normalized_model(),
-                body = %body,
+                response_bytes = body.len(),
                 "upstream provider returned an error response"
             );
 
@@ -144,12 +144,11 @@ impl LlmUpstream for OpenAiUpstream {
                 status,
                 kind,
                 format!(
-                    "{} Status: {}. Model: '{}'. Upstream: '{}'. Body: {}",
+                    "{} Status: {}. Model: '{}'. Upstream: '{}'.",
                     kind.default_message(),
                     status,
                     req.normalized_model(),
-                    self.base_url,
-                    body
+                    self.base_url
                 ),
             ));
         }
@@ -160,6 +159,7 @@ impl LlmUpstream for OpenAiUpstream {
                     error_class = UpstreamErrorKind::Other.as_str(),
                     upstream_base_url = %self.base_url,
                     model = %req.normalized_model(),
+                    response_bytes = body.len(),
                     error = %e,
                     "failed to parse upstream response body"
                 );
@@ -167,10 +167,9 @@ impl LlmUpstream for OpenAiUpstream {
                 AppError::upstream_kind(
                     UpstreamErrorKind::Other,
                     format!(
-                        "Failed to parse upstream response body for model '{}' at '{}': {e}. Verify the provider returns an OpenAI-compatible /v1/chat/completions JSON response. Body: {}",
+                        "Failed to parse upstream response body for model '{}' at '{}'. Verify the provider returns a non-streaming OpenAI-compatible /v1/chat/completions JSON response.",
                         req.normalized_model(),
-                        self.base_url,
-                        body
+                        self.base_url
                     ),
                 )
             })?

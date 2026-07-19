@@ -256,6 +256,75 @@ pub static UPSTREAM_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 });
 
 // -----------------------------
+// VCAL evidence delivery metrics
+// -----------------------------
+
+pub static EVIDENCE_EVENTS_ENQUEUED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_evidence_events_enqueued_total",
+        "VCAL evidence events accepted by the producer-side queue",
+    )
+    .expect("metric aif_evidence_events_enqueued_total must be valid")
+});
+
+pub static EVIDENCE_EVENTS_DROPPED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evidence_events_dropped_total",
+            "VCAL evidence events dropped by reason",
+        ),
+        &["reason"],
+    )
+    .expect("metric aif_evidence_events_dropped_total must be valid")
+});
+
+pub static EVIDENCE_EVENTS_DELIVERED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evidence_events_delivered_total",
+            "VCAL evidence events processed by HTTP delivery result",
+        ),
+        &["result"],
+    )
+    .expect("metric aif_evidence_events_delivered_total must be valid")
+});
+
+pub static EVIDENCE_BATCHES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evidence_batches_total",
+            "VCAL evidence HTTP batches by delivery result",
+        ),
+        &["result"],
+    )
+    .expect("metric aif_evidence_batches_total must be valid")
+});
+
+pub static EVIDENCE_QUEUE_DEPTH: Lazy<IntGauge> = Lazy::new(|| {
+    IntGauge::new(
+        "aif_evidence_queue_depth",
+        "Current number of VCAL evidence events waiting in the producer-side queue",
+    )
+    .expect("metric aif_evidence_queue_depth must be valid")
+});
+
+pub static EVIDENCE_DELIVERY_LATENCY_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_evidence_delivery_latency_seconds",
+        "Time spent delivering a VCAL evidence batch, including retries",
+    ))
+    .expect("metric aif_evidence_delivery_latency_seconds must be valid")
+});
+
+pub static EVIDENCE_RETRIES_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_evidence_retries_total",
+        "VCAL evidence HTTP delivery retries",
+    )
+    .expect("metric aif_evidence_retries_total must be valid")
+});
+
+// -----------------------------
 // Embedding provider diagnostics
 // -----------------------------
 
@@ -527,6 +596,13 @@ pub fn init() {
     Lazy::force(&GUARD_LATENCY_SECONDS);
     Lazy::force(&SECURITY_BLOCKS_TOTAL);
     Lazy::force(&PRIVACY_RESTORE_SKIPPED_TOTAL);
+    Lazy::force(&EVIDENCE_EVENTS_ENQUEUED_TOTAL);
+    Lazy::force(&EVIDENCE_EVENTS_DROPPED_TOTAL);
+    Lazy::force(&EVIDENCE_EVENTS_DELIVERED_TOTAL);
+    Lazy::force(&EVIDENCE_BATCHES_TOTAL);
+    Lazy::force(&EVIDENCE_QUEUE_DEPTH);
+    Lazy::force(&EVIDENCE_DELIVERY_LATENCY_SECONDS);
+    Lazy::force(&EVIDENCE_RETRIES_TOTAL);
     Lazy::force(&EMBEDDING_TIMEOUTS_TOTAL);
     Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
     Lazy::force(&MODEL_REQUESTS_TOTAL);
@@ -588,6 +664,13 @@ pub fn init() {
             Box::new(GUARD_LATENCY_SECONDS.clone()),
             Box::new(SECURITY_BLOCKS_TOTAL.clone()),
             Box::new(PRIVACY_RESTORE_SKIPPED_TOTAL.clone()),
+            Box::new(EVIDENCE_EVENTS_ENQUEUED_TOTAL.clone()),
+            Box::new(EVIDENCE_EVENTS_DROPPED_TOTAL.clone()),
+            Box::new(EVIDENCE_EVENTS_DELIVERED_TOTAL.clone()),
+            Box::new(EVIDENCE_BATCHES_TOTAL.clone()),
+            Box::new(EVIDENCE_QUEUE_DEPTH.clone()),
+            Box::new(EVIDENCE_DELIVERY_LATENCY_SECONDS.clone()),
+            Box::new(EVIDENCE_RETRIES_TOTAL.clone()),
             Box::new(EMBEDDING_TIMEOUTS_TOTAL.clone()),
             Box::new(EMBEDDING_REQUEST_DURATION_SECONDS.clone()),
         ];

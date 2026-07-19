@@ -5,12 +5,13 @@ use crate::{
     cache::{exact::ExactCache, noop_exact::NoopExactCache, redis_exact::RedisExactCache},
     config::{Config, ProviderKind},
     embeddings::{openai::OpenAiEmbeddingProvider, provider::EmbeddingProvider},
+    evidence::{EvidenceSink, TracingEvidenceSink},
     guards::build_guard_orchestrator,
     metrics,
     semantic::{
         noop::NoopSemanticCache, qdrant::QdrantSemanticCache, semantic_cache::SemanticCache,
     },
-    services::chat_service::{ChatService, ChatServiceSettings},
+    services::chat_service::{ChatService, ChatServiceDeps, ChatServiceSettings, UpstreamMetadata},
     upstream::build_llm_upstream,
 };
 
@@ -143,6 +144,31 @@ impl AppState {
 pub struct BuiltApp {
     pub router: Router,
     pub state: Arc<AppState>,
+}
+
+fn infer_upstream_provider_name(provider_type: &str, base_url: &str) -> String {
+    let parsed = reqwest::Url::parse(base_url).ok();
+    let host = parsed
+        .as_ref()
+        .and_then(reqwest::Url::host_str)
+        .unwrap_or_default();
+    let port = parsed
+        .as_ref()
+        .and_then(reqwest::Url::port_or_known_default);
+
+    if host.eq_ignore_ascii_case("ollama") || port == Some(11434) {
+        return "ollama".to_string();
+    }
+
+    if host.contains("openai.com") {
+        return "openai".to_string();
+    }
+
+    if !host.is_empty() && host != "host.docker.internal" && host != "localhost" {
+        return host.split('.').next().unwrap_or(host).to_string();
+    }
+
+    provider_type.to_string()
 }
 
 fn mask_redis_url_for_logs(redis_url: &str) -> String {
@@ -390,11 +416,23 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     let guard_orchestrator = build_guard_orchestrator(cfg);
     tracing::info!("[OK] Guard orchestrator initialized");
 
-    let chat_service = Arc::new(ChatService::new_with_guards(
-        exact_cache,
-        semantic_cache,
-        upstream,
-        guard_orchestrator,
+    let evidence_sink: Arc<dyn EvidenceSink> = Arc::new(TracingEvidenceSink);
+
+    let chat_service = Arc::new(ChatService::new_with_guards_and_evidence(
+        ChatServiceDeps {
+            exact_cache,
+            semantic_cache,
+            upstream,
+            guard_orchestrator,
+            evidence_sink,
+            upstream_metadata: UpstreamMetadata {
+                provider_type: cfg.upstream_provider.as_str().to_string(),
+                provider_name: infer_upstream_provider_name(
+                    cfg.upstream_provider.as_str(),
+                    &cfg.upstream_base_url,
+                ),
+            },
+        },
         chat_service_settings,
         cfg.model_prices.clone(),
         cfg.embedding_price.clone(),

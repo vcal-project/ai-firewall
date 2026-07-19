@@ -79,6 +79,7 @@ Validate that the firewall is listening:
 ```bash
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
+curl http://localhost:8080/version
 ```
 
 Expected:
@@ -87,6 +88,16 @@ Expected:
 OK
 READY
 ```
+
+The version endpoint should report AI Cost Firewall `v0.4.0`.
+
+---
+
+## Streaming behavior
+
+AI Cost Firewall v0.4.0 supports non-streaming chat completions only. Requests
+with `"stream": true` are rejected with HTTP `422` before cache, guard, or
+upstream processing.
 
 ---
 
@@ -141,3 +152,17 @@ Expected activity:
 - Provider-specific cost metrics may require adding `model_price` entries for the selected OpenRouter model.
 
 If the observability overlay is enabled, Grafana dashboards should begin populating after a few minutes of repeated traffic.
+
+---
+
+## Evidence events
+
+The firewall emits structured `vcal.evidence.event` schema v1.1 records to
+application logs. Every trace that emits `request.received` ends with exactly
+one `request.completed` or `request.failed` event.
+
+Inspect evidence events with:
+
+```bash
+docker compose logs firewall | grep 'VCAL evidence event'
+```

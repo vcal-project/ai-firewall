@@ -145,10 +145,6 @@ fn placeholder_signature_from_findings(findings: &[PrivacyFinding]) -> String {
 
 #[async_trait]
 impl GuardOrchestrator for PrivacyGuardOrchestrator {
-    fn reject_streaming_requests(&self) -> bool {
-        true
-    }
-
     async fn before_cache(
         &self,
         mut request: ChatCompletionRequest,
