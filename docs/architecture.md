@@ -23,7 +23,14 @@ Only requests that miss all enabled cache layers are forwarded upstream.
 
 # Architecture Overview
 
-[![AI Cost Firewall Architecture Diagram](assets/architecture/ai-cost-firewall-0-4-1.png)](assets/architecture/ai-cost-firewall-0-4-1.png)
+<p align="center">
+  <a href="../assets/architecture/ai-cost-firewall-0-4-1.png">
+    <img
+      src="../assets/architecture/ai-cost-firewall-0-4-1.png"
+      alt="AI Cost Firewall v0.4.1 architecture diagram"
+    />
+  </a>
+</p>
 
 ---
 
