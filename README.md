@@ -183,7 +183,7 @@ Each example includes:
 
 # Architecture Overview
 
-[![AI Cost Firewall Architecture Diagram](assets/architecture/ai-cost-firewall-diagram.png)](assets/architecture/ai-cost-firewall-diagram.png)
+[![AI Cost Firewall Architecture Diagram](assets/architecture/ai-cost-firewall-architecture.png)](assets/architecture/ai-cost-firewall-architecture.png)
 
 Client applications send requests to AI Cost Firewall instead of directly to the LLM provider.
 
