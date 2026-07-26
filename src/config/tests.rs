@@ -71,6 +71,17 @@ fn minimal_valid_config() -> Config {
         privacy_guard_timeout_seconds: 10,
         guard_fail_open: true,
 
+        audit_enabled: false,
+        audit_url: "http://127.0.0.1:8092".to_string(),
+        audit_api_key: None,
+        audit_producer_instance_id: "test-instance".to_string(),
+        audit_queue_capacity: 100,
+        audit_batch_size: 10,
+        audit_flush_interval_ms: 1_000,
+        audit_timeout_seconds: 5,
+        audit_retry_max_attempts: 3,
+        audit_retry_initial_backoff_ms: 100,
+
         security_guard_enabled: false,
         security_guard_url: "http://vcal-security-guard:8091".to_string(),
         security_guard_api_key: None,
@@ -746,4 +757,53 @@ allow_unknown_models_pass_through true;
     assert_eq!(cfg.embedding_api_key, "dummy");
     assert_eq!(cfg.qdrant_vector_size, 768);
     assert!(cfg.semantic_cache_enabled);
+}
+
+#[test]
+fn parses_audit_settings_from_file() {
+    let path = temp_config_path("aif_config_audit");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+semantic_cache_enabled false;
+audit_enabled true;
+audit_url http://127.0.0.1:8092;
+audit_api_key test-audit-token;
+audit_producer_instance_id test-firewall-01;
+audit_queue_capacity 500;
+audit_batch_size 50;
+audit_flush_interval_ms 750;
+audit_timeout_seconds 4;
+audit_retry_max_attempts 6;
+audit_retry_initial_backoff_ms 125;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert!(cfg.audit_enabled);
+    assert_eq!(cfg.audit_url, "http://127.0.0.1:8092");
+    assert_eq!(cfg.audit_api_key.as_deref(), Some("test-audit-token"));
+    assert_eq!(cfg.audit_producer_instance_id, "test-firewall-01");
+    assert_eq!(cfg.audit_queue_capacity, 500);
+    assert_eq!(cfg.audit_batch_size, 50);
+    assert_eq!(cfg.audit_flush_interval_ms, 750);
+    assert_eq!(cfg.audit_timeout_seconds, 4);
+    assert_eq!(cfg.audit_retry_max_attempts, 6);
+    assert_eq!(cfg.audit_retry_initial_backoff_ms, 125);
+}
+
+#[test]
+fn audit_batch_size_cannot_exceed_queue_capacity() {
+    let mut cfg = minimal_valid_config();
+    cfg.audit_enabled = true;
+    cfg.audit_queue_capacity = 10;
+    cfg.audit_batch_size = 11;
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("audit_batch_size must not exceed audit_queue_capacity"));
 }

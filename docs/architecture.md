@@ -58,7 +58,7 @@ without requiring provider-specific configuration blocks.
 
 ## Enterprise Guard Orchestration
 
-AI Cost Firewall v0.3.0 can orchestrate optional VCAL enterprise modules while keeping the core gateway focused on caching and cost control.
+AI Cost Firewall v0.4.1 can orchestrate optional VCAL enterprise modules while keeping the core gateway focused on caching and cost control.
 
 Supported modes:
 
@@ -251,7 +251,7 @@ flowchart TD
 
 # Full Enterprise Guard Flow
 
-When VCAL Security Guard and VCAL Privacy Guard are both enabled, the recommended v0.3.0 flow is:
+When VCAL Security Guard and VCAL Privacy Guard are both enabled, the recommended v0.4.1 flow is:
 
 ```text
 Client
@@ -818,11 +818,41 @@ flowchart LR
 
 ---
 
+---
+
+# VCAL Audit Integration
+
+AI Cost Firewall v0.4.1 can send structured evidence to VCAL Audit through a buffered HTTP sink.
+
+```text
+Request processing
+      |
+      +-- emit vcal.evidence.event v1.1
+              |
+              +-- bounded in-memory queue
+                      |
+                      +-- batch by size or interval
+                              |
+                              +-- POST /v1/events/batch
+                                      |
+                                      +-- VCAL Audit
+                                              |
+                                              +-- SQLite
+                                              +-- trace reconstruction
+                                              +-- SHA-256 record chain
+```
+
+The Audit integration is optional and disabled by default.
+
+AI Firewall remains the producer of lifecycle evidence. VCAL Audit becomes the authoritative receiver and assigns persistent sequence numbers and record hashes.
+
+The producer queue is not durable in v0.4.1. Audit availability is therefore decoupled from request availability, but prolonged outages can cause evidence loss after retry exhaustion.
+
 # Streaming Behavior
 
-In standalone caching mode, streaming requests can be forwarded upstream.
+AI Cost Firewall v0.4.1 supports non-streaming chat completions only.
 
-When Security Guard or Privacy Guard orchestration is enabled, streaming requests are rejected in the current v0.3.0 guard contract because streaming-safe scanning and streaming-safe Privacy Guard restoration are not implemented yet.
+Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing.
 
 Example:
 

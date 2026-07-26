@@ -441,8 +441,8 @@ Exact cache behavior may vary depending on deployment flow.
 
 Guard-enabled behavior:
 
-- streaming requests are rejected in the current v0.3.0 guard contract
-- use non-streaming requests when Security Guard or Privacy Guard is enabled
+- AI Cost Firewall v0.4.1 rejects all `stream=true` requests with HTTP 422
+- use non-streaming chat-completion requests in every deployment mode
 
 ---
 

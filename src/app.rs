@@ -5,7 +5,12 @@ use crate::{
     cache::{exact::ExactCache, noop_exact::NoopExactCache, redis_exact::RedisExactCache},
     config::{Config, ProviderKind},
     embeddings::{openai::OpenAiEmbeddingProvider, provider::EmbeddingProvider},
-    evidence::{EvidenceSink, TracingEvidenceSink},
+    evidence::{
+        buffered_http::{
+            BufferedHttpEvidenceHandle, BufferedHttpEvidenceSettings, BufferedHttpEvidenceSink,
+        },
+        EvidenceSink, TracingEvidenceSink,
+    },
     guards::build_guard_orchestrator,
     metrics,
     semantic::{
@@ -34,7 +39,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tower_http::trace::TraceLayer;
 
 #[derive(Clone, Debug)]
@@ -116,6 +121,7 @@ pub struct AppState {
     pub config: Arc<RwLock<Config>>,
     pub chat_service: Arc<RwLock<Arc<ChatService>>>,
     pub dependencies: DependencyState,
+    pub evidence_delivery: Arc<Mutex<Option<BufferedHttpEvidenceHandle>>>,
     pub shutdown: ShutdownState,
 }
 
@@ -128,6 +134,27 @@ impl AppState {
     pub async fn allow_unknown_models_pass_through(&self) -> bool {
         let cfg = self.config.read().await;
         cfg.allow_unknown_models_pass_through
+    }
+
+    pub async fn replace_evidence_delivery(
+        &self,
+        replacement: Option<BufferedHttpEvidenceHandle>,
+        flush_timeout: Duration,
+    ) {
+        let previous = {
+            let mut guard = self.evidence_delivery.lock().await;
+            std::mem::replace(&mut *guard, replacement)
+        };
+
+        if let Some(handle) = previous {
+            if let Err(error) = handle.shutdown(flush_timeout).await {
+                tracing::warn!(error = %error, "failed to flush previous VCAL Audit worker");
+            }
+        }
+    }
+
+    pub async fn shutdown_evidence_delivery(&self, flush_timeout: Duration) {
+        self.replace_evidence_delivery(None, flush_timeout).await;
     }
 
     pub async fn is_model_allowed(&self, model: &str) -> bool {
@@ -246,6 +273,7 @@ fn log_guard_pipeline_summary(cfg: &Config) {
 pub struct RuntimeBuild {
     pub chat_service: Arc<ChatService>,
     pub dependencies: DependencyState,
+    pub evidence_delivery: Option<BufferedHttpEvidenceHandle>,
 }
 
 pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
@@ -416,7 +444,34 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     let guard_orchestrator = build_guard_orchestrator(cfg);
     tracing::info!("[OK] Guard orchestrator initialized");
 
-    let evidence_sink: Arc<dyn EvidenceSink> = Arc::new(TracingEvidenceSink);
+    let (evidence_sink, evidence_delivery): (
+        Arc<dyn EvidenceSink>,
+        Option<BufferedHttpEvidenceHandle>,
+    ) = if cfg.audit_enabled {
+        let endpoint = format!("{}/v1/events/batch", cfg.audit_url.trim_end_matches('/'));
+        let (sink, handle) = BufferedHttpEvidenceSink::spawn(BufferedHttpEvidenceSettings {
+            endpoint: endpoint.clone(),
+            api_key: cfg.audit_api_key.clone(),
+            producer_instance_id: cfg.audit_producer_instance_id.clone(),
+            queue_capacity: cfg.audit_queue_capacity,
+            batch_size: cfg.audit_batch_size,
+            flush_interval: Duration::from_millis(cfg.audit_flush_interval_ms),
+            request_timeout: Duration::from_secs(cfg.audit_timeout_seconds),
+            retry_max_attempts: cfg.audit_retry_max_attempts,
+            retry_initial_backoff: Duration::from_millis(cfg.audit_retry_initial_backoff_ms),
+        })?;
+        tracing::info!(
+            audit_endpoint = %endpoint,
+            producer_instance_id = %cfg.audit_producer_instance_id,
+            queue_capacity = cfg.audit_queue_capacity,
+            batch_size = cfg.audit_batch_size,
+            "[OK] VCAL Audit buffered evidence delivery initialized"
+        );
+        (sink, Some(handle))
+    } else {
+        tracing::info!("VCAL Audit disabled; evidence events will be written to tracing logs");
+        (Arc::new(TracingEvidenceSink), None)
+    };
 
     let chat_service = Arc::new(ChatService::new_with_guards_and_evidence(
         ChatServiceDeps {
@@ -443,6 +498,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     Ok(RuntimeBuild {
         chat_service,
         dependencies: DependencyState::new(redis_available, qdrant_available, upstream_available),
+        evidence_delivery,
     })
 }
 
@@ -455,6 +511,7 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
         config: Arc::new(RwLock::new(config.clone())),
         chat_service: Arc::new(RwLock::new(runtime.chat_service)),
         dependencies: runtime.dependencies,
+        evidence_delivery: Arc::new(Mutex::new(runtime.evidence_delivery)),
         shutdown: ShutdownState::new(),
     });
 

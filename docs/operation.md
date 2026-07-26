@@ -25,6 +25,8 @@ AI Cost Firewall provides:
 - request body and prompt-size protection
 - optional VCAL Security Guard and VCAL Privacy Guard orchestration
 - configurable guard fail-open/fail-closed behavior
+- structured evidence lifecycle events
+- optional buffered evidence delivery to VCAL Audit
 
 ---
 
@@ -38,6 +40,7 @@ AI Cost Firewall
         │
         ├── VCAL Security Guard (optional)
         ├── VCAL Privacy Guard (optional)
+        ├── VCAL Audit (optional evidence delivery)
         ├── Redis (exact cache)
         ├── Qdrant (semantic cache)
         │
@@ -184,7 +187,7 @@ It does not bypass invalid configuration validation. Dependency startup behavior
 
 # Guard Runtime Behavior
 
-AI Firewall v0.3.0 can orchestrate VCAL Security Guard and VCAL Privacy Guard.
+AI Firewall v0.4.1 can orchestrate VCAL Security Guard and VCAL Privacy Guard.
 
 Recommended full enterprise order:
 
@@ -294,6 +297,36 @@ This allows deployments to choose whether readiness should fail when Redis, Qdra
 | Process stopped | unavailable | unavailable |
 
 ---
+
+---
+
+# Audit Delivery Runtime Behavior
+
+When `audit_enabled` is true, AI Firewall initializes a bounded buffered HTTP evidence sink during startup.
+
+The sender:
+
+1. accepts evidence events from request processing
+2. stores them in an in-memory queue
+3. forms batches by size or flush interval
+4. posts batches to VCAL Audit
+5. retries failed deliveries using the configured backoff
+
+Audit delivery is deliberately decoupled from the client request path. A temporary Audit failure does not normally fail the LLM request.
+
+## Failure behavior
+
+The following conditions can cause evidence loss:
+
+- the bounded queue is full
+- VCAL Audit remains unavailable after retry exhaustion
+- AI Firewall terminates before queued events are flushed
+
+Delivery failures and dropped batches are logged and exposed through delivery metrics where implemented.
+
+## Shutdown
+
+Graceful shutdown should be used so the sender has an opportunity to flush queued evidence. The current memory-backed design is still best effort and is not equivalent to a durable disk spool.
 
 # Graceful Shutdown
 

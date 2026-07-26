@@ -1,4 +1,4 @@
-# AI Cost Firewall — Quick Start
+# AI Cost Firewall - Quick Start
 
 This guide explains how to deploy, validate, and test AI Cost Firewall using either Docker Compose or a local Rust build.
 
@@ -11,7 +11,7 @@ It reduces LLM API cost and latency using two cache layers:
 
 Only cache misses are forwarded to the upstream LLM endpoint unless a request explicitly bypasses cache.
 
-AI Cost Firewall v0.3.0 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules for enterprise security and privacy flows. These modules are not required for the default caching-only quick start.
+AI Cost Firewall v0.4.1 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules for enterprise security and privacy flows. These modules are not required for the default caching-only quick start.
 
 The current product model is intentionally simple: AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a flat configuration model.
 
@@ -29,6 +29,7 @@ AI Cost Firewall
    │
    ├── VCAL Security Guard (optional)
    ├── VCAL Privacy Guard (optional)
+   ├── VCAL Audit (optional evidence delivery)
    ├── Redis / Valkey (exact cache)
    ├── Qdrant (semantic cache)
    │
@@ -104,7 +105,7 @@ cd ai-firewall
 
 ---
 
-# Option 1 — Fastest Evaluation Path
+# Option 1 - Fastest Evaluation Path
 
 Use OpenAI for chat completions and embeddings.
 
@@ -141,7 +142,7 @@ docker compose \
 
 ---
 
-# Option 2 — Fully Local Evaluation
+# Option 2 - Fully Local Evaluation
 
 Use Ollama for both chat completions and embeddings.
 
@@ -355,9 +356,44 @@ Expected behavior when Security Guard is enabled in enforce mode:
 HTTP/1.1 403 Forbidden
 ```
 
-Guard-enabled streaming requests are rejected in the current v0.3.0 guard contract. Use non-streaming requests when guard modules are enabled.
+AI Cost Firewall v0.4.1 rejects all `stream=true` requests with HTTP 422 before cache, guard, or upstream processing. Use non-streaming requests.
 
 ---
+---
+
+# Optional VCAL Audit Delivery
+
+AI Cost Firewall can deliver evidence to a separately deployed VCAL Audit service.
+
+Add the following directives to `configs/ai-firewall.conf`:
+
+```conf
+audit_enabled true;
+audit_url http://vcal-audit:8092;
+audit_api_key replace-with-shared-audit-token;
+audit_producer_instance_id ai-firewall-01;
+audit_queue_capacity 10000;
+audit_batch_size 100;
+audit_flush_interval_ms 1000;
+audit_timeout_seconds 5;
+audit_retry_max_attempts 5;
+audit_retry_initial_backoff_ms 250;
+```
+
+AI Firewall and VCAL Audit must share a Docker network, and VCAL Audit must be reachable as:
+
+```text
+http://vcal-audit:8092
+```
+
+Confirm initialization:
+
+```bash
+docker compose logs firewall | grep -i audit
+```
+
+The delivery queue is memory-backed. Audit outages do not normally block the LLM request path, but batches can be dropped after retry exhaustion.
+
 # Included Dashboards
 
 AI Cost Firewall includes pre-configured Grafana dashboards.

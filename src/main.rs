@@ -159,6 +159,12 @@ async fn config_reload_loop(
                         }
 
                         state.dependencies.update(&runtime.dependencies);
+                        state
+                            .replace_evidence_delivery(
+                                runtime.evidence_delivery,
+                                Duration::from_secs(new_config.graceful_shutdown_timeout_seconds),
+                            )
+                            .await;
 
                         tracing::info!("config and runtime successfully reloaded from {}", path);
                     }
@@ -239,6 +245,14 @@ async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
 
         sleep(Duration::from_millis(100)).await;
     }
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let flush_timeout = if remaining.is_zero() {
+        Duration::from_secs(1)
+    } else {
+        remaining
+    };
+    state.shutdown_evidence_delivery(flush_timeout).await;
 
     tracing::info!("graceful shutdown complete");
 }

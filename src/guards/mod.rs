@@ -367,6 +367,17 @@ mod tests {
             privacy_guard_timeout_seconds: 1,
             guard_fail_open: false,
 
+            audit_enabled: false,
+            audit_url: "http://127.0.0.1:8092".to_string(),
+            audit_api_key: None,
+            audit_producer_instance_id: "test-instance".to_string(),
+            audit_queue_capacity: 100,
+            audit_batch_size: 10,
+            audit_flush_interval_ms: 1_000,
+            audit_timeout_seconds: 5,
+            audit_retry_max_attempts: 3,
+            audit_retry_initial_backoff_ms: 100,
+
             cache_bypass_header: "X-AIF-Cache-Bypass".to_string(),
             metrics_auth_required: false,
             metrics_auth_token: None,

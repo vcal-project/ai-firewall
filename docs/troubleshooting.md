@@ -2,13 +2,13 @@
 
 AI Cost Firewall is designed to fail fast during startup, expose clear runtime errors, and make cache, provider, and cost behavior observable.
 
-This document covers common deployment and operational issues for v0.3.0.
+This document covers common deployment and operational issues for v0.4.1.
 
-AI Cost Firewall v0.3.0 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
+AI Cost Firewall v0.4.1 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
 
 ---
 
-AI Firewall v0.3.0 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
+AI Firewall v0.4.1 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
 
 ---
 # Validate Configuration First
@@ -980,7 +980,7 @@ upstream_timeout_seconds 120;
 embedding_timeout_seconds 30;
 ```
 
-`request_timeout_seconds` remains a backward-compatible fallback. In v0.3.0, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+`request_timeout_seconds` remains a backward-compatible fallback. In v0.4.1, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 Inspect latency metrics:
 
@@ -1131,9 +1131,67 @@ aif_privacy_restore_skipped_total
 
 ---
 
+---
+
+# VCAL Audit Delivery Problems
+
+## Audit initialization is not logged
+
+Confirm the configuration:
+
+```conf
+audit_enabled true;
+audit_url http://vcal-audit:8092;
+audit_api_key replace-with-shared-audit-token;
+```
+
+Check:
+
+```bash
+docker compose logs firewall | grep -i audit
+```
+
+## Audit returns HTTP 401
+
+The value configured in AI Firewall must exactly match `VCAL_AUDIT_API_KEY`.
+
+Confirm that both services use the same token and that no surrounding quotes or whitespace were copied into the value.
+
+## Audit hostname cannot be resolved
+
+AI Firewall and VCAL Audit must share a Docker network.
+
+From the AI Firewall container, test service resolution:
+
+```bash
+docker exec ai-firewall-firewall-1 \
+  getent hosts vcal-audit
+```
+
+Distroless images may not include diagnostic tools. In that case, use a temporary BusyBox container attached to the same network.
+
+## Batches are retried and then dropped
+
+This means VCAL Audit remained unavailable or rejected the request through all configured attempts.
+
+Check:
+
+- Audit health and readiness
+- Docker DNS and network membership
+- API key
+- request-body and maximum-batch limits
+- Audit logs
+- AI Firewall timeout and retry settings
+
+The v0.4.1 sender queue is memory-backed. Batches dropped after retry exhaustion are not replayed automatically.
+
+## Requests succeed while Audit is unavailable
+
+This is expected. Audit delivery is asynchronous and does not normally fail the LLM request path.
+
 # Provider Compatibility Notes
 
-AI Cost Firewall v0.3.0 supports OpenAI-compatible provider patterns.
+AI Cost Firewall v0.4.1 supports OpenAI-compatible provider patterns.
 
 The expected configuration model is:
 
@@ -1146,9 +1204,9 @@ This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
 
 It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
 
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.3.0. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.4.1. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
 
-Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.3.0 scope.
+Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.4.1 scope.
 
 ## OpenAI
 

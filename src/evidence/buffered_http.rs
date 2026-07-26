@@ -1,8 +1,3 @@
-#![allow(dead_code)]
-
-// Buffered VCAL Audit delivery is implemented ahead of runtime configuration.
-// Remove this allowance once BufferedHttpEvidenceSink is selected from app.rs.
-
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context};

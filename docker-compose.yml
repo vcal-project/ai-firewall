@@ -20,7 +20,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: vcalproject/ai-firewall:v0.4.0
+    image: vcalproject/ai-firewall:v0.4.1
     depends_on:
       redis:
         condition: service_healthy
@@ -33,6 +33,11 @@ services:
     command: ["--config", "/configs/ai-firewall.conf"]
     environment:
       RUST_LOG: "info,vcal_evidence=info"
+      # These environment variables are used only when no config file is supplied.
+      # AIF_AUDIT_ENABLED: "true"
+      # AIF_AUDIT_URL: "http://vcal-audit:8092"
+      # AIF_AUDIT_API_KEY: "replace-with-shared-audit-token"
+      # AIF_AUDIT_PRODUCER_INSTANCE_ID: "ai-firewall-01"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

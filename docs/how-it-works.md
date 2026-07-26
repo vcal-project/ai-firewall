@@ -21,6 +21,7 @@ AI Cost Firewall
         │
         ├── VCAL Security Guard (optional)
         ├── VCAL Privacy Guard (optional)
+        ├── VCAL Audit (optional evidence delivery)
         ├── Redis (exact cache)
         ├── Qdrant (semantic cache)
         │
@@ -54,7 +55,8 @@ AI Cost Firewall evaluates requests in stages:
 9. call Security Guard response scan, if enabled
 10. call Privacy Guard restore, if enabled and mapping exists
 11. cache storage, if store controls allow it
-12. response return
+12. emit terminal evidence and enqueue Audit delivery, if enabled
+13. response return
 
 ---
 
@@ -141,7 +143,7 @@ flowchart TD
 
 # Guard Orchestration Flow
 
-AI Firewall v0.3.0 can run as a guard orchestrator in addition to a cache gateway.
+AI Firewall v0.4.1 can run as a guard orchestrator in addition to a cache gateway.
 
 When both VCAL Security Guard and VCAL Privacy Guard are enabled, the flow is:
 
@@ -659,11 +661,46 @@ Applications do not need special cache-awareness logic.
 
 ---
 
+---
+
+# Evidence and Audit Delivery
+
+AI Cost Firewall emits structured evidence throughout the request lifecycle.
+
+Evidence uses:
+
+```text
+schema: vcal.evidence.event
+schema_version: 1.1
+```
+
+A stable `trace_id` correlates validation, guard, cache, upstream, response, and terminal events.
+
+For each trace that emits `request.received`, AI Firewall emits exactly one terminal event:
+
+```text
+request.completed
+```
+
+or:
+
+```text
+request.failed
+```
+
+When Audit delivery is enabled, events are enqueued without synchronously blocking the request path. The sender groups events by batch size or flush interval and posts them to:
+
+```text
+{audit_url}/v1/events/batch
+```
+
+Failed deliveries are retried with configurable backoff. The queue is bounded and memory-backed, so v0.4.1 does not guarantee durable replay after process termination or retry exhaustion.
+
 # Streaming Behavior
 
-In standalone caching mode, streaming requests can be forwarded upstream.
+AI Cost Firewall v0.4.1 supports non-streaming chat completions only.
 
-When Security Guard or Privacy Guard orchestration is enabled, streaming requests are rejected in the current v0.3.0 guard contract because safe streaming scan/restore behavior is not implemented yet.
+Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing.
 
 Example:
 

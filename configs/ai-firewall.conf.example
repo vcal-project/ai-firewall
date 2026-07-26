@@ -17,14 +17,14 @@ redis_url redis://redis:6379;
 # Requests with stream=true are rejected with HTTP 422 before cache, guard, or upstream processing.
 upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
-upstream_api_key sk-your-api-key;
+upstream_api_key replace-with-upstream-api-key;
 
 # Embedding provider
 # Default: openai_compatible
 # Supports OpenAI-compatible /v1/embeddings endpoints.
 embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
-embedding_api_key sk-your-api-key;
+embedding_api_key replace-with-embedding-api-key;
 embedding_model text-embedding-3-small;
 
 # Qdrant semantic cache
@@ -177,10 +177,23 @@ guard_fail_open true;
 # images, audio, video, or binary payloads is preserved where possible but is
 # not scanned, anonymized, or classified by AI Firewall guard modules.
 
-# VCAL evidence events
+# VCAL Audit integration
 #
-# AI Firewall emits structured vcal.evidence.event schema v1.1 events through application logs.
-# Each request trace that emits request.received ends with exactly one request.completed or request.failed event.
+# Disabled by default. When enabled, AI Firewall sends structured
+# vcal.evidence.event schema v1.1 batches to VCAL Audit. Delivery is asynchronous:
+# LLM requests are not failed when Audit is temporarily unavailable.
 #
-# Enable evidence events in container logs with:
+# audit_api_key must match VCAL_AUDIT_API_KEY in the Audit service.
+audit_enabled false;
+audit_url http://vcal-audit:8092;
+# audit_api_key replace-with-shared-audit-token;
+audit_producer_instance_id ai-firewall-01;
+audit_queue_capacity 10000;
+audit_batch_size 100;
+audit_flush_interval_ms 1000;
+audit_timeout_seconds 5;
+audit_retry_max_attempts 5;
+audit_retry_initial_backoff_ms 250;
+
+# When Audit is disabled, evidence remains available through tracing logs:
 # RUST_LOG=info,vcal_evidence=info

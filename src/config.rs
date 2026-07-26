@@ -141,6 +141,17 @@ pub struct Config {
     pub privacy_guard_timeout_seconds: u64,
     pub guard_fail_open: bool,
 
+    pub audit_enabled: bool,
+    pub audit_url: String,
+    pub audit_api_key: Option<String>,
+    pub audit_producer_instance_id: String,
+    pub audit_queue_capacity: usize,
+    pub audit_batch_size: usize,
+    pub audit_flush_interval_ms: u64,
+    pub audit_timeout_seconds: u64,
+    pub audit_retry_max_attempts: usize,
+    pub audit_retry_initial_backoff_ms: u64,
+
     pub cache_bypass_header: String,
     pub metrics_auth_required: bool,
     pub metrics_auth_token: Option<String>,
@@ -233,6 +244,42 @@ impl Config {
 
         if self.max_prompt_chars == 0 {
             errors.push("max_prompt_chars must be > 0".into());
+        }
+
+        if self.audit_enabled {
+            if self.audit_url.trim().is_empty() {
+                errors.push("audit_url must not be empty when audit_enabled=true".into());
+            } else if !looks_like_http_url(&self.audit_url) {
+                errors.push(format!(
+                    "invalid audit_url '{}': must start with http:// or https://",
+                    self.audit_url
+                ));
+            }
+            if self.audit_producer_instance_id.trim().is_empty() {
+                errors.push(
+                    "audit_producer_instance_id must not be empty when audit_enabled=true".into(),
+                );
+            }
+            if self.audit_queue_capacity == 0 {
+                errors.push("audit_queue_capacity must be > 0".into());
+            }
+            if self.audit_batch_size == 0 {
+                errors.push("audit_batch_size must be > 0".into());
+            } else if self.audit_batch_size > self.audit_queue_capacity {
+                errors.push("audit_batch_size must not exceed audit_queue_capacity".into());
+            }
+            if self.audit_flush_interval_ms == 0 {
+                errors.push("audit_flush_interval_ms must be > 0".into());
+            }
+            if self.audit_timeout_seconds == 0 {
+                errors.push("audit_timeout_seconds must be > 0".into());
+            }
+            if self.audit_retry_max_attempts == 0 {
+                errors.push("audit_retry_max_attempts must be > 0".into());
+            }
+            if self.audit_retry_initial_backoff_ms == 0 {
+                errors.push("audit_retry_initial_backoff_ms must be > 0".into());
+            }
         }
 
         if self.cache_bypass_header.trim().is_empty() {
@@ -590,6 +637,40 @@ impl Config {
         ));
         out.push_str(&format!("guard_fail_open = {}\n", self.guard_fail_open));
 
+        out.push_str("\nVCAL Audit\n");
+        out.push_str("--------------------------------\n");
+        out.push_str(&format!("audit_enabled = {}\n", self.audit_enabled));
+        out.push_str(&format!("audit_url = {}\n", self.audit_url));
+        out.push_str(&format!(
+            "audit_api_key = {}\n",
+            mask_optional_secret(&self.audit_api_key)
+        ));
+        out.push_str(&format!(
+            "audit_producer_instance_id = {}\n",
+            self.audit_producer_instance_id
+        ));
+        out.push_str(&format!(
+            "audit_queue_capacity = {}\n",
+            self.audit_queue_capacity
+        ));
+        out.push_str(&format!("audit_batch_size = {}\n", self.audit_batch_size));
+        out.push_str(&format!(
+            "audit_flush_interval_ms = {}\n",
+            self.audit_flush_interval_ms
+        ));
+        out.push_str(&format!(
+            "audit_timeout_seconds = {}\n",
+            self.audit_timeout_seconds
+        ));
+        out.push_str(&format!(
+            "audit_retry_max_attempts = {}\n",
+            self.audit_retry_max_attempts
+        ));
+        out.push_str(&format!(
+            "audit_retry_initial_backoff_ms = {}\n",
+            self.audit_retry_initial_backoff_ms
+        ));
+
         out.push_str("\nLifecycle\n");
         out.push_str("--------------------------------\n");
 
@@ -779,6 +860,25 @@ impl Config {
                 10u64,
             )?,
             guard_fail_open: parse_or_default(&map, "guard_fail_open", true)?,
+
+            audit_enabled: parse_or_default(&map, "audit_enabled", false)?,
+            audit_url: get_or_default(&map, "audit_url", "http://127.0.0.1:8092"),
+            audit_api_key: map.get("audit_api_key").cloned(),
+            audit_producer_instance_id: get_or_default(
+                &map,
+                "audit_producer_instance_id",
+                "ai-firewall",
+            ),
+            audit_queue_capacity: parse_or_default(&map, "audit_queue_capacity", 10_000usize)?,
+            audit_batch_size: parse_or_default(&map, "audit_batch_size", 100usize)?,
+            audit_flush_interval_ms: parse_or_default(&map, "audit_flush_interval_ms", 1_000u64)?,
+            audit_timeout_seconds: parse_or_default(&map, "audit_timeout_seconds", 5u64)?,
+            audit_retry_max_attempts: parse_or_default(&map, "audit_retry_max_attempts", 5usize)?,
+            audit_retry_initial_backoff_ms: parse_or_default(
+                &map,
+                "audit_retry_initial_backoff_ms",
+                250u64,
+            )?,
 
             cache_bypass_header: get_or_default(&map, "cache_bypass_header", "X-AIF-Cache-Bypass"),
             metrics_auth_required: parse_or_default(&map, "metrics_auth_required", false)?,
@@ -1119,6 +1219,21 @@ impl Config {
                 })?
             },
 
+            audit_enabled: parse_env_or_default("AIF_AUDIT_ENABLED", false)?,
+            audit_url: env::var("AIF_AUDIT_URL").unwrap_or_else(|_| "http://127.0.0.1:8092".into()),
+            audit_api_key: env::var("AIF_AUDIT_API_KEY").ok(),
+            audit_producer_instance_id: env::var("AIF_AUDIT_PRODUCER_INSTANCE_ID")
+                .unwrap_or_else(|_| "ai-firewall".into()),
+            audit_queue_capacity: parse_env_or_default("AIF_AUDIT_QUEUE_CAPACITY", 10_000usize)?,
+            audit_batch_size: parse_env_or_default("AIF_AUDIT_BATCH_SIZE", 100usize)?,
+            audit_flush_interval_ms: parse_env_or_default("AIF_AUDIT_FLUSH_INTERVAL_MS", 1_000u64)?,
+            audit_timeout_seconds: parse_env_or_default("AIF_AUDIT_TIMEOUT_SECONDS", 5u64)?,
+            audit_retry_max_attempts: parse_env_or_default("AIF_AUDIT_RETRY_MAX_ATTEMPTS", 5usize)?,
+            audit_retry_initial_backoff_ms: parse_env_or_default(
+                "AIF_AUDIT_RETRY_INITIAL_BACKOFF_MS",
+                250u64,
+            )?,
+
             cache_bypass_header: env::var("AIF_CACHE_BYPASS_HEADER")
                 .unwrap_or_else(|_| "X-AIF-Cache-Bypass".into()),
             metrics_auth_required: {
@@ -1261,7 +1376,20 @@ impl Config {
             format!("- security guard enabled: {}", self.security_guard_enabled),
             format!("- privacy guard enabled: {}", self.privacy_guard_enabled),
             format!("- guard fail-open: {}", self.guard_fail_open),
+            format!("- VCAL Audit enabled: {}", self.audit_enabled),
         ];
+
+        if self.audit_enabled {
+            lines.push(format!("- VCAL Audit URL: {}", self.audit_url));
+            lines.push(format!(
+                "- VCAL Audit producer instance: {}",
+                self.audit_producer_instance_id
+            ));
+            lines.push(format!(
+                "- VCAL Audit queue/batch: {}/{}",
+                self.audit_queue_capacity, self.audit_batch_size
+            ));
+        }
 
         if self.semantic_cache_enabled {
             lines.push(format!(
@@ -1362,6 +1490,25 @@ impl fmt::Debug for Config {
                 &self.privacy_guard_timeout_seconds,
             )
             .field("guard_fail_open", &self.guard_fail_open)
+            .field("audit_enabled", &self.audit_enabled)
+            .field("audit_url", &self.audit_url)
+            .field(
+                "audit_api_key",
+                &self.audit_api_key.as_ref().map(|k| mask_secret(k)),
+            )
+            .field(
+                "audit_producer_instance_id",
+                &self.audit_producer_instance_id,
+            )
+            .field("audit_queue_capacity", &self.audit_queue_capacity)
+            .field("audit_batch_size", &self.audit_batch_size)
+            .field("audit_flush_interval_ms", &self.audit_flush_interval_ms)
+            .field("audit_timeout_seconds", &self.audit_timeout_seconds)
+            .field("audit_retry_max_attempts", &self.audit_retry_max_attempts)
+            .field(
+                "audit_retry_initial_backoff_ms",
+                &self.audit_retry_initial_backoff_ms,
+            )
             .field("cache_bypass_header", &self.cache_bypass_header)
             .field("metrics_auth_required", &self.metrics_auth_required)
             .field(
@@ -1445,6 +1592,16 @@ fn allowed_directives() -> HashSet<&'static str> {
         "privacy_guard_policy_id",
         "privacy_guard_timeout_seconds",
         "guard_fail_open",
+        "audit_enabled",
+        "audit_url",
+        "audit_api_key",
+        "audit_producer_instance_id",
+        "audit_queue_capacity",
+        "audit_batch_size",
+        "audit_flush_interval_ms",
+        "audit_timeout_seconds",
+        "audit_retry_max_attempts",
+        "audit_retry_initial_backoff_ms",
         "cache_bypass_header",
         "metrics_auth_required",
         "metrics_auth_token",
@@ -1618,6 +1775,23 @@ fn get_required(map: &HashMap<String, String>, key: &str) -> Result<String> {
 
 fn get_or_default(map: &HashMap<String, String>, key: &str, default: &str) -> String {
     map.get(key).cloned().unwrap_or_else(|| default.to_string())
+}
+
+fn parse_env_or_default<T>(key: &str, default: T) -> Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    match env::var(key) {
+        Ok(value) => value
+            .parse::<T>()
+            .map_err(|e| cfg_err(format!("invalid value for {}: {}", key, e))),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(cfg_err(format!(
+            "environment variable {} is not valid UTF-8",
+            key
+        ))),
+    }
 }
 
 fn parse_or_default<T>(map: &HashMap<String, String>, key: &str, default: T) -> Result<T>

@@ -1,6 +1,6 @@
 # AI Cost Firewall — FAQ
 
-This FAQ is for users browsing the `docs/` directory in the AI Cost Firewall GitHub repository. It gives quick answers for installation, configuration, caching, observability, troubleshooting, and optional VCAL Security Guard / VCAL Privacy Guard integration.
+This FAQ is for users browsing the `docs/` directory in the AI Cost Firewall GitHub repository. It gives quick answers for installation, configuration, caching, observability, troubleshooting, and optional VCAL Security Guard / VCAL Privacy Guard integration and VCAL Audit evidence delivery.
 
 For full configuration details, see:
 
@@ -718,6 +718,54 @@ for compatibility.
 
 ---
 
+---
+
+### What changed in v0.4.1?
+
+AI Cost Firewall v0.4.1 adds production wiring for buffered delivery of structured evidence events to VCAL Audit.
+
+The release includes:
+
+- evidence schema `vcal.evidence.event` version `1.1`
+- stable `trace_id` correlation
+- exactly one terminal `request.completed` or `request.failed` event for each received trace
+- bounded in-memory queueing
+- configurable batching and flush intervals
+- HTTP timeout, retry, and backoff controls
+- configurable Audit endpoint, API key, and producer instance ID
+
+---
+
+### Is VCAL Audit required?
+
+No. AI Cost Firewall remains usable as a standalone caching and cost-control gateway.
+
+VCAL Audit is an optional commercial evidence receiver for retained event storage, trace reconstruction, NDJSON export, and hash-chain verification.
+
+---
+
+### Is Audit delivery guaranteed?
+
+Not in v0.4.1.
+
+The AI Firewall sender uses a bounded in-memory queue. An undelivered batch can be dropped after retry exhaustion, when the queue is full, or if the process terminates before queued events are flushed.
+
+Deployments requiring guaranteed producer-side delivery need a future disk-backed spool or durable broker.
+
+---
+
+### Are streaming requests supported?
+
+No. AI Cost Firewall v0.4.1 supports non-streaming chat completions only.
+
+Requests with:
+
+```json
+{"stream": true}
+```
+
+are rejected with HTTP `422` before cache, guard, or upstream processing.
+
 ## VCAL Security Guard
 
 ### What is VCAL Security Guard?
@@ -960,7 +1008,7 @@ Deployments should still review cache-retention settings, access controls, metri
 
 ### Can AI Firewall use Security Guard and Privacy Guard together?
 
-Yes. AI Firewall v0.3.0 can orchestrate both modules in a single request/response flow:
+Yes. AI Firewall v0.4.1 can orchestrate both modules in a single request/response flow:
 
 ```text
 Client

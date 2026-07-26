@@ -58,6 +58,7 @@ The configuration is logically divided into:
 | Model Pricing | Cost tracking |
 | Metrics & Observability | Prometheus metrics and metrics endpoint access |
 | Guard Orchestration | Optional VCAL Security Guard and VCAL Privacy Guard integration |
+| Audit Delivery | Optional buffered evidence delivery to VCAL Audit |
 | Readiness Behavior | Dependency-aware readiness checks |
 | Operational Settings | Shutdown, reload, and maintenance behavior |
 
@@ -910,7 +911,7 @@ aif_cache_bypass_requests_total
 
 # Guard Orchestration
 
-AI Firewall v0.3.0 can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard.
+AI Firewall v0.4.1 can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard.
 
 Supported modes:
 
