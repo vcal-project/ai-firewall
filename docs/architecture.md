@@ -21,6 +21,12 @@ Only requests that miss all enabled cache layers are forwarded upstream.
 
 ---
 
+# Architecture Overview
+
+[![AI Cost Firewall Architecture Diagram](assets/architecture/ai-cost-firewall-0-4-1.png)](assets/architecture/ai-cost-firewall-0-4-1.png)
+
+---
+
 # Architectural Goals
 
 AI Cost Firewall is designed around four primary goals.
