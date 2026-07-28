@@ -27,7 +27,7 @@ Only requests that miss all enabled cache layers are forwarded upstream.
   <a href="../assets/architecture/ai-cost-firewall-0-4-1.png">
     <img
       src="../assets/architecture/ai-cost-firewall-0-4-1.png"
-      alt="AI Cost Firewall v0.4.1 architecture diagram"
+      alt="AI Cost Firewall v0.4.2 architecture diagram"
     />
   </a>
 </p>
@@ -71,7 +71,7 @@ without requiring provider-specific configuration blocks.
 
 ## Enterprise Guard Orchestration
 
-AI Cost Firewall v0.4.1 can orchestrate optional VCAL enterprise modules while keeping the core gateway focused on caching and cost control.
+AI Cost Firewall v0.4.2 can orchestrate optional VCAL enterprise modules while keeping the core gateway focused on caching and cost control.
 
 Supported modes:
 
@@ -264,7 +264,7 @@ flowchart TD
 
 # Full Enterprise Guard Flow
 
-When VCAL Security Guard and VCAL Privacy Guard are both enabled, the recommended v0.4.1 flow is:
+When VCAL Security Guard and VCAL Privacy Guard are both enabled, the recommended v0.4.2 flow is:
 
 ```text
 Client
@@ -835,7 +835,7 @@ flowchart LR
 
 # VCAL Audit Integration
 
-AI Cost Firewall v0.4.1 can send structured evidence to VCAL Audit through a buffered HTTP sink.
+AI Cost Firewall v0.4.2 can send structured evidence to VCAL Audit through a buffered HTTP sink.
 
 ```text
 Request processing
@@ -859,11 +859,11 @@ The Audit integration is optional and disabled by default.
 
 AI Firewall remains the producer of lifecycle evidence. VCAL Audit becomes the authoritative receiver and assigns persistent sequence numbers and record hashes.
 
-The producer queue is not durable in v0.4.1. Audit availability is therefore decoupled from request availability, but prolonged outages can cause evidence loss after retry exhaustion.
+The producer queue is not durable in v0.4.2. Audit availability is therefore decoupled from request availability, but prolonged outages can cause evidence loss after retry exhaustion.
 
 # Streaming Behavior
 
-AI Cost Firewall v0.4.1 supports non-streaming chat completions only.
+AI Cost Firewall v0.4.2 supports non-streaming chat completions only.
 
 Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing.
 

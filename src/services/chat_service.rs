@@ -210,7 +210,7 @@ impl ChatService {
             ));
         }
 
-        let guarded = self.guard_orchestrator.before_cache(req).await?;
+        let guarded = self.guard_orchestrator.before_cache(req, trace_id).await?;
         let req = guarded.request;
         let guard_context = guarded.context;
         let cache_control = CacheControl {
@@ -261,7 +261,9 @@ impl ChatService {
                     });
                     self.emit(event).await;
 
-                    let response = self.finalize_guarded_response(&guard_context, hit).await?;
+                    let response = self
+                        .finalize_guarded_response(&guard_context, hit, trace_id)
+                        .await?;
                     self.emit(self.request_completed_event(trace_id, "exact_cache"))
                         .await;
                     return Ok(response);
@@ -384,7 +386,7 @@ impl ChatService {
                         }
                     }
                     let response = self
-                        .finalize_guarded_response(&guard_context, hit.response)
+                        .finalize_guarded_response(&guard_context, hit.response, trace_id)
                         .await?;
                     self.emit(self.request_completed_event(trace_id, "semantic_cache"))
                         .await;
@@ -589,7 +591,7 @@ impl ChatService {
         }
 
         let response = self
-            .finalize_guarded_response(&guard_context, response)
+            .finalize_guarded_response(&guard_context, response, trace_id)
             .await?;
         self.emit(self.request_completed_event(trace_id, "upstream"))
             .await;
@@ -600,6 +602,7 @@ impl ChatService {
         &self,
         guard_context: &GuardContext,
         response: ChatCompletionResponse,
+        trace_id: uuid::Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
         // Response path guard order is intentional:
         // 1. Security Guard scans the current assistant response.
@@ -609,11 +612,11 @@ impl ChatService {
         // 3. Privacy Guard restores only responses that passed the response security scan.
         let response = self
             .guard_orchestrator
-            .before_response_restore(guard_context, response)
+            .before_response_restore(guard_context, response, trace_id)
             .await?;
 
         self.guard_orchestrator
-            .restore_response(guard_context, response)
+            .restore_response(guard_context, response, trace_id)
             .await
     }
 
@@ -1086,6 +1089,7 @@ mod tests {
         async fn before_cache(
             &self,
             request: ChatCompletionRequest,
+            _trace_id: uuid::Uuid,
         ) -> Result<GuardedRequest, AppError> {
             Ok(GuardedRequest {
                 request,
@@ -1093,6 +1097,7 @@ mod tests {
                     privacy_mapping_id: Some("mapping-test".to_string()),
                     privacy_tenant_id: None,
                     privacy_placeholder_signature: Some(self.0.to_string()),
+                    ..GuardContext::default()
                 },
                 cache_control: CacheControl::default(),
             })
@@ -1102,6 +1107,7 @@ mod tests {
             &self,
             _context: &GuardContext,
             response: ChatCompletionResponse,
+            _trace_id: uuid::Uuid,
         ) -> Result<ChatCompletionResponse, AppError> {
             Ok(response)
         }

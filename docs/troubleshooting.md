@@ -2,13 +2,13 @@
 
 AI Cost Firewall is designed to fail fast during startup, expose clear runtime errors, and make cache, provider, and cost behavior observable.
 
-This document covers common deployment and operational issues for v0.4.1.
+This document covers common deployment and operational issues for v0.4.2.
 
-AI Cost Firewall v0.4.1 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
+AI Cost Firewall v0.4.2 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
 
 ---
 
-AI Firewall v0.4.1 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
+AI Firewall v0.4.2 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
 
 ---
 # Validate Configuration First
@@ -980,7 +980,7 @@ upstream_timeout_seconds 120;
 embedding_timeout_seconds 30;
 ```
 
-`request_timeout_seconds` remains a backward-compatible fallback. In v0.4.1, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+`request_timeout_seconds` remains a backward-compatible fallback. In v0.4.2, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 Inspect latency metrics:
 
@@ -1183,7 +1183,7 @@ Check:
 - Audit logs
 - AI Firewall timeout and retry settings
 
-The v0.4.1 sender queue is memory-backed. Batches dropped after retry exhaustion are not replayed automatically.
+The v0.4.2 sender queue is memory-backed. Batches dropped after retry exhaustion are not replayed automatically.
 
 ## Requests succeed while Audit is unavailable
 
@@ -1191,7 +1191,7 @@ This is expected. Audit delivery is asynchronous and does not normally fail the 
 
 # Provider Compatibility Notes
 
-AI Cost Firewall v0.4.1 supports OpenAI-compatible provider patterns.
+AI Cost Firewall v0.4.2 supports OpenAI-compatible provider patterns.
 
 The expected configuration model is:
 
@@ -1204,9 +1204,9 @@ This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
 
 It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
 
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.4.1. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.4.2. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
 
-Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.4.1 scope.
+Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.4.2 scope.
 
 ## OpenAI
 

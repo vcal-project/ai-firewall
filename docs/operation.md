@@ -187,7 +187,7 @@ It does not bypass invalid configuration validation. Dependency startup behavior
 
 # Guard Runtime Behavior
 
-AI Firewall v0.4.1 can orchestrate VCAL Security Guard and VCAL Privacy Guard.
+AI Firewall v0.4.2 can orchestrate VCAL Security Guard and VCAL Privacy Guard.
 
 Recommended full enterprise order:
 

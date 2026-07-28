@@ -911,7 +911,7 @@ aif_cache_bypass_requests_total
 
 # Guard Orchestration
 
-AI Firewall v0.4.1 can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard.
+AI Firewall v0.4.2 can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard.
 
 Supported modes:
 

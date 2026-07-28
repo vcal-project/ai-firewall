@@ -11,7 +11,7 @@ It reduces LLM API cost and latency using two cache layers:
 
 Only cache misses are forwarded to the upstream LLM endpoint unless a request explicitly bypasses cache.
 
-AI Cost Firewall v0.4.1 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules for enterprise security and privacy flows. These modules are not required for the default caching-only quick start.
+AI Cost Firewall v0.4.2 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules for enterprise security and privacy flows. These modules are not required for the default caching-only quick start.
 
 The current product model is intentionally simple: AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a flat configuration model.
 
@@ -356,7 +356,7 @@ Expected behavior when Security Guard is enabled in enforce mode:
 HTTP/1.1 403 Forbidden
 ```
 
-AI Cost Firewall v0.4.1 rejects all `stream=true` requests with HTTP 422 before cache, guard, or upstream processing. Use non-streaming requests.
+AI Cost Firewall v0.4.2 rejects all `stream=true` requests with HTTP 422 before cache, guard, or upstream processing. Use non-streaming requests.
 
 ---
 ---

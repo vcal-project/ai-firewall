@@ -441,9 +441,6 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         max_prompt_chars: Some(cfg.max_prompt_chars),
     };
 
-    let guard_orchestrator = build_guard_orchestrator(cfg);
-    tracing::info!("[OK] Guard orchestrator initialized");
-
     let (evidence_sink, evidence_delivery): (
         Arc<dyn EvidenceSink>,
         Option<BufferedHttpEvidenceHandle>,
@@ -472,6 +469,9 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         tracing::info!("VCAL Audit disabled; evidence events will be written to tracing logs");
         (Arc::new(TracingEvidenceSink), None)
     };
+
+    let guard_orchestrator = build_guard_orchestrator(cfg, evidence_sink.clone());
+    tracing::info!("[OK] Guard orchestrator initialized");
 
     let chat_service = Arc::new(ChatService::new_with_guards_and_evidence(
         ChatServiceDeps {

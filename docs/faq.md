@@ -718,24 +718,6 @@ for compatibility.
 
 ---
 
----
-
-### What changed in v0.4.1?
-
-AI Cost Firewall v0.4.1 adds production wiring for buffered delivery of structured evidence events to VCAL Audit.
-
-The release includes:
-
-- evidence schema `vcal.evidence.event` version `1.1`
-- stable `trace_id` correlation
-- exactly one terminal `request.completed` or `request.failed` event for each received trace
-- bounded in-memory queueing
-- configurable batching and flush intervals
-- HTTP timeout, retry, and backoff controls
-- configurable Audit endpoint, API key, and producer instance ID
-
----
-
 ### Is VCAL Audit required?
 
 No. AI Cost Firewall remains usable as a standalone caching and cost-control gateway.
@@ -746,7 +728,7 @@ VCAL Audit is an optional commercial evidence receiver for retained event storag
 
 ### Is Audit delivery guaranteed?
 
-Not in v0.4.1.
+Not in v0.4.2.
 
 The AI Firewall sender uses a bounded in-memory queue. An undelivered batch can be dropped after retry exhaustion, when the queue is full, or if the process terminates before queued events are flushed.
 
@@ -756,7 +738,7 @@ Deployments requiring guaranteed producer-side delivery need a future disk-backe
 
 ### Are streaming requests supported?
 
-No. AI Cost Firewall v0.4.1 supports non-streaming chat completions only.
+No. AI Cost Firewall v0.4.2 supports non-streaming chat completions only.
 
 Requests with:
 
@@ -1008,7 +990,7 @@ Deployments should still review cache-retention settings, access controls, metri
 
 ### Can AI Firewall use Security Guard and Privacy Guard together?
 
-Yes. AI Firewall v0.4.1 can orchestrate both modules in a single request/response flow:
+Yes. AI Firewall v0.4.2 can orchestrate both modules in a single request/response flow:
 
 ```text
 Client

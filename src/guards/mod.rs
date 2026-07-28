@@ -1,11 +1,17 @@
 use crate::metrics;
 use async_trait::async_trait;
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
+use uuid::Uuid;
 
 use crate::{
     config::{Config, PrivacyGuardMode},
     error::AppError,
+    evidence::{
+        DataFinding, DecisionEvidence, EventCategory, EventOutcome, EvidenceEvent, EvidenceSink,
+        EvidenceSource,
+    },
     services::chat_service::CacheControl,
     types::openai::{ChatCompletionRequest, ChatCompletionResponse},
 };
@@ -19,6 +25,7 @@ pub use security_guard::SecurityGuardClient;
 pub struct CompositeGuardOrchestrator {
     security: Option<SecurityGuardClient>,
     privacy: Option<PrivacyGuardOrchestrator>,
+    evidence_sink: Arc<dyn EvidenceSink>,
 }
 
 #[async_trait]
@@ -26,6 +33,7 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
+        trace_id: Uuid,
     ) -> Result<GuardedRequest, AppError> {
         let mut guarded = GuardedRequest {
             request,
@@ -38,6 +46,14 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
 
             match security.scan_request(&guarded.request).await {
                 Ok(()) => {
+                    self.emit_security_event(
+                        trace_id,
+                        "request",
+                        EventOutcome::Allowed,
+                        None,
+                        started.elapsed(),
+                    )
+                    .await;
                     metrics::observe_guard_request("security", "request", "allow");
                     metrics::observe_guard_latency_seconds(
                         "security",
@@ -59,6 +75,19 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                         started.elapsed().as_secs_f64(),
                     );
 
+                    self.emit_security_event(
+                        trace_id,
+                        "request",
+                        if err.is_security_block() {
+                            EventOutcome::Blocked
+                        } else {
+                            EventOutcome::Failed
+                        },
+                        Some(&err),
+                        started.elapsed(),
+                    )
+                    .await;
+
                     if err.is_security_block() {
                         metrics::observe_security_block(
                             err.security_block_stage().unwrap_or("request"),
@@ -74,9 +103,19 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
         if let Some(privacy) = &self.privacy {
             let started = Instant::now();
 
-            match privacy.before_cache(guarded.request).await {
+            match privacy.before_cache(guarded.request, trace_id).await {
                 Ok(next_guarded) => {
-                    metrics::observe_guard_request("privacy", "request", "anonymized");
+                    self.emit_privacy_scan_event(
+                        trace_id,
+                        &next_guarded.context,
+                        started.elapsed(),
+                    )
+                    .await;
+                    metrics::observe_guard_request(
+                        "privacy",
+                        "request",
+                        next_guarded.context.privacy_metric_result(),
+                    );
                     metrics::observe_guard_latency_seconds(
                         "privacy",
                         "request",
@@ -85,6 +124,14 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                     guarded = next_guarded;
                 }
                 Err(err) => {
+                    self.emit_privacy_failure_event(
+                        trace_id,
+                        "request",
+                        "guard.privacy.request.failed",
+                        &err,
+                        started.elapsed(),
+                    )
+                    .await;
                     metrics::observe_guard_request("privacy", "request", "error");
                     metrics::observe_guard_latency_seconds(
                         "privacy",
@@ -103,12 +150,21 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
         &self,
         _context: &GuardContext,
         response: ChatCompletionResponse,
+        trace_id: Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
         if let Some(security) = &self.security {
             let started = Instant::now();
 
             match security.scan_response(&response).await {
                 Ok(()) => {
+                    self.emit_security_event(
+                        trace_id,
+                        "response",
+                        EventOutcome::Allowed,
+                        None,
+                        started.elapsed(),
+                    )
+                    .await;
                     metrics::observe_guard_request("security", "response", "allow");
                     metrics::observe_guard_latency_seconds(
                         "security",
@@ -129,6 +185,19 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                         "response",
                         started.elapsed().as_secs_f64(),
                     );
+
+                    self.emit_security_event(
+                        trace_id,
+                        "response",
+                        if err.is_security_block() {
+                            EventOutcome::Blocked
+                        } else {
+                            EventOutcome::Failed
+                        },
+                        Some(&err),
+                        started.elapsed(),
+                    )
+                    .await;
 
                     if err.is_security_block() {
                         metrics::observe_security_block(
@@ -153,12 +222,26 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
         &self,
         context: &GuardContext,
         response: ChatCompletionResponse,
+        trace_id: Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
         if let Some(privacy) = &self.privacy {
             let started = Instant::now();
 
-            match privacy.restore_response(context, response).await {
+            match privacy.restore_response(context, response, trace_id).await {
                 Ok(restored) => {
+                    let outcome = if context.privacy_mapping_id.is_some() {
+                        EventOutcome::Completed
+                    } else {
+                        EventOutcome::Skipped
+                    };
+                    self.emit_privacy_restore_event(
+                        trace_id,
+                        context,
+                        outcome,
+                        None,
+                        started.elapsed(),
+                    )
+                    .await;
                     metrics::observe_guard_request("privacy", "response", "restored");
                     metrics::observe_guard_latency_seconds(
                         "privacy",
@@ -168,6 +251,14 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                     Ok(restored)
                 }
                 Err(err) => {
+                    self.emit_privacy_restore_event(
+                        trace_id,
+                        context,
+                        EventOutcome::Failed,
+                        Some(&err),
+                        started.elapsed(),
+                    )
+                    .await;
                     metrics::observe_guard_request("privacy", "response", "error");
                     metrics::observe_guard_latency_seconds(
                         "privacy",
@@ -183,6 +274,201 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
     }
 }
 
+impl CompositeGuardOrchestrator {
+    async fn emit(&self, event: EvidenceEvent) {
+        if let Err(error) = self.evidence_sink.emit(event).await {
+            tracing::warn!(error = %error, "failed to emit guard evidence event");
+        }
+    }
+
+    async fn emit_security_event(
+        &self,
+        trace_id: Uuid,
+        stage: &'static str,
+        outcome: EventOutcome,
+        error: Option<&AppError>,
+        elapsed: std::time::Duration,
+    ) {
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::SecurityGuard,
+            EventCategory::Security,
+            format!("guard.security.{stage}.scan"),
+            outcome,
+        );
+        event
+            .attributes
+            .insert("stage".into(), Value::String(stage.into()));
+        event
+            .attributes
+            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        if let Some(error) = error {
+            event.decision = Some(DecisionEvidence {
+                action: if error.is_security_block() {
+                    "block".into()
+                } else {
+                    "fail_request".into()
+                },
+                reason_code: error.evidence_reason_code().into(),
+                rule_id: error.security_block_rule_id().map(str::to_string),
+                severity: None,
+            });
+            event.attributes.insert(
+                "error_class".into(),
+                Value::String(error.metrics_class().into()),
+            );
+        } else {
+            event.decision = Some(DecisionEvidence {
+                action: "allow".into(),
+                reason_code: "security_scan_allowed".into(),
+                rule_id: None,
+                severity: None,
+            });
+        }
+        self.emit(event).await;
+    }
+
+    async fn emit_privacy_scan_event(
+        &self,
+        trace_id: Uuid,
+        context: &GuardContext,
+        elapsed: std::time::Duration,
+    ) {
+        let outcome = if context.privacy_failure_reason.is_some() {
+            EventOutcome::Failed
+        } else if context.privacy_scan_skipped {
+            EventOutcome::Skipped
+        } else {
+            EventOutcome::Allowed
+        };
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::PrivacyGuard,
+            EventCategory::Privacy,
+            "guard.privacy.request.scan",
+            outcome,
+        );
+        event.findings = context.privacy_findings.clone();
+        event
+            .attributes
+            .insert("stage".into(), Value::String("request".into()));
+        event.attributes.insert(
+            "mode".into(),
+            Value::String(
+                context
+                    .privacy_mode
+                    .clone()
+                    .unwrap_or_else(|| "unknown".into()),
+            ),
+        );
+        event.attributes.insert(
+            "action".into(),
+            Value::String(
+                context
+                    .privacy_action
+                    .clone()
+                    .unwrap_or_else(|| "none".into()),
+            ),
+        );
+        event
+            .attributes
+            .insert("modified".into(), Value::Bool(context.privacy_modified));
+        event.attributes.insert(
+            "mapping_created".into(),
+            Value::Bool(context.privacy_mapping_id.is_some()),
+        );
+        event
+            .attributes
+            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        if let Some(reason) = &context.privacy_failure_reason {
+            event.decision = Some(DecisionEvidence {
+                action: "continue_fail_open".into(),
+                reason_code: "privacy_guard_fail_open".into(),
+                rule_id: None,
+                severity: None,
+            });
+            event
+                .attributes
+                .insert("failure_reason".into(), Value::String(reason.clone()));
+        }
+        self.emit(event).await;
+    }
+
+    async fn emit_privacy_failure_event(
+        &self,
+        trace_id: Uuid,
+        stage: &'static str,
+        event_type: &'static str,
+        error: &AppError,
+        elapsed: std::time::Duration,
+    ) {
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::PrivacyGuard,
+            EventCategory::Privacy,
+            event_type,
+            EventOutcome::Failed,
+        );
+        event
+            .attributes
+            .insert("stage".into(), Value::String(stage.into()));
+        event
+            .attributes
+            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        event.attributes.insert(
+            "error_class".into(),
+            Value::String(error.metrics_class().into()),
+        );
+        event.decision = Some(DecisionEvidence {
+            action: "fail_request".into(),
+            reason_code: error.evidence_reason_code().into(),
+            rule_id: None,
+            severity: None,
+        });
+        self.emit(event).await;
+    }
+
+    async fn emit_privacy_restore_event(
+        &self,
+        trace_id: Uuid,
+        context: &GuardContext,
+        outcome: EventOutcome,
+        error: Option<&AppError>,
+        elapsed: std::time::Duration,
+    ) {
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::PrivacyGuard,
+            EventCategory::Privacy,
+            "guard.privacy.response.restore",
+            outcome,
+        );
+        event
+            .attributes
+            .insert("stage".into(), Value::String("response".into()));
+        event.attributes.insert(
+            "mapping_present".into(),
+            Value::Bool(context.privacy_mapping_id.is_some()),
+        );
+        event
+            .attributes
+            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        if let Some(error) = error {
+            event.attributes.insert(
+                "error_class".into(),
+                Value::String(error.metrics_class().into()),
+            );
+            event.decision = Some(DecisionEvidence {
+                action: "fail_request".into(),
+                reason_code: error.evidence_reason_code().into(),
+                rule_id: None,
+                severity: None,
+            });
+        }
+        self.emit(event).await;
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct GuardContext {
     pub privacy_mapping_id: Option<String>,
@@ -190,6 +476,26 @@ pub struct GuardContext {
     /// Deterministic placeholder/entity signature for semantic cache isolation.
     /// Example: EMAIL:1|IP:1|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|OTHER:0
     pub privacy_placeholder_signature: Option<String>,
+    pub privacy_findings: Vec<DataFinding>,
+    pub privacy_action: Option<String>,
+    pub privacy_mode: Option<String>,
+    pub privacy_modified: bool,
+    pub privacy_scan_skipped: bool,
+    pub privacy_failure_reason: Option<String>,
+}
+
+impl GuardContext {
+    fn privacy_metric_result(&self) -> &'static str {
+        if self.privacy_failure_reason.is_some() {
+            "error"
+        } else if self.privacy_scan_skipped {
+            "skipped"
+        } else if self.privacy_modified {
+            "anonymized"
+        } else {
+            "allow"
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -204,12 +510,14 @@ pub trait GuardOrchestrator: Send + Sync {
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
+        trace_id: Uuid,
     ) -> Result<GuardedRequest, AppError>;
 
     async fn before_response_restore(
         &self,
         _context: &GuardContext,
         response: ChatCompletionResponse,
+        _trace_id: Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
         Ok(response)
     }
@@ -218,6 +526,7 @@ pub trait GuardOrchestrator: Send + Sync {
         &self,
         context: &GuardContext,
         response: ChatCompletionResponse,
+        trace_id: Uuid,
     ) -> Result<ChatCompletionResponse, AppError>;
 }
 
@@ -228,6 +537,7 @@ impl GuardOrchestrator for NoopGuardOrchestrator {
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
+        _trace_id: Uuid,
     ) -> Result<GuardedRequest, AppError> {
         Ok(GuardedRequest {
             request,
@@ -240,12 +550,16 @@ impl GuardOrchestrator for NoopGuardOrchestrator {
         &self,
         _context: &GuardContext,
         response: ChatCompletionResponse,
+        _trace_id: Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
         Ok(response)
     }
 }
 
-pub fn build_guard_orchestrator(cfg: &Config) -> Arc<dyn GuardOrchestrator> {
+pub fn build_guard_orchestrator(
+    cfg: &Config,
+    evidence_sink: Arc<dyn EvidenceSink>,
+) -> Arc<dyn GuardOrchestrator> {
     let security = if cfg.security_guard_enabled {
         Some(
             SecurityGuardClient::new(
@@ -283,7 +597,11 @@ pub fn build_guard_orchestrator(cfg: &Config) -> Arc<dyn GuardOrchestrator> {
     if security.is_none() && privacy.is_none() {
         Arc::new(NoopGuardOrchestrator)
     } else {
-        Arc::new(CompositeGuardOrchestrator { security, privacy })
+        Arc::new(CompositeGuardOrchestrator {
+            security,
+            privacy,
+            evidence_sink,
+        })
     }
 }
 
@@ -403,7 +721,8 @@ mod tests {
 
         for (security_enabled, privacy_enabled, mode) in combinations {
             let cfg = test_config(security_enabled, privacy_enabled);
-            let _orchestrator = build_guard_orchestrator(&cfg);
+            let _orchestrator =
+                build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink));
 
             tracing::debug!(mode, "guard orchestrator built successfully");
         }

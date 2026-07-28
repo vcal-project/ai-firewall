@@ -148,6 +148,7 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
     async fn before_cache(
         &self,
         mut request: ChatCompletionRequest,
+        _trace_id: Uuid,
     ) -> Result<GuardedRequest, AppError> {
         metrics::GUARD_HOOK_CALLS_TOTAL
             .with_label_values(&[GUARD_NAME, PHASE_SCAN, "attempt"])
@@ -160,7 +161,11 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
                 .inc();
             return Ok(GuardedRequest {
                 request,
-                context: GuardContext::default(),
+                context: GuardContext {
+                    privacy_mode: Some(privacy_mode_as_str(self.mode).to_string()),
+                    privacy_scan_skipped: true,
+                    ..GuardContext::default()
+                },
                 cache_control: CacheControl::default(),
             });
         }
@@ -182,10 +187,15 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
         {
             Ok(response) => response,
             Err(e) => {
-                self.guard_unavailable(PHASE_SCAN, e.to_string())?;
+                let reason = e.to_string();
+                self.guard_unavailable(PHASE_SCAN, reason.clone())?;
                 return Ok(GuardedRequest {
                     request,
-                    context: GuardContext::default(),
+                    context: GuardContext {
+                        privacy_mode: Some(privacy_mode_as_str(self.mode).to_string()),
+                        privacy_failure_reason: Some(reason),
+                        ..GuardContext::default()
+                    },
                     cache_control: CacheControl::default(),
                 });
             }
@@ -194,10 +204,15 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            self.guard_unavailable(PHASE_SCAN, format!("HTTP {status}: {body}"))?;
+            let reason = format!("HTTP {status}: {body}");
+            self.guard_unavailable(PHASE_SCAN, reason.clone())?;
             return Ok(GuardedRequest {
                 request,
-                context: GuardContext::default(),
+                context: GuardContext {
+                    privacy_mode: Some(privacy_mode_as_str(self.mode).to_string()),
+                    privacy_failure_reason: Some(reason),
+                    ..GuardContext::default()
+                },
                 cache_control: CacheControl::default(),
             });
         }
@@ -205,10 +220,15 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
         let scan = match response.json::<PrivacyScanResponse>().await {
             Ok(scan) => scan,
             Err(e) => {
-                self.guard_unavailable(PHASE_SCAN, format!("invalid JSON response: {e}"))?;
+                let reason = format!("invalid JSON response: {e}");
+                self.guard_unavailable(PHASE_SCAN, reason.clone())?;
                 return Ok(GuardedRequest {
                     request,
-                    context: GuardContext::default(),
+                    context: GuardContext {
+                        privacy_mode: Some(privacy_mode_as_str(self.mode).to_string()),
+                        privacy_failure_reason: Some(reason),
+                        ..GuardContext::default()
+                    },
                     cache_control: CacheControl::default(),
                 });
             }
@@ -251,7 +271,11 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
 
                     return Ok(GuardedRequest {
                         request,
-                        context: GuardContext::default(),
+                        context: GuardContext {
+                            privacy_mode: Some(privacy_mode_as_str(self.mode).to_string()),
+                            privacy_failure_reason: Some(error),
+                            ..GuardContext::default()
+                        },
                         cache_control: CacheControl::default(),
                     });
                 }
@@ -304,6 +328,21 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
                 privacy_mapping_id: scan.mapping_id,
                 privacy_tenant_id: scan.tenant_id.or_else(|| self.tenant_id.clone()),
                 privacy_placeholder_signature,
+                privacy_findings: scan
+                    .findings
+                    .iter()
+                    .map(|finding| crate::evidence::DataFinding {
+                        kind: finding.kind.as_str().to_string(),
+                        count: finding.count as u64,
+                        action: Some(scan.action.clone()),
+                        detector_id: None,
+                    })
+                    .collect(),
+                privacy_action: Some(scan.action.clone()),
+                privacy_mode: Some(privacy_mode_as_str(self.mode).to_string()),
+                privacy_modified: scan.modified,
+                privacy_scan_skipped: false,
+                privacy_failure_reason: None,
             },
             cache_control: CacheControl::default(),
         })
@@ -313,6 +352,7 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
         &self,
         context: &GuardContext,
         mut response: ChatCompletionResponse,
+        _trace_id: Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
         let Some(mapping_id) = context.privacy_mapping_id.as_deref() else {
             return Ok(response);
@@ -891,7 +931,7 @@ mod tests {
         let response = openai_response_with_mixed_content();
 
         let restored = guard
-            .restore_response(&GuardContext::default(), response.clone())
+            .restore_response(&GuardContext::default(), response.clone(), Uuid::new_v4())
             .await
             .unwrap();
 

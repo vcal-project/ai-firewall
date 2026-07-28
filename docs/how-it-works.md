@@ -143,7 +143,7 @@ flowchart TD
 
 # Guard Orchestration Flow
 
-AI Firewall v0.4.1 can run as a guard orchestrator in addition to a cache gateway.
+AI Firewall v0.4.2 can run as a guard orchestrator in addition to a cache gateway.
 
 When both VCAL Security Guard and VCAL Privacy Guard are enabled, the flow is:
 
@@ -694,11 +694,11 @@ When Audit delivery is enabled, events are enqueued without synchronously blocki
 {audit_url}/v1/events/batch
 ```
 
-Failed deliveries are retried with configurable backoff. The queue is bounded and memory-backed, so v0.4.1 does not guarantee durable replay after process termination or retry exhaustion.
+Failed deliveries are retried with configurable backoff. The queue is bounded and memory-backed, so v0.4.2 does not guarantee durable replay after process termination or retry exhaustion.
 
 # Streaming Behavior
 
-AI Cost Firewall v0.4.1 supports non-streaming chat completions only.
+AI Cost Firewall v0.4.2 supports non-streaming chat completions only.
 
 Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing.
 
