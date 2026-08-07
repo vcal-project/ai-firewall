@@ -10,6 +10,10 @@
 configs/*.conf
 !configs/ai-firewall.conf.example
 
+deploy/grafana/dashboards/*.json
+!deploy/grafana/dashboards/ai-cost-firewall-diagnostics.json
+!deploy/grafana/dashboards/ai-cost-firewall-overview.json
+
 # Logs
 *.log
 
