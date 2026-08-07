@@ -1,9 +1,15 @@
+config_version 1;
 listen_addr 0.0.0.0:8080;
 
 # Redis exact cache
 #
 # Local/dev example:
 redis_url redis://redis:6379;
+
+# Bound each Redis GET/SET operation, including time waiting for the shared
+# connection-manager mutex. This prevents a dead Redis connection from stalling
+# fail-open request processing indefinitely.
+redis_timeout_seconds 2;
 
 # Production reminder:
 # Protect Redis with authentication and private networking.
@@ -148,7 +154,9 @@ privacy_guard_timeout_seconds 3;
 # Shared guard failure behavior.
 # true  = fail open if an enabled guard is unavailable
 # false = fail closed if an enabled guard is unavailable
-guard_fail_open true;
+# Production-safe default is fail closed. Enable fail-open only as an explicit
+# availability-over-enforcement decision.
+guard_fail_open false;
 
 # Full enterprise guard profile:
 #
@@ -182,6 +190,8 @@ guard_fail_open true;
 # Disabled by default. When enabled, AI Firewall sends structured
 # vcal.evidence.event schema v1.1 batches to VCAL Audit. Delivery is asynchronous:
 # LLM requests are not failed when Audit is temporarily unavailable.
+# v0.5.0 delivery remains in-memory/best-effort: a process crash, full queue,
+# or retry exhaustion can lose evidence. Durable local spooling is a later mode.
 #
 # audit_api_key must match VCAL_AUDIT_API_KEY in the Audit service.
 audit_enabled false;
@@ -194,6 +204,11 @@ audit_flush_interval_ms 1000;
 audit_timeout_seconds 5;
 audit_retry_max_attempts 5;
 audit_retry_initial_backoff_ms 250;
+audit_retry_max_backoff_ms 5000;
 
 # When Audit is disabled, evidence remains available through tracing logs:
 # RUST_LOG=info,vcal_evidence=info
+
+# Backpressure limits
+max_inflight_requests 1000;
+max_inflight_upstream_requests 500;

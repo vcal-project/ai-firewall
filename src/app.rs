@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, State},
-    http::{header, HeaderMap, Request, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -39,8 +39,9 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tower_http::trace::TraceLayer;
+use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct ShutdownState {
@@ -123,6 +124,7 @@ pub struct AppState {
     pub dependencies: DependencyState,
     pub evidence_delivery: Arc<Mutex<Option<BufferedHttpEvidenceHandle>>>,
     pub shutdown: ShutdownState,
+    pub request_limit: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -154,7 +156,59 @@ impl AppState {
     }
 
     pub async fn shutdown_evidence_delivery(&self, flush_timeout: Duration) {
+        let (queued_before, enqueued_before, dropped_before, delivered_before) =
+            metrics::evidence_delivery_snapshot();
+        tracing::info!(
+            queued = queued_before,
+            enqueued = enqueued_before,
+            delivered = delivered_before,
+            dropped = dropped_before,
+            "flushing VCAL Audit evidence delivery"
+        );
         self.replace_evidence_delivery(None, flush_timeout).await;
+        let (queued_after, enqueued_after, dropped_after, delivered_after) =
+            metrics::evidence_delivery_snapshot();
+        if queued_after > 0 || dropped_after > dropped_before {
+            tracing::warn!(
+                queued = queued_after,
+                enqueued = enqueued_after,
+                delivered = delivered_after,
+                dropped = dropped_after,
+                "VCAL Audit shutdown completed with undelivered or dropped evidence"
+            );
+        } else {
+            tracing::info!(
+                queued = queued_after,
+                enqueued = enqueued_after,
+                delivered = delivered_after,
+                dropped = dropped_after,
+                "VCAL Audit evidence delivery stopped cleanly"
+            );
+        }
+    }
+
+    pub async fn readiness_failure(&self) -> Option<&'static str> {
+        if !self.shutdown.is_ready() {
+            return Some("not ready: shutting down\n");
+        }
+
+        let cfg = self.config.read().await;
+        let requires_redis = cfg.readiness_requires_redis;
+        let requires_qdrant = cfg.readiness_requires_qdrant;
+        let requires_upstream = cfg.readiness_requires_upstream;
+        drop(cfg);
+
+        if requires_redis && !self.dependencies.redis_available.load(Ordering::Relaxed) {
+            return Some("not ready: redis unavailable\n");
+        }
+        if requires_qdrant && !self.dependencies.qdrant_available.load(Ordering::Relaxed) {
+            return Some("not ready: qdrant unavailable\n");
+        }
+        if requires_upstream && !self.dependencies.upstream_available.load(Ordering::Relaxed) {
+            return Some("not ready: upstream unavailable\n");
+        }
+
+        None
     }
 
     pub async fn is_model_allowed(&self, model: &str) -> bool {
@@ -300,7 +354,11 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
                     redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
                     "[OK] Redis connected"
                 );
-                Arc::new(RedisExactCache::new(conn, cfg.exact_cache_ttl_seconds))
+                Arc::new(RedisExactCache::new(
+                    conn,
+                    cfg.exact_cache_ttl_seconds,
+                    Duration::from_secs(cfg.redis_timeout_seconds),
+                ))
             }
             Err(e) if cfg.exact_cache_fail_open => {
                 tracing::warn!(
@@ -439,6 +497,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         semantic_cache_store_enabled: cfg.semantic_cache_store_enabled,
         semantic_cache_fail_open: cfg.semantic_cache_fail_open,
         max_prompt_chars: Some(cfg.max_prompt_chars),
+        max_inflight_upstream_requests: cfg.max_inflight_upstream_requests,
     };
 
     let (evidence_sink, evidence_delivery): (
@@ -456,6 +515,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
             request_timeout: Duration::from_secs(cfg.audit_timeout_seconds),
             retry_max_attempts: cfg.audit_retry_max_attempts,
             retry_initial_backoff: Duration::from_millis(cfg.audit_retry_initial_backoff_ms),
+            retry_max_backoff: Duration::from_millis(cfg.audit_retry_max_backoff_ms),
         })?;
         tracing::info!(
             audit_endpoint = %endpoint,
@@ -470,8 +530,11 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         (Arc::new(TracingEvidenceSink), None)
     };
 
-    let guard_orchestrator = build_guard_orchestrator(cfg, evidence_sink.clone());
+    let guard_orchestrator = build_guard_orchestrator(cfg, evidence_sink.clone())
+        .context("failed to initialize guard orchestrator")?;
     tracing::info!("[OK] Guard orchestrator initialized");
+
+    let dependencies = DependencyState::new(redis_available, qdrant_available, upstream_available);
 
     let chat_service = Arc::new(ChatService::new_with_guards_and_evidence(
         ChatServiceDeps {
@@ -480,6 +543,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
             upstream,
             guard_orchestrator,
             evidence_sink,
+            dependencies: dependencies.clone(),
             upstream_metadata: UpstreamMetadata {
                 provider_type: cfg.upstream_provider.as_str().to_string(),
                 provider_name: infer_upstream_provider_name(
@@ -497,9 +561,23 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
 
     Ok(RuntimeBuild {
         chat_service,
-        dependencies: DependencyState::new(redis_available, qdrant_available, upstream_available),
+        dependencies,
         evidence_delivery,
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RequestTraceId(pub Uuid);
+
+async fn trace_id_middleware(mut request: Request<Body>, next: Next) -> Response {
+    let trace_id = RequestTraceId(Uuid::new_v4());
+    request.extensions_mut().insert(trace_id);
+    let mut response = next.run(request).await;
+    let trace_header = trace_id.0.to_string();
+    if let Ok(value) = HeaderValue::from_bytes(trace_header.as_bytes()) {
+        response.headers_mut().insert("x-vcal-trace-id", value);
+    }
+    response
 }
 
 pub async fn build_app(config: Config) -> Result<BuiltApp> {
@@ -513,6 +591,7 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
         dependencies: runtime.dependencies,
         evidence_delivery: Arc::new(Mutex::new(runtime.evidence_delivery)),
         shutdown: ShutdownState::new(),
+        request_limit: Arc::new(Semaphore::new(config.max_inflight_requests)),
     });
 
     let router = Router::new()
@@ -526,6 +605,7 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
             state.clone(),
             shutdown_gate_middleware,
         ))
+        .layer(axum::middleware::from_fn(trace_id_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
@@ -536,6 +616,9 @@ async fn version() -> impl IntoResponse {
     let body = json!({
         "product": release::PRODUCT_NAME,
         "version": release::PRODUCT_VERSION,
+        "api_compatibility": release::API_COMPATIBILITY_VERSION,
+        "config_schema": release::CONFIG_SCHEMA_VERSION,
+        "evidence_schema": crate::evidence::EVIDENCE_SCHEMA_VERSION,
         "release_title": release::RELEASE_TITLE,
         "supported_api_style": release::SUPPORTED_API_STYLE,
         "compatibility_model": release::COMPATIBILITY_MODEL,
@@ -574,49 +657,21 @@ async fn metrics_handler(State(state): State<Arc<AppState>>, headers: HeaderMap)
     }
 
     drop(cfg);
+    metrics::READINESS_STATE.set(if state.readiness_failure().await.is_none() {
+        1
+    } else {
+        0
+    });
     api::metrics().await.into_response()
 }
 
 async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, &'static str) {
-    if !state.shutdown.is_ready() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "not ready: shutting down\n",
-        );
+    if let Some(reason) = state.readiness_failure().await {
+        metrics::READINESS_STATE.set(0);
+        return (StatusCode::SERVICE_UNAVAILABLE, reason);
     }
 
-    let cfg = state.config.read().await;
-    let requires_redis = cfg.readiness_requires_redis;
-    let requires_qdrant = cfg.readiness_requires_qdrant;
-    let requires_upstream = cfg.readiness_requires_upstream;
-    drop(cfg);
-
-    if requires_redis && !state.dependencies.redis_available.load(Ordering::Relaxed) {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "not ready: redis unavailable\n",
-        );
-    }
-
-    if requires_qdrant && !state.dependencies.qdrant_available.load(Ordering::Relaxed) {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "not ready: qdrant unavailable\n",
-        );
-    }
-
-    if requires_upstream
-        && !state
-            .dependencies
-            .upstream_available
-            .load(Ordering::Relaxed)
-    {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "not ready: upstream unavailable\n",
-        );
-    }
-
+    metrics::READINESS_STATE.set(1);
     (StatusCode::OK, "ready\n")
 }
 
@@ -645,6 +700,28 @@ async fn shutdown_gate_middleware(
         )
             .into_response();
     }
+
+    if is_probe {
+        return next.run(req).await;
+    }
+
+    let _request_permit = match state.request_limit.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            metrics::observe_backpressure_rejection("request");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": {
+                        "code": 503,
+                        "message": "request concurrency limit reached",
+                        "type": "backpressure"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
 
     state
         .shutdown

@@ -26,6 +26,7 @@ pub struct CompositeGuardOrchestrator {
     security: Option<SecurityGuardClient>,
     privacy: Option<PrivacyGuardOrchestrator>,
     evidence_sink: Arc<dyn EvidenceSink>,
+    guard_fail_open: bool,
 }
 
 #[async_trait]
@@ -93,9 +94,19 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                             err.security_block_stage().unwrap_or("request"),
                             err.security_block_rule_id(),
                         );
+                        return Err(err);
                     }
 
-                    return Err(err);
+                    if self.guard_fail_open {
+                        tracing::warn!(
+                            guard = "security",
+                            stage = "request",
+                            error = %err.message(),
+                            "Security Guard request scan failed; guard_fail_open=true so request continues"
+                        );
+                    } else {
+                        return Err(err);
+                    }
                 }
             }
         }
@@ -208,9 +219,19 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                         if self.privacy.is_some() {
                             metrics::observe_privacy_restore_skipped("security_response_blocked");
                         }
+                        return Err(err);
                     }
 
-                    return Err(err);
+                    if self.guard_fail_open {
+                        tracing::warn!(
+                            guard = "security",
+                            stage = "response",
+                            error = %err.message(),
+                            "Security Guard response scan failed; guard_fail_open=true so response continues"
+                        );
+                    } else {
+                        return Err(err);
+                    }
                 }
             }
         }
@@ -559,7 +580,7 @@ impl GuardOrchestrator for NoopGuardOrchestrator {
 pub fn build_guard_orchestrator(
     cfg: &Config,
     evidence_sink: Arc<dyn EvidenceSink>,
-) -> Arc<dyn GuardOrchestrator> {
+) -> anyhow::Result<Arc<dyn GuardOrchestrator>> {
     let security = if cfg.security_guard_enabled {
         Some(
             SecurityGuardClient::new(
@@ -567,13 +588,12 @@ pub fn build_guard_orchestrator(
                 cfg.security_guard_api_key.clone(),
                 cfg.security_guard_timeout_seconds,
             )
-            .unwrap_or_else(|e| {
-                tracing::error!(
-                    error = %e.message(),
-                    "failed to initialize Security Guard client"
-                );
-                panic!("failed to initialize Security Guard client");
-            }),
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to initialize Security Guard client: {}",
+                    e.message()
+                )
+            })?,
         )
     } else {
         None
@@ -595,13 +615,14 @@ pub fn build_guard_orchestrator(
     };
 
     if security.is_none() && privacy.is_none() {
-        Arc::new(NoopGuardOrchestrator)
+        Ok(Arc::new(NoopGuardOrchestrator))
     } else {
-        Arc::new(CompositeGuardOrchestrator {
+        Ok(Arc::new(CompositeGuardOrchestrator {
             security,
             privacy,
             evidence_sink,
-        })
+            guard_fail_open: cfg.guard_fail_open,
+        }))
     }
 }
 
@@ -631,8 +652,10 @@ mod tests {
         );
 
         Config {
+            config_version: crate::release::CONFIG_SCHEMA_VERSION,
             listen_addr: "127.0.0.1:8080".to_string(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
+            redis_timeout_seconds: 2,
 
             upstream_provider: ProviderKind::OpenAiCompatible,
             upstream_base_url: "http://127.0.0.1:9000".to_string(),
@@ -660,6 +683,8 @@ mod tests {
             graceful_shutdown_timeout_seconds: 10,
             max_request_body_bytes: 1_048_576,
             max_prompt_chars: 200_000,
+            max_inflight_requests: 1000,
+            max_inflight_upstream_requests: 500,
 
             exact_cache_enabled: true,
             exact_cache_fail_open: true,
@@ -695,6 +720,7 @@ mod tests {
             audit_timeout_seconds: 5,
             audit_retry_max_attempts: 3,
             audit_retry_initial_backoff_ms: 100,
+            audit_retry_max_backoff_ms: 5_000,
 
             cache_bypass_header: "X-AIF-Cache-Bypass".to_string(),
             metrics_auth_required: false,
@@ -710,6 +736,57 @@ mod tests {
         }
     }
 
+    fn test_request() -> crate::types::openai::ChatCompletionRequest {
+        crate::types::openai::ChatCompletionRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![crate::types::openai::ChatMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("failure injection request"),
+                name: None,
+                extra: serde_json::Map::new(),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn security_transport_failure_respects_fail_open() {
+        let mut cfg = test_config(true, false);
+        cfg.security_guard_url = "http://127.0.0.1:9".to_string();
+        cfg.guard_fail_open = true;
+        let guard = build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
+            .expect("guard should initialize");
+
+        let result = guard
+            .before_cache(test_request(), uuid::Uuid::new_v4())
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Security Guard outage must fail open when configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_transport_failure_respects_fail_closed() {
+        let mut cfg = test_config(true, false);
+        cfg.security_guard_url = "http://127.0.0.1:9".to_string();
+        cfg.guard_fail_open = false;
+        let guard = build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
+            .expect("guard should initialize");
+
+        let error = guard
+            .before_cache(test_request(), uuid::Uuid::new_v4())
+            .await
+            .expect_err("Security Guard outage must fail closed when configured");
+
+        assert_eq!(error.metrics_class(), "security_guard_unavailable");
+    }
+
     #[test]
     fn all_four_guard_module_combinations_build_successfully() {
         let combinations = [
@@ -722,7 +799,8 @@ mod tests {
         for (security_enabled, privacy_enabled, mode) in combinations {
             let cfg = test_config(security_enabled, privacy_enabled);
             let _orchestrator =
-                build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink));
+                build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
+                    .expect("guard orchestrator should initialize");
 
             tracing::debug!(mode, "guard orchestrator built successfully");
         }

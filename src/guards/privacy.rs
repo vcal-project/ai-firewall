@@ -720,6 +720,48 @@ mod tests {
         assert!(error.contains("expected role 'user', got 'assistant'"));
     }
 
+    #[tokio::test]
+    async fn scan_transport_failure_fails_open_when_configured() {
+        let guard = PrivacyGuardOrchestrator::new(
+            "http://127.0.0.1:9".to_string(),
+            None,
+            PrivacyGuardMode::Anonymize,
+            true,
+            None,
+            None,
+            true,
+            Duration::from_secs(1),
+        );
+
+        let result = guard
+            .before_cache(openai_request_with_mixed_content(), uuid::Uuid::new_v4())
+            .await;
+        assert!(
+            result.is_ok(),
+            "Privacy Guard outage must fail open when configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_transport_failure_fails_closed_when_configured() {
+        let guard = PrivacyGuardOrchestrator::new(
+            "http://127.0.0.1:9".to_string(),
+            None,
+            PrivacyGuardMode::Anonymize,
+            true,
+            None,
+            None,
+            false,
+            Duration::from_secs(1),
+        );
+
+        let error = guard
+            .before_cache(openai_request_with_mixed_content(), uuid::Uuid::new_v4())
+            .await
+            .expect_err("Privacy Guard outage must fail closed when configured");
+        assert_eq!(error.metrics_class(), "privacy_anonymization_failed");
+    }
+
     #[test]
     fn restore_unavailable_fails_closed_even_when_guard_fail_open_is_true() {
         let guard = PrivacyGuardOrchestrator::new(

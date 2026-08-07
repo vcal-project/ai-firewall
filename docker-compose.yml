@@ -1,6 +1,6 @@
 services:
   redis:
-    image: redis:8
+    image: redis:8.10
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -12,57 +12,118 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.18.2
+
     volumes:
       - qdrant_storage:/qdrant/storage
+
+    healthcheck:
+      test:
+        - "CMD"
+        - "/usr/bin/bash"
+        - "-c"
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/6333 &&
+          printf 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          read -r status <&3 &&
+          [[ "$$status" == *" 200 "* ]]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
     restart: unless-stopped
 
   firewall:
     build:
       context: .
       dockerfile: Dockerfile
-    image: vcalproject/ai-firewall:v0.4.2
+    image: vcalproject/ai-firewall:v0.5.0
     depends_on:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "8080:8080"
     volumes:
       - ./configs:/configs:ro
     command: ["--config", "/configs/ai-firewall.conf"]
+    healthcheck:
+      test:
+        - "CMD"
+        - "/usr/local/bin/ai-firewall"
+        - "--healthcheck"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     environment:
       RUST_LOG: "info,vcal_evidence=info"
-      # These environment variables are used only when no config file is supplied.
-      # AIF_AUDIT_ENABLED: "true"
-      # AIF_AUDIT_URL: "http://vcal-audit:8092"
-      # AIF_AUDIT_API_KEY: "replace-with-shared-audit-token"
-      # AIF_AUDIT_PRODUCER_INSTANCE_ID: "ai-firewall-01"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    stop_grace_period: 30s
 
   prometheus:
     image: prom/prometheus:v3.10.0
+
     depends_on:
-      - firewall
+      firewall:
+        condition: service_healthy
+
     ports:
       - "9090:9090"
+
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+    healthcheck:
+      test:
+        - "CMD"
+        - "wget"
+        - "-q"
+        - "--spider"
+        - "http://127.0.0.1:9090/-/ready"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
     restart: unless-stopped
 
   grafana:
     image: grafana/grafana:12.4.2
+
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
+
     ports:
       - "3000:3000"
+
     volumes:
       - grafana_data:/var/lib/grafana
       - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
       - ./deploy/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
       - ./deploy/grafana/provisioning/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+
+    healthcheck:
+      test:
+        - "CMD"
+        - "wget"
+        - "-q"
+        - "--spider"
+        - "http://127.0.0.1:3000/api/health"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
     restart: unless-stopped
 
 volumes:

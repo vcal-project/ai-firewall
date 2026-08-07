@@ -1,4 +1,5 @@
 use super::*;
+use crate::release;
 use serial_test::serial;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,8 +24,10 @@ fn minimal_valid_config() -> Config {
     );
 
     Config {
+        config_version: release::CONFIG_SCHEMA_VERSION,
         listen_addr: "127.0.0.1:8080".to_string(),
         redis_url: "redis://127.0.0.1:6379".to_string(),
+        redis_timeout_seconds: 2,
 
         upstream_provider: ProviderKind::OpenAiCompatible,
         upstream_base_url: "https://api.openai.com".to_string(),
@@ -51,6 +54,8 @@ fn minimal_valid_config() -> Config {
         graceful_shutdown_timeout_seconds: 10,
         max_request_body_bytes: 1_048_576,
         max_prompt_chars: 200_000,
+        max_inflight_requests: 1000,
+        max_inflight_upstream_requests: 500,
 
         exact_cache_enabled: true,
         exact_cache_fail_open: true,
@@ -81,6 +86,7 @@ fn minimal_valid_config() -> Config {
         audit_timeout_seconds: 5,
         audit_retry_max_attempts: 3,
         audit_retry_initial_backoff_ms: 100,
+        audit_retry_max_backoff_ms: 5_000,
 
         security_guard_enabled: false,
         security_guard_url: "http://vcal-security-guard:8091".to_string(),
@@ -806,4 +812,86 @@ fn audit_batch_size_cannot_exceed_queue_capacity() {
 
     let err = cfg.validate().unwrap_err().to_string();
     assert!(err.contains("audit_batch_size must not exceed audit_queue_capacity"));
+}
+
+#[test]
+fn readiness_cannot_require_disabled_redis_cache() {
+    let mut cfg = minimal_valid_config();
+    cfg.exact_cache_enabled = false;
+    cfg.readiness_requires_redis = true;
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("readiness_requires_redis=true requires exact_cache_enabled=true"));
+}
+
+#[test]
+fn readiness_cannot_require_disabled_semantic_cache() {
+    let mut cfg = minimal_valid_config();
+    cfg.semantic_cache_enabled = false;
+    cfg.readiness_requires_qdrant = true;
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("readiness_requires_qdrant=true requires semantic_cache_enabled=true"));
+}
+
+#[test]
+fn enabled_guard_fail_open_is_reported_as_hardening_warning() {
+    let mut cfg = minimal_valid_config();
+    cfg.security_guard_enabled = true;
+    cfg.guard_fail_open = true;
+
+    let warnings = cfg.hardening_warnings();
+    assert!(warnings.iter().any(|w| w.contains("guard_fail_open=true")));
+}
+
+#[test]
+fn unauthenticated_audit_and_best_effort_delivery_are_reported() {
+    let mut cfg = minimal_valid_config();
+    cfg.audit_enabled = true;
+    cfg.audit_api_key = None;
+
+    let warnings = cfg.hardening_warnings();
+    assert!(warnings.iter().any(|w| w.contains("without audit_api_key")));
+    assert!(warnings.iter().any(|w| w.contains("best-effort")));
+}
+
+#[test]
+fn audit_retry_max_backoff_must_cover_initial_backoff() {
+    let mut cfg = minimal_valid_config();
+    cfg.audit_enabled = true;
+    cfg.audit_retry_initial_backoff_ms = 1_000;
+    cfg.audit_retry_max_backoff_ms = 500;
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("audit_retry_max_backoff_ms must be >= audit_retry_initial_backoff_ms"));
+}
+
+#[test]
+fn debug_output_masks_all_configured_secrets() {
+    let mut cfg = minimal_valid_config();
+    cfg.redis_url = "redis://user:redis-secret@127.0.0.1:6379".into();
+    cfg.upstream_api_key = "upstream-secret-value".into();
+    cfg.embedding_api_key = "embedding-secret-value".into();
+    cfg.qdrant_api_key = Some("qdrant-secret-value".into());
+    cfg.security_guard_api_key = Some("security-secret-value".into());
+    cfg.privacy_guard_api_key = Some("privacy-secret-value".into());
+    cfg.audit_api_key = Some("audit-secret-value".into());
+    cfg.metrics_auth_token = Some("metrics-secret-value".into());
+
+    let rendered = format!("{cfg:?}");
+    for secret in [
+        "redis-secret",
+        "upstream-secret-value",
+        "embedding-secret-value",
+        "qdrant-secret-value",
+        "security-secret-value",
+        "privacy-secret-value",
+        "audit-secret-value",
+        "metrics-secret-value",
+    ] {
+        assert!(
+            !rendered.contains(secret),
+            "secret leaked in Debug output: {secret}"
+        );
+    }
 }

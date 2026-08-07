@@ -1,21 +1,21 @@
 use crate::{
-    app::AppState,
+    app::{AppState, RequestTraceId},
     error::AppError,
     metrics,
     services::chat_service::CacheControl,
     types::openai::{ChatCompletionRequest, ChatCompletionResponse},
 };
 use axum::{
-    extract::{rejection::JsonRejection, State},
+    extract::{rejection::JsonRejection, Extension, State},
     http::HeaderMap,
     Json,
 };
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Extension(trace_id): Extension<RequestTraceId>,
     payload: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Json<ChatCompletionResponse>, AppError> {
     metrics::REQUESTS_TOTAL
@@ -43,14 +43,8 @@ pub async fn chat_completions(
     let cache_control = cache_control_from_headers(&state, &headers).await;
     let service = state.chat_service().await;
 
-    let trace_id = headers
-        .get("x-vcal-trace-id")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .unwrap_or_else(Uuid::new_v4);
-
     match service
-        .handle_with_evidence(req, cache_control, trace_id)
+        .handle_with_evidence(req, cache_control, trace_id.0)
         .await
     {
         Ok(response) => Ok(Json(response)),
@@ -58,6 +52,11 @@ pub async fn chat_completions(
             metrics::ERRORS_TOTAL
                 .with_label_values(&[err.metrics_class()])
                 .inc();
+            if let Some((dependency, class)) = err.dependency_labels() {
+                metrics::DEPENDENCY_FAILURES_TOTAL
+                    .with_label_values(&[dependency, class])
+                    .inc();
+            }
             Err(err)
         }
     }

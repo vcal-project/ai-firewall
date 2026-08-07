@@ -207,6 +207,28 @@ pub static INFLIGHT_REQUESTS: Lazy<IntGauge> = Lazy::new(|| {
 // Operational hardening metrics
 // -----------------------------
 
+pub static BACKPRESSURE_REJECTIONS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_backpressure_rejections_total",
+            "Requests rejected by bounded concurrency controls",
+        ),
+        &["scope"],
+    )
+    .expect("metric aif_backpressure_rejections_total must be valid")
+});
+
+pub static DEPENDENCY_FAILURES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_dependency_failures_total",
+            "Dependency failures by dependency and stable class",
+        ),
+        &["dependency", "class"],
+    )
+    .expect("metric aif_dependency_failures_total must be valid")
+});
+
 pub static ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new("aif_errors_total", "Total errors by classification"),
@@ -575,6 +597,31 @@ pub fn observe_privacy_restore_skipped(reason: &str) {
         .inc();
 }
 
+pub fn observe_backpressure_rejection(scope: &str) {
+    BACKPRESSURE_REJECTIONS_TOTAL
+        .with_label_values(&[scope])
+        .inc();
+}
+
+pub fn evidence_delivery_snapshot() -> (i64, u64, u64, u64) {
+    (
+        EVIDENCE_QUEUE_DEPTH.get(),
+        EVIDENCE_EVENTS_ENQUEUED_TOTAL.get(),
+        EVIDENCE_EVENTS_DROPPED_TOTAL
+            .with_label_values(&["queue_full"])
+            .get()
+            + EVIDENCE_EVENTS_DROPPED_TOTAL
+                .with_label_values(&["queue_closed"])
+                .get()
+            + EVIDENCE_EVENTS_DROPPED_TOTAL
+                .with_label_values(&["retry_exhausted"])
+                .get(),
+        EVIDENCE_EVENTS_DELIVERED_TOTAL
+            .with_label_values(&["delivered"])
+            .get(),
+    )
+}
+
 pub fn init() {
     Lazy::force(&SEMANTIC_STORE_TOTAL);
     Lazy::force(&SEMANTIC_STORE_ERRORS_TOTAL);
@@ -605,6 +652,8 @@ pub fn init() {
     Lazy::force(&EVIDENCE_RETRIES_TOTAL);
     Lazy::force(&EMBEDDING_TIMEOUTS_TOTAL);
     Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
+    Lazy::force(&BACKPRESSURE_REJECTIONS_TOTAL);
+    Lazy::force(&DEPENDENCY_FAILURES_TOTAL);
     Lazy::force(&MODEL_REQUESTS_TOTAL);
     Lazy::force(&MODEL_INPUT_TOKENS_TOTAL);
     Lazy::force(&MODEL_OUTPUT_TOKENS_TOTAL);
@@ -644,6 +693,8 @@ pub fn init() {
             Box::new(EMBEDDING_OVERHEAD_MICRO_USD_TOTAL.clone()),
             Box::new(INFLIGHT_REQUESTS.clone()),
             Box::new(ERRORS_TOTAL.clone()),
+            Box::new(BACKPRESSURE_REJECTIONS_TOTAL.clone()),
+            Box::new(DEPENDENCY_FAILURES_TOTAL.clone()),
             Box::new(READINESS_STATE.clone()),
             Box::new(SHUTDOWN_IN_PROGRESS.clone()),
             Box::new(SHUTDOWN_REJECTIONS_TOTAL.clone()),

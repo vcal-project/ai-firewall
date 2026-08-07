@@ -17,6 +17,7 @@ mod upstream;
 
 use std::{sync::Arc, time::Duration};
 
+use anyhow::Context;
 use tokio::time::{sleep, Instant};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -38,6 +39,10 @@ fn parse_test_config() -> bool {
 
 fn parse_print_config() -> bool {
     std::env::args().any(|a| a == "--print-config")
+}
+
+fn parse_healthcheck() -> bool {
+    std::env::args().any(|a| a == "--healthcheck")
 }
 
 fn resolve_config_path(explicit: Option<String>) -> Option<String> {
@@ -94,6 +99,12 @@ fn log_guard_configuration(cfg: &config::Config) {
     }
 }
 
+fn log_hardening_warnings(cfg: &config::Config) {
+    for warning in cfg.hardening_warnings() {
+        tracing::warn!(hardening = true, warning = %warning, "production hardening warning");
+    }
+}
+
 async fn config_reload_loop(
     state: Arc<app::AppState>,
     config_path: Option<String>,
@@ -145,6 +156,7 @@ async fn config_reload_loop(
                     tracing::error!(error = %e, "config validation failed during reload");
                     continue;
                 }
+                log_hardening_warnings(&new_config);
 
                 match app::build_runtime(&new_config).await {
                     Ok(runtime) => {
@@ -185,14 +197,15 @@ async fn config_reload_loop(
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
 
         let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+            signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;
+        let mut sigint =
+            signal(SignalKind::interrupt()).context("failed to install SIGINT handler")?;
 
         tokio::select! {
             _ = sigterm.recv() => {
@@ -208,17 +221,22 @@ async fn shutdown_signal() {
     {
         tokio::signal::ctrl_c()
             .await
-            .expect("failed to install CTRL+C handler");
+            .context("failed to install CTRL+C handler")?;
         tracing::info!("received CTRL+C");
     }
+
+    Ok(())
 }
 
 async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
-    shutdown_signal().await;
+    if let Err(error) = shutdown_signal().await {
+        tracing::error!(error = %error, "shutdown signal handling failed");
+        return;
+    }
 
-    tracing::info!("starting graceful shutdown");
-
+    tracing::info!("shutdown phase 1/4: signal received");
     state.shutdown.begin_shutdown();
+    tracing::info!("shutdown phase 2/4: readiness disabled; draining in-flight requests");
 
     let deadline = Instant::now() + drain_timeout;
 
@@ -252,9 +270,51 @@ async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
     } else {
         remaining
     };
+    tracing::info!("shutdown phase 3/4: flushing Audit evidence");
     state.shutdown_evidence_delivery(flush_timeout).await;
 
-    tracing::info!("graceful shutdown complete");
+    tracing::info!("shutdown phase 4/4: graceful shutdown complete");
+}
+
+async fn run_healthcheck() -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let addr =
+        std::env::var("AIF_HEALTHCHECK_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+
+    let mut stream = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .context("healthcheck connection timed out")?
+    .context("healthcheck failed to connect")?;
+
+    stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .context("healthcheck failed to send request")?;
+
+    let mut response = [0u8; 256];
+
+    let bytes_read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut response))
+        .await
+        .context("healthcheck response timed out")?
+        .context("healthcheck failed to read response")?;
+
+    let response = std::str::from_utf8(&response[..bytes_read])
+        .context("healthcheck returned invalid HTTP response")?;
+
+    let status_line = response
+        .lines()
+        .next()
+        .context("healthcheck returned an empty HTTP response")?;
+
+    if status_line.contains(" 200 ") {
+        Ok(())
+    } else {
+        anyhow::bail!("healthcheck failed: {}", status_line);
+    }
 }
 
 #[tokio::main]
@@ -273,6 +333,11 @@ async fn main() -> anyhow::Result<()> {
     let test_config = parse_test_config();
     let print_config = parse_print_config();
     let prune_expired_semantic_cache = parse_prune_expired_semantic_cache();
+    let healthcheck = parse_healthcheck();
+
+    if healthcheck {
+        return run_healthcheck().await;
+    }
 
     let explicit_config_path = parse_config_path();
     let config_path = resolve_config_path(explicit_config_path);
@@ -292,6 +357,10 @@ async fn main() -> anyhow::Result<()> {
             e
         );
         return Err(e);
+    }
+    log_hardening_warnings(&cfg);
+    for item in cfg.effective_runtime_summary() {
+        tracing::info!(effective_config = %item, "effective runtime configuration");
     }
 
     if print_config {

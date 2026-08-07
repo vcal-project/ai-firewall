@@ -7,6 +7,72 @@ use serde_json::{json, Value};
 
 use crate::upstream::llm::UpstreamErrorKind;
 
+/// Stable dependency taxonomy used by metrics/evidence.
+///
+/// Some variants are reserved for dependencies that still use dedicated
+/// `AppError` variants today. Keeping them here avoids changing metric/evidence
+/// vocabulary when those paths are migrated to `DependencyFailure`.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyKind {
+    Redis,
+    Qdrant,
+    Upstream,
+    SecurityGuard,
+    PrivacyGuard,
+    Audit,
+}
+
+impl DependencyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Redis => "redis",
+            Self::Qdrant => "qdrant",
+            Self::Upstream => "upstream",
+            Self::SecurityGuard => "security_guard",
+            Self::PrivacyGuard => "privacy_guard",
+            Self::Audit => "audit",
+        }
+    }
+}
+
+/// Stable failure taxonomy used by metrics/evidence.
+///
+/// Only `Unavailable` is currently constructed through `DependencyFailure`;
+/// the remaining classes are reserved for incremental migration of upstream
+/// and guard failures without changing their public labels later.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureClass {
+    Timeout,
+    Connection,
+    Dns,
+    Tls,
+    Authentication,
+    RateLimit,
+    Unavailable,
+    Contract,
+    MalformedResponse,
+    Internal,
+}
+
+impl FailureClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connection => "connection",
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::Authentication => "authentication",
+            Self::RateLimit => "rate_limit",
+            Self::Unavailable => "unavailable",
+            Self::Contract => "contract",
+            Self::MalformedResponse => "malformed_response",
+            Self::Internal => "internal",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("validation error: {message}")]
@@ -52,6 +118,19 @@ pub enum AppError {
 
     #[error("guard contract violation: {message}")]
     GuardContractViolation { message: String },
+
+    #[error("dependency {dependency:?} failure ({class:?}): {message}")]
+    DependencyFailure {
+        dependency: DependencyKind,
+        class: FailureClass,
+        message: String,
+    },
+
+    #[error("backpressure limit reached for {scope}: {message}")]
+    Backpressure {
+        scope: &'static str,
+        message: String,
+    },
 
     #[error("internal error: {message}")]
     Internal { message: String },
@@ -147,13 +226,54 @@ impl AppError {
         }
     }
 
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal {
+    pub fn dependency_failure(
+        dependency: DependencyKind,
+        class: FailureClass,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::DependencyFailure {
+            dependency,
+            class,
             message: message.into(),
         }
     }
 
-    pub fn semantic_provider(message: impl Into<String>) -> Self {
+    pub fn dependency_labels(&self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::DependencyFailure {
+                dependency, class, ..
+            } => Some((dependency.as_str(), class.as_str())),
+            Self::Upstream { kind, .. } => Some((
+                "upstream",
+                match kind {
+                    UpstreamErrorKind::Timeout => "timeout",
+                    UpstreamErrorKind::Tls => "tls",
+                    UpstreamErrorKind::Dns => "dns",
+                    UpstreamErrorKind::Connect => "connection",
+                    UpstreamErrorKind::Authentication => "authentication",
+                    UpstreamErrorKind::RateLimited => "rate_limit",
+                    UpstreamErrorKind::NotFound | UpstreamErrorKind::HttpStatus => "unavailable",
+                    UpstreamErrorKind::Other => "malformed_response",
+                },
+            )),
+            Self::SecurityGuardTimeout { .. } => Some(("security_guard", "timeout")),
+            Self::SecurityGuardUnavailable { .. } => Some(("security_guard", "unavailable")),
+            Self::PrivacyAnonymizationFailed { .. } | Self::PrivacyRestoreFailed { .. } => {
+                Some(("privacy_guard", "unavailable"))
+            }
+            Self::GuardContractViolation { .. } => Some(("guard", "contract")),
+            _ => None,
+        }
+    }
+
+    pub fn backpressure(scope: &'static str, message: impl Into<String>) -> Self {
+        Self::Backpressure {
+            scope,
+            message: message.into(),
+        }
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal {
             message: message.into(),
         }
@@ -190,6 +310,18 @@ impl AppError {
                 | UpstreamErrorKind::HttpStatus => "UPSTREAM_HTTP_ERROR",
                 UpstreamErrorKind::Other => "UPSTREAM_RESPONSE_DECODE_ERROR",
             },
+            AppError::Backpressure { .. } => "BACKPRESSURE_LIMIT",
+            AppError::DependencyFailure {
+                dependency, class, ..
+            } => match (dependency, class) {
+                (DependencyKind::Redis, _) => "REDIS_DEPENDENCY_ERROR",
+                (DependencyKind::Qdrant, _) => "QDRANT_DEPENDENCY_ERROR",
+                (DependencyKind::SecurityGuard, _) => "SECURITY_GUARD_DEPENDENCY_ERROR",
+                (DependencyKind::PrivacyGuard, _) => "PRIVACY_GUARD_DEPENDENCY_ERROR",
+                (DependencyKind::Audit, _) => "AUDIT_DEPENDENCY_ERROR",
+                (DependencyKind::Upstream, FailureClass::Timeout) => "UPSTREAM_TIMEOUT",
+                (DependencyKind::Upstream, _) => "UPSTREAM_DEPENDENCY_ERROR",
+            },
             _ => "REQUEST_PROCESSING_ERROR",
         }
     }
@@ -206,6 +338,8 @@ impl AppError {
             AppError::PrivacyAnonymizationFailed { .. } => "privacy_anonymization_failed",
             AppError::PrivacyRestoreFailed { .. } => "privacy_restore_failed",
             AppError::GuardContractViolation { .. } => "guard_contract_violation",
+            AppError::DependencyFailure { .. } => "dependency_failure",
+            AppError::Backpressure { .. } => "backpressure",
             AppError::Internal { .. } => "internal",
         }
     }
@@ -259,6 +393,8 @@ impl AppError {
             AppError::PrivacyAnonymizationFailed { .. } => "privacy_anonymization_failed",
             AppError::PrivacyRestoreFailed { .. } => "privacy_restore_failed",
             AppError::GuardContractViolation { .. } => "guard_contract_violation",
+            AppError::DependencyFailure { .. } => "dependency_failure",
+            AppError::Backpressure { .. } => "backpressure",
             AppError::Internal { .. } => "internal_error",
         }
     }
@@ -280,6 +416,9 @@ impl AppError {
             AppError::PrivacyAnonymizationFailed { .. } => StatusCode::BAD_GATEWAY,
             AppError::PrivacyRestoreFailed { .. } => StatusCode::BAD_GATEWAY,
             AppError::GuardContractViolation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::DependencyFailure { .. } | AppError::Backpressure { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             AppError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -295,6 +434,8 @@ impl AppError {
             AppError::PrivacyAnonymizationFailed { message } => message,
             AppError::PrivacyRestoreFailed { message } => message,
             AppError::GuardContractViolation { message } => message,
+            AppError::DependencyFailure { message, .. }
+            | AppError::Backpressure { message, .. } => message,
             AppError::Internal { message } => message,
         }
     }
@@ -376,5 +517,58 @@ impl IntoResponse for AppError {
             })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    async fn response_json(error: AppError) -> Value {
+        let response = error.into_response();
+        let body = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("error response body should be readable");
+        serde_json::from_slice(&body).expect("error response should be JSON")
+    }
+
+    #[tokio::test]
+    async fn security_timeout_contract_is_stable() {
+        let value = response_json(AppError::security_guard_timeout(
+            "request",
+            "security guard timed out",
+        ))
+        .await;
+
+        assert_eq!(value["error"]["code"], 504);
+        assert_eq!(value["error"]["type"], "security_guard_timeout");
+        assert_eq!(value["error"]["guard"], "security");
+        assert_eq!(value["error"]["stage"], "request");
+    }
+
+    #[tokio::test]
+    async fn security_block_contract_preserves_rule_id() {
+        let value = response_json(AppError::security_response_blocked(
+            "blocked",
+            Some("rule-123".to_string()),
+        ))
+        .await;
+
+        assert_eq!(value["error"]["code"], 403);
+        assert_eq!(value["error"]["type"], "security_response_blocked");
+        assert_eq!(value["error"]["guard"], "security");
+        assert_eq!(value["error"]["stage"], "response");
+        assert_eq!(value["error"]["rule_id"], "rule-123");
+    }
+
+    #[tokio::test]
+    async fn privacy_restore_failure_contract_is_stable() {
+        let value = response_json(AppError::privacy_restore_failed("restore failed")).await;
+
+        assert_eq!(value["error"]["code"], 502);
+        assert_eq!(value["error"]["type"], "privacy_restore_failed");
+        assert_eq!(value["error"]["guard"], "privacy");
+        assert_eq!(value["error"]["stage"], "response");
     }
 }

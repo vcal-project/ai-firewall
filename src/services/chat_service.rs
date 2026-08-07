@@ -1,14 +1,16 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
+use tokio::sync::Semaphore;
 
 use crate::{
-    cache::exact::ExactCache,
+    app::DependencyState,
+    cache::{exact::ExactCache, redis_exact::RedisOperationTimeout},
     config::{EmbeddingPrice, ModelPrice},
     core::{
         hashing::sha256_hex,
         normalize::{normalize_chat_request, semantic_text_from_request},
         pricing::{estimate_embedding_micro_usd, estimate_micro_usd_saved},
     },
-    error::AppError,
+    error::{AppError, DependencyKind, FailureClass},
     evidence::{
         CacheEvidence, DecisionEvidence, EventCategory, EventOutcome, EvidenceEvent, EvidenceSink,
         EvidenceSource, NoopEvidenceSink, UpstreamEvidence,
@@ -45,6 +47,10 @@ pub struct ChatService {
     embedding_price: Option<EmbeddingPrice>,
     evidence_sink: Arc<dyn EvidenceSink>,
     upstream_metadata: UpstreamMetadata,
+    upstream_limit: Arc<Semaphore>,
+    dependencies: DependencyState,
+    track_redis_runtime: bool,
+    track_qdrant_runtime: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +66,7 @@ pub struct ChatServiceDeps {
     pub guard_orchestrator: Arc<dyn GuardOrchestrator>,
     pub evidence_sink: Arc<dyn EvidenceSink>,
     pub upstream_metadata: UpstreamMetadata,
+    pub dependencies: DependencyState,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +78,7 @@ pub struct ChatServiceSettings {
     pub semantic_cache_store_enabled: bool,
     pub semantic_cache_fail_open: bool,
     pub max_prompt_chars: Option<usize>,
+    pub max_inflight_upstream_requests: usize,
 }
 
 fn estimate_prompt_chars(req: &ChatCompletionRequest) -> usize {
@@ -78,6 +86,14 @@ fn estimate_prompt_chars(req: &ChatCompletionRequest) -> usize {
         .iter()
         .map(|message| message.content.to_string().chars().count())
         .sum()
+}
+
+fn redis_failure_class(error: &anyhow::Error) -> FailureClass {
+    if error.downcast_ref::<RedisOperationTimeout>().is_some() {
+        FailureClass::Timeout
+    } else {
+        FailureClass::Unavailable
+    }
 }
 
 impl ChatService {
@@ -123,6 +139,7 @@ impl ChatService {
                     provider_type: "test".to_string(),
                     provider_name: "test".to_string(),
                 },
+                dependencies: DependencyState::new(true, true, true),
             },
             settings,
             model_prices,
@@ -136,6 +153,14 @@ impl ChatService {
         model_prices: HashMap<String, ModelPrice>,
         embedding_price: Option<EmbeddingPrice>,
     ) -> Self {
+        let dependencies = deps.dependencies;
+        let track_redis_runtime = dependencies
+            .redis_available
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let track_qdrant_runtime = dependencies
+            .qdrant_available
+            .load(std::sync::atomic::Ordering::Relaxed);
+
         Self {
             exact_cache: deps.exact_cache,
             semantic_cache: deps.semantic_cache,
@@ -155,6 +180,26 @@ impl ChatService {
             embedding_price,
             evidence_sink: deps.evidence_sink,
             upstream_metadata: deps.upstream_metadata,
+            dependencies,
+            track_redis_runtime,
+            track_qdrant_runtime,
+            upstream_limit: Arc::new(Semaphore::new(settings.max_inflight_upstream_requests)),
+        }
+    }
+
+    fn set_redis_available(&self, available: bool) {
+        if self.track_redis_runtime {
+            self.dependencies
+                .redis_available
+                .store(available, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn set_qdrant_available(&self, available: bool) {
+        if self.track_qdrant_runtime {
+            self.dependencies
+                .qdrant_available
+                .store(available, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -229,6 +274,7 @@ impl ChatService {
         if self.exact_cache_enabled && !cache_control.bypass_lookup {
             match self.exact_cache.get(&exact_key).await {
                 Ok(Some(raw)) => {
+                    self.set_redis_available(true);
                     let hit: ChatCompletionResponse = serde_json::from_str(&raw).map_err(|e| {
                         AppError::internal(format!("cached response decode failed: {e}"))
                     })?;
@@ -269,6 +315,7 @@ impl ChatService {
                     return Ok(response);
                 }
                 Ok(None) => {
+                    self.set_redis_available(true);
                     let mut event = EvidenceEvent::new(
                         trace_id,
                         EvidenceSource::AiFirewall,
@@ -289,6 +336,7 @@ impl ChatService {
                     self.emit(event).await;
                 }
                 Err(e) if self.exact_cache_fail_open => {
+                    self.set_redis_available(false);
                     tracing::warn!(
                         model = %req.normalized_model(),
                         error = %e,
@@ -296,7 +344,12 @@ impl ChatService {
                     );
                 }
                 Err(e) => {
-                    return Err(AppError::internal(format!("exact cache get failed: {e}")));
+                    self.set_redis_available(false);
+                    return Err(AppError::dependency_failure(
+                        DependencyKind::Redis,
+                        redis_failure_class(&e),
+                        format!("exact cache get failed: {e}"),
+                    ));
                 }
             }
         } else if cache_control.bypass_lookup {
@@ -328,6 +381,7 @@ impl ChatService {
                 .await
             {
                 Ok(Some(hit)) => {
+                    self.set_qdrant_available(true);
                     metrics::CACHE_SEMANTIC_HITS.inc();
 
                     self.record_semantic_hit_savings(
@@ -367,16 +421,22 @@ impl ChatService {
                     {
                         if let Ok(raw) = serde_json::to_string(&hit.response) {
                             match self.exact_cache.set(&exact_key, raw).await {
-                                Ok(()) => {}
+                                Ok(()) => {
+                                    self.set_redis_available(true);
+                                }
                                 Err(e) if self.exact_cache_fail_open => {
+                                    self.set_redis_available(false);
                                     tracing::debug!(
                                         "failed to warm exact cache from semantic hit: {e}"
                                     );
                                 }
                                 Err(e) => {
-                                    return Err(AppError::internal(format!(
-                                        "exact cache set failed while warming semantic hit: {e}"
-                                    )));
+                                    self.set_redis_available(false);
+                                    return Err(AppError::dependency_failure(
+                                        DependencyKind::Redis,
+                                        redis_failure_class(&e),
+                                        format!("exact cache set failed while warming semantic hit: {e}"),
+                                    ));
                                 }
                             }
                         } else {
@@ -394,6 +454,7 @@ impl ChatService {
                 }
 
                 Ok(None) => {
+                    self.set_qdrant_available(true);
                     let mut event = EvidenceEvent::new(
                         trace_id,
                         EvidenceSource::AiFirewall,
@@ -415,6 +476,7 @@ impl ChatService {
                 }
 
                 Err(e) if self.semantic_cache_fail_open => {
+                    self.set_qdrant_available(false);
                     self.record_semantic_skip("lookup_error");
 
                     tracing::warn!(
@@ -425,9 +487,12 @@ impl ChatService {
                 }
 
                 Err(e) => {
-                    return Err(AppError::semantic_provider(format!(
-                        "semantic lookup failed and semantic_cache_fail_open=false: {e}"
-                    )));
+                    self.set_qdrant_available(false);
+                    return Err(AppError::dependency_failure(
+                        DependencyKind::Qdrant,
+                        FailureClass::Unavailable,
+                        format!("semantic lookup failed and semantic_cache_fail_open=false: {e}"),
+                    ));
                 }
             }
         } else if self.semantic_cache_enabled {
@@ -471,10 +536,22 @@ impl ChatService {
         });
         self.emit(upstream_event).await;
 
+        let _upstream_permit = self.upstream_limit.try_acquire().map_err(|_| {
+            metrics::observe_backpressure_rejection("upstream");
+            AppError::backpressure("upstream", "upstream concurrency limit reached")
+        })?;
         let upstream_started = Instant::now();
         let response = match self.upstream.chat_completion(&req).await {
-            Ok(response) => response,
+            Ok(response) => {
+                self.dependencies
+                    .upstream_available
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                response
+            }
             Err(error) => {
+                self.dependencies
+                    .upstream_available
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 let latency_ms = upstream_started.elapsed().as_millis() as u64;
                 let reason_code = error.evidence_reason_code();
 
@@ -531,8 +608,11 @@ impl ChatService {
         if self.exact_cache_enabled && self.exact_cache_store_enabled && !cache_control.bypass_store
         {
             match self.exact_cache.set(&exact_key, raw).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    self.set_redis_available(true);
+                }
                 Err(e) if self.exact_cache_fail_open => {
+                    self.set_redis_available(false);
                     tracing::warn!(
                         model = %req.normalized_model(),
                         error = %e,
@@ -540,7 +620,12 @@ impl ChatService {
                     );
                 }
                 Err(e) => {
-                    return Err(AppError::internal(format!("exact cache set failed: {e}")));
+                    self.set_redis_available(false);
+                    return Err(AppError::dependency_failure(
+                        DependencyKind::Redis,
+                        redis_failure_class(&e),
+                        format!("exact cache set failed: {e}"),
+                    ));
                 }
             }
         }
@@ -561,6 +646,7 @@ impl ChatService {
                 .await
             {
                 Ok(embedding_usage) => {
+                    self.set_qdrant_available(true);
                     if let Some(usage) = embedding_usage {
                         self.record_embedding_overhead(
                             req.normalized_model(),
@@ -571,6 +657,7 @@ impl ChatService {
                 }
 
                 Err(e) if self.semantic_cache_fail_open => {
+                    self.set_qdrant_available(false);
                     self.record_semantic_skip("store_error");
 
                     tracing::warn!(
@@ -581,11 +668,14 @@ impl ChatService {
                 }
 
                 Err(e) => {
+                    self.set_qdrant_available(false);
                     self.record_semantic_skip("store_error");
 
-                    return Err(AppError::semantic_provider(format!(
-                        "semantic store failed and semantic_cache_fail_open=false: {e}"
-                    )));
+                    return Err(AppError::dependency_failure(
+                        DependencyKind::Qdrant,
+                        FailureClass::Unavailable,
+                        format!("semantic store failed and semantic_cache_fail_open=false: {e}"),
+                    ));
                 }
             }
         }
@@ -874,6 +964,7 @@ impl ChatService {
 mod tests {
     use super::*;
     use crate::{
+        app::DependencyState,
         cache::exact::ExactCache,
         config::{EmbeddingPrice, ModelPrice},
         core::normalize::normalize_chat_request,
@@ -1193,6 +1284,7 @@ mod tests {
             semantic_cache_store_enabled: true,
             semantic_cache_fail_open: true,
             max_prompt_chars: Some(200_000),
+            max_inflight_upstream_requests: 500,
         };
 
         ChatService::new(
@@ -1210,6 +1302,397 @@ mod tests {
     fn exact_key_for(req: &ChatCompletionRequest) -> String {
         let normalized = normalize_chat_request(req).unwrap();
         format!("chatcmpl:v1:{}", sha256_hex(&normalized))
+    }
+
+    struct FailingExactCache;
+
+    #[async_trait]
+    impl ExactCache for FailingExactCache {
+        async fn get(&self, _key: &str) -> anyhow::Result<Option<String>> {
+            anyhow::bail!("simulated Redis outage")
+        }
+
+        async fn set(&self, _key: &str, _value: String) -> anyhow::Result<()> {
+            anyhow::bail!("simulated Redis outage")
+        }
+    }
+
+    struct FailingUpstream;
+
+    #[async_trait]
+    impl LlmUpstream for FailingUpstream {
+        async fn chat_completion(
+            &self,
+            _req: &ChatCompletionRequest,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Err(AppError::upstream_kind(
+                crate::upstream::llm::UpstreamErrorKind::Timeout,
+                "simulated upstream timeout",
+            ))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingEvidenceSink {
+        events: Arc<Mutex<Vec<crate::evidence::EvidenceEvent>>>,
+    }
+
+    #[async_trait]
+    impl crate::evidence::EvidenceSink for RecordingEvidenceSink {
+        async fn emit(&self, event: crate::evidence::EvidenceEvent) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    struct UserMappingGuard;
+
+    #[async_trait]
+    impl GuardOrchestrator for UserMappingGuard {
+        async fn before_cache(
+            &self,
+            mut request: ChatCompletionRequest,
+            _trace_id: uuid::Uuid,
+        ) -> Result<GuardedRequest, AppError> {
+            let original = request.messages[0]
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let email = original
+                .split_whitespace()
+                .find(|part| part.contains('@'))
+                .unwrap_or_default()
+                .trim_matches(|c: char| c == ',' || c == '.')
+                .to_string();
+            request.messages[0].content = json!("Email [EMAIL_1]");
+
+            Ok(GuardedRequest {
+                request,
+                context: GuardContext {
+                    privacy_mapping_id: Some("mapping".to_string()),
+                    privacy_tenant_id: Some(email),
+                    privacy_placeholder_signature: Some("EMAIL:1".to_string()),
+                    privacy_modified: true,
+                    ..GuardContext::default()
+                },
+                cache_control: CacheControl::default(),
+            })
+        }
+
+        async fn restore_response(
+            &self,
+            context: &GuardContext,
+            mut response: ChatCompletionResponse,
+            _trace_id: uuid::Uuid,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            if let Some(email) = context.privacy_tenant_id.as_deref() {
+                let content = response.choices[0]
+                    .message
+                    .content
+                    .as_str()
+                    .unwrap_or_default()
+                    .replace("[EMAIL_1]", email);
+                response.choices[0].message.content = json!(content);
+            }
+            Ok(response)
+        }
+    }
+
+    #[tokio::test]
+    async fn redis_outage_fails_open_and_reaches_upstream_when_configured() {
+        let upstream = FakeUpstream::new(response_with_content("upstream ok"));
+        let state = upstream.state();
+        let service = ChatService::new(
+            Arc::new(FailingExactCache),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(upstream),
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let result = service.handle(request()).await;
+        assert!(result.is_ok());
+        assert_eq!(state.lock().unwrap().call_count, 1);
+    }
+
+    #[tokio::test]
+    async fn redis_outage_fails_closed_when_configured() {
+        let service = ChatService::new(
+            Arc::new(FailingExactCache),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(FakeUpstream::new(response_with_content("unused"))),
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: false,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let error = service
+            .handle(request())
+            .await
+            .expect_err("Redis outage must fail closed");
+        assert_eq!(error.metrics_class(), "dependency_failure");
+        assert_eq!(
+            error.status_code(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(error.message().contains("exact cache get failed"));
+    }
+
+    #[tokio::test]
+    async fn qdrant_outage_fails_open_and_reaches_upstream_when_configured() {
+        let upstream = FakeUpstream::new(response_with_content("upstream ok"));
+        let state = upstream.state();
+        let service = build_service(
+            Arc::new(FakeExactCache::new()),
+            Arc::new(FakeSemanticCache::with_lookup_error(
+                "simulated Qdrant outage",
+            )),
+            Arc::new(upstream),
+            true,
+        );
+
+        let result = service.handle(request()).await;
+        assert!(result.is_ok());
+        assert_eq!(state.lock().unwrap().call_count, 1);
+    }
+
+    #[tokio::test]
+    async fn qdrant_outage_fails_closed_when_configured() {
+        let service = ChatService::new(
+            Arc::new(FakeExactCache::new()),
+            Arc::new(FakeSemanticCache::with_lookup_error(
+                "simulated Qdrant outage",
+            )),
+            Arc::new(FakeUpstream::new(response_with_content("unused"))),
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: false,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: false,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: false,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let error = service
+            .handle(request())
+            .await
+            .expect_err("Qdrant outage must fail closed");
+        assert_eq!(error.metrics_class(), "dependency_failure");
+        assert_eq!(
+            error.status_code(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(error.message().contains("semantic lookup failed"));
+    }
+
+    #[tokio::test]
+    async fn successful_request_emits_exactly_one_completed_terminal_event() {
+        let sink = RecordingEvidenceSink::default();
+        let events = Arc::clone(&sink.events);
+        let service = ChatService::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache: Arc::new(FakeExactCache::new()),
+                semantic_cache: Arc::new(FakeSemanticCache::new()),
+                upstream: Arc::new(FakeUpstream::new(response_with_content("ok"))),
+                guard_orchestrator: Arc::new(crate::guards::NoopGuardOrchestrator),
+                evidence_sink: Arc::new(sink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".into(),
+                    provider_name: "test".into(),
+                },
+                dependencies: DependencyState::new(true, true, true),
+            },
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: false,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: false,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let trace_id = uuid::Uuid::new_v4();
+        service
+            .handle_with_evidence(request(), CacheControl::default(), trace_id)
+            .await
+            .unwrap();
+
+        let events = events.lock().unwrap();
+        let names: Vec<_> = events
+            .iter()
+            .filter(|event| event.trace_id == trace_id)
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "request.received")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "request.completed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "request.failed")
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_timeout_emits_one_failed_terminal_event() {
+        let sink = RecordingEvidenceSink::default();
+        let events = Arc::clone(&sink.events);
+        let service = ChatService::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache: Arc::new(FakeExactCache::new()),
+                semantic_cache: Arc::new(FakeSemanticCache::new()),
+                upstream: Arc::new(FailingUpstream),
+                guard_orchestrator: Arc::new(crate::guards::NoopGuardOrchestrator),
+                evidence_sink: Arc::new(sink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".into(),
+                    provider_name: "test".into(),
+                },
+                dependencies: DependencyState::new(true, true, true),
+            },
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: false,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: false,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let trace_id = uuid::Uuid::new_v4();
+        let error = service
+            .handle_with_evidence(request(), CacheControl::default(), trace_id)
+            .await
+            .expect_err("timeout should fail request");
+        assert_eq!(error.metrics_class(), "upstream_timeout");
+
+        let events = events.lock().unwrap();
+        let names: Vec<_> = events
+            .iter()
+            .filter(|event| event.trace_id == trace_id)
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "request.received")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "request.failed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "request.completed")
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_user_exact_cache_restores_only_current_users_pii() {
+        let exact = FakeExactCache::new();
+        let upstream = FakeUpstream::new(response_with_content("Response for [EMAIL_1]"));
+        let upstream_state = upstream.state();
+        let service = ChatService::new_with_guards(
+            Arc::new(exact),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(upstream),
+            Arc::new(UserMappingGuard),
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let mut alice = request();
+        alice.messages[0].content = json!("Email alice@example.com");
+        let first = service.handle(alice).await.unwrap();
+        assert_eq!(
+            first.choices[0].message.content,
+            json!("Response for alice@example.com")
+        );
+
+        let mut bob = request();
+        bob.messages[0].content = json!("Email bob@example.com");
+        let second = service.handle(bob).await.unwrap();
+        assert_eq!(
+            second.choices[0].message.content,
+            json!("Response for bob@example.com")
+        );
+        assert!(!second.choices[0]
+            .message
+            .content
+            .as_str()
+            .unwrap_or_default()
+            .contains("alice@example.com"));
+        assert_eq!(
+            upstream_state.lock().unwrap().call_count,
+            1,
+            "second request should be exact-cache hit"
+        );
     }
 
     #[tokio::test]
@@ -1346,6 +1829,7 @@ mod tests {
             semantic_cache_store_enabled: true,
             semantic_cache_fail_open: true,
             max_prompt_chars: Some(200_000),
+            max_inflight_upstream_requests: 500,
         };
 
         let service = ChatService::new_with_guards(
@@ -1483,6 +1967,7 @@ mod tests {
             semantic_cache_store_enabled: true,
             semantic_cache_fail_open: true,
             max_prompt_chars: Some(200_000),
+            max_inflight_upstream_requests: 500,
         };
 
         let service = ChatService::new(
@@ -1522,6 +2007,7 @@ mod tests {
             semantic_cache_store_enabled: true,
             semantic_cache_fail_open: false,
             max_prompt_chars: Some(200_000),
+            max_inflight_upstream_requests: 500,
         };
 
         let service = ChatService::new(
@@ -1560,6 +2046,7 @@ mod tests {
             semantic_cache_store_enabled: true,
             semantic_cache_fail_open: true,
             max_prompt_chars: Some(200_000),
+            max_inflight_upstream_requests: 500,
         };
 
         let service = ChatService::new(
@@ -1599,6 +2086,7 @@ mod tests {
             semantic_cache_store_enabled: true,
             semantic_cache_fail_open: false,
             max_prompt_chars: Some(200_000),
+            max_inflight_upstream_requests: 500,
         };
 
         let service = ChatService::new(

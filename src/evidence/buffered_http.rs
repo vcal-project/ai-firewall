@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context};
-use reqwest::{Client, StatusCode};
+use reqwest::{header::RETRY_AFTER, Client, StatusCode};
 use serde::Serialize;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -24,6 +24,7 @@ pub struct BufferedHttpEvidenceSettings {
     pub request_timeout: Duration,
     pub retry_max_attempts: usize,
     pub retry_initial_backoff: Duration,
+    pub retry_max_backoff: Duration,
 }
 
 impl BufferedHttpEvidenceSettings {
@@ -51,6 +52,12 @@ impl BufferedHttpEvidenceSettings {
         }
         if self.retry_initial_backoff.is_zero() {
             anyhow::bail!("VCAL Audit retry_initial_backoff must be greater than zero");
+        }
+        if self.retry_max_backoff.is_zero() {
+            anyhow::bail!("VCAL Audit retry_max_backoff must be greater than zero");
+        }
+        if self.retry_max_backoff < self.retry_initial_backoff {
+            anyhow::bail!("VCAL Audit retry_max_backoff must be >= retry_initial_backoff");
         }
 
         Ok(())
@@ -82,7 +89,10 @@ struct EvidenceBatch<'a> {
 }
 
 enum DeliveryFailure {
-    Retryable(anyhow::Error),
+    Retryable {
+        error: anyhow::Error,
+        retry_after: Option<Duration>,
+    },
     Permanent(anyhow::Error),
 }
 
@@ -253,19 +263,26 @@ async fn deliver_with_retry(
         match deliver_once(client, settings, events).await {
             Ok(()) => return Ok(()),
             Err(DeliveryFailure::Permanent(error)) => return Err(error),
-            Err(DeliveryFailure::Retryable(error)) if attempt == settings.retry_max_attempts => {
+            Err(DeliveryFailure::Retryable { error, .. })
+                if attempt == settings.retry_max_attempts =>
+            {
                 return Err(error);
             }
-            Err(DeliveryFailure::Retryable(error)) => {
+            Err(DeliveryFailure::Retryable { error, retry_after }) => {
                 metrics::EVIDENCE_RETRIES_TOTAL.inc();
+                let retry_delay = retry_after
+                    .map(|server_delay| server_delay.max(backoff))
+                    .unwrap_or(backoff)
+                    .min(settings.retry_max_backoff);
                 tracing::warn!(
                     attempt,
                     max_attempts = settings.retry_max_attempts,
+                    retry_delay_ms = retry_delay.as_millis() as u64,
                     error = %error,
                     "retrying VCAL Audit evidence delivery"
                 );
-                sleep(backoff).await;
-                backoff = backoff.saturating_mul(2);
+                sleep(retry_delay).await;
+                backoff = backoff.saturating_mul(2).min(settings.retry_max_backoff);
             }
         }
     }
@@ -301,18 +318,31 @@ async fn deliver_once(
     let response = request
         .send()
         .await
-        .map_err(|error| DeliveryFailure::Retryable(anyhow!(error)))?;
+        .map_err(|error| DeliveryFailure::Retryable {
+            error: anyhow!(error),
+            retry_after: None,
+        })?;
     let status = response.status();
 
     if status.is_success() {
         return Ok(());
     }
 
+    let retry_after = if status == StatusCode::TOO_MANY_REQUESTS {
+        response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(Duration::from_secs)
+    } else {
+        None
+    };
     let body = response.text().await.unwrap_or_default();
     let error = anyhow!("VCAL Audit returned HTTP {status}: {body}");
 
     if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        Err(DeliveryFailure::Retryable(error))
+        Err(DeliveryFailure::Retryable { error, retry_after })
     } else {
         Err(DeliveryFailure::Permanent(error))
     }
@@ -333,6 +363,7 @@ mod tests {
             request_timeout: Duration::from_secs(1),
             retry_max_attempts: 1,
             retry_initial_backoff: Duration::from_millis(10),
+            retry_max_backoff: Duration::from_millis(100),
         }
     }
 
@@ -341,6 +372,118 @@ mod tests {
         let mut settings = settings();
         settings.batch_size = 11;
         assert!(settings.validate().is_err());
+    }
+
+    async fn spawn_status_server(
+        statuses: Vec<(u16, Option<&'static str>)>,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_task = Arc::clone(&calls);
+
+        tokio::spawn(async move {
+            for (status, retry_after) in statuses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 8192];
+                let _ = socket.read(&mut request).await;
+                calls_task.fetch_add(1, Ordering::SeqCst);
+
+                let reason = match status {
+                    200 => "OK",
+                    429 => "Too Many Requests",
+                    500 => "Internal Server Error",
+                    503 => "Service Unavailable",
+                    _ => "Error",
+                };
+                let retry_header = retry_after
+                    .map(|value| format!("Retry-After: {value}\r\n"))
+                    .unwrap_or_default();
+                let body = format!("status-{status}");
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{}",
+                    body.len(), retry_header, body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        (format!("http://{addr}/v1/events/batch"), calls)
+    }
+
+    fn test_event() -> EvidenceEvent {
+        EvidenceEvent::new(
+            uuid::Uuid::new_v4(),
+            super::super::EvidenceSource::AiFirewall,
+            super::super::EventCategory::System,
+            "test.event",
+            super::super::EventOutcome::Started,
+        )
+    }
+
+    #[tokio::test]
+    async fn retries_http_500_then_delivers() {
+        use std::sync::atomic::Ordering;
+        let (endpoint, calls) = spawn_status_server(vec![(500, None), (200, None)]).await;
+        let mut cfg = settings();
+        cfg.endpoint = endpoint;
+        cfg.retry_max_attempts = 2;
+        cfg.retry_initial_backoff = Duration::from_millis(1);
+        cfg.retry_max_backoff = Duration::from_millis(5);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+
+        deliver_with_retry(&client, &cfg, &[test_event()])
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retries_http_429_and_honors_retry_after_path() {
+        use std::sync::atomic::Ordering;
+        let (endpoint, calls) = spawn_status_server(vec![(429, Some("0")), (200, None)]).await;
+        let mut cfg = settings();
+        cfg.endpoint = endpoint;
+        cfg.retry_max_attempts = 2;
+        cfg.retry_initial_backoff = Duration::from_millis(1);
+        cfg.retry_max_backoff = Duration::from_millis(5);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+
+        deliver_with_retry(&client, &cfg, &[test_event()])
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_returns_error_after_configured_attempts() {
+        use std::sync::atomic::Ordering;
+        let (endpoint, calls) = spawn_status_server(vec![(503, None), (503, None)]).await;
+        let mut cfg = settings();
+        cfg.endpoint = endpoint;
+        cfg.retry_max_attempts = 2;
+        cfg.retry_initial_backoff = Duration::from_millis(1);
+        cfg.retry_max_backoff = Duration::from_millis(5);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+
+        let error = deliver_with_retry(&client, &cfg, &[test_event()])
+            .await
+            .expect_err("503 should exhaust retries");
+        assert!(error.to_string().contains("503"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

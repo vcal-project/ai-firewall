@@ -89,8 +89,10 @@ impl std::str::FromStr for PrivacyGuardMode {
 
 #[derive(Clone)]
 pub struct Config {
+    pub config_version: u32,
     pub listen_addr: String,
     pub redis_url: String,
+    pub redis_timeout_seconds: u64,
 
     pub upstream_provider: ProviderKind,
     pub upstream_base_url: String,
@@ -116,6 +118,8 @@ pub struct Config {
     pub graceful_shutdown_timeout_seconds: u64,
     pub max_request_body_bytes: usize,
     pub max_prompt_chars: usize,
+    pub max_inflight_requests: usize,
+    pub max_inflight_upstream_requests: usize,
 
     pub exact_cache_enabled: bool,
     pub exact_cache_fail_open: bool,
@@ -151,6 +155,7 @@ pub struct Config {
     pub audit_timeout_seconds: u64,
     pub audit_retry_max_attempts: usize,
     pub audit_retry_initial_backoff_ms: u64,
+    pub audit_retry_max_backoff_ms: u64,
 
     pub cache_bypass_header: String,
     pub metrics_auth_required: bool,
@@ -169,6 +174,14 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         let mut errors: Vec<String> = Vec::new();
 
+        if self.config_version != release::CONFIG_SCHEMA_VERSION {
+            errors.push(format!(
+                "unsupported config_version {}; supported version is {}",
+                self.config_version,
+                release::CONFIG_SCHEMA_VERSION
+            ));
+        }
+
         // ---- listen_addr
         if let Err(e) = self.listen_addr.parse::<std::net::SocketAddr>() {
             errors.push(format!("invalid listen_addr '{}': {}", self.listen_addr, e));
@@ -182,6 +195,9 @@ impl Config {
                 "invalid redis_url '{}': must start with redis://",
                 self.redis_url
             ));
+        }
+        if self.redis_timeout_seconds == 0 {
+            errors.push("redis_timeout_seconds must be > 0".into());
         }
 
         // ---- upstream
@@ -245,6 +261,12 @@ impl Config {
         if self.max_prompt_chars == 0 {
             errors.push("max_prompt_chars must be > 0".into());
         }
+        if self.max_inflight_requests == 0 {
+            errors.push("max_inflight_requests must be > 0".into());
+        }
+        if self.max_inflight_upstream_requests == 0 {
+            errors.push("max_inflight_upstream_requests must be > 0".into());
+        }
 
         if self.audit_enabled {
             if self.audit_url.trim().is_empty() {
@@ -279,6 +301,13 @@ impl Config {
             }
             if self.audit_retry_initial_backoff_ms == 0 {
                 errors.push("audit_retry_initial_backoff_ms must be > 0".into());
+            }
+            if self.audit_retry_max_backoff_ms == 0 {
+                errors.push("audit_retry_max_backoff_ms must be > 0".into());
+            } else if self.audit_retry_max_backoff_ms < self.audit_retry_initial_backoff_ms {
+                errors.push(
+                    "audit_retry_max_backoff_ms must be >= audit_retry_initial_backoff_ms".into(),
+                );
             }
         }
 
@@ -332,6 +361,17 @@ impl Config {
                 _ => errors
                     .push("metrics_auth_token must be set when metrics_auth_required=true".into()),
             }
+        }
+
+        // ---- readiness invariants
+        // A disabled dependency is never initialized by build_runtime(), so requiring it
+        // for readiness would leave /readyz permanently false.
+        if self.readiness_requires_redis && !self.exact_cache_enabled {
+            errors.push("readiness_requires_redis=true requires exact_cache_enabled=true".into());
+        }
+        if self.readiness_requires_qdrant && !self.semantic_cache_enabled {
+            errors
+                .push("readiness_requires_qdrant=true requires semantic_cache_enabled=true".into());
         }
 
         // ---- semantic threshold
@@ -451,6 +491,83 @@ impl Config {
         Ok(())
     }
 
+    /// Returns operational hardening warnings for configurations that are valid but
+    /// deserve explicit operator acknowledgement in production.
+    pub fn hardening_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if (self.security_guard_enabled || self.privacy_guard_enabled) && self.guard_fail_open {
+            warnings.push(
+                "guard_fail_open=true allows requests to continue when an enabled guard is unavailable; use false for fail-closed production enforcement".into(),
+            );
+        }
+
+        if self.privacy_guard_enabled
+            && self.privacy_guard_restore_enabled
+            && self.privacy_guard_mode == PrivacyGuardMode::DetectOnly
+        {
+            warnings.push(
+                "privacy_guard_restore_enabled=true has no useful effect with privacy_guard_mode=detect_only".into(),
+            );
+        }
+
+        if self.audit_enabled
+            && self
+                .audit_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            warnings.push(
+                "audit_enabled=true without audit_api_key; use authenticated Audit ingestion in production".into(),
+            );
+        }
+
+        if self.audit_enabled {
+            warnings.push(
+                "VCAL Audit delivery is buffered in memory and best-effort in v0.5.0; process crashes, queue overflow, or retry exhaustion can lose evidence".into(),
+            );
+        }
+
+        warnings
+    }
+
+    pub fn effective_runtime_summary(&self) -> Vec<String> {
+        vec![
+            format!(
+                "exact_cache={} fail_open={}",
+                self.exact_cache_enabled, self.exact_cache_fail_open
+            ),
+            format!(
+                "semantic_cache={} fail_open={}",
+                self.semantic_cache_enabled, self.semantic_cache_fail_open
+            ),
+            format!(
+                "security_guard={} privacy_guard={} guard_fail_open={}",
+                self.security_guard_enabled, self.privacy_guard_enabled, self.guard_fail_open
+            ),
+            format!("audit={} delivery=best_effort", self.audit_enabled),
+            format!(
+                "timeouts request={}s upstream={}s embedding={}s redis={}s",
+                self.request_timeout_seconds,
+                self.upstream_timeout_seconds,
+                self.embedding_timeout_seconds,
+                self.redis_timeout_seconds
+            ),
+            format!(
+                "concurrency requests={} upstream={}",
+                self.max_inflight_requests, self.max_inflight_upstream_requests
+            ),
+            format!(
+                "readiness redis={} qdrant={} upstream={}",
+                self.readiness_requires_redis,
+                self.readiness_requires_qdrant,
+                self.readiness_requires_upstream
+            ),
+        ]
+    }
+
     pub fn to_masked_display(&self) -> String {
         fn mask_secret_value(value: &str) -> String {
             let value = value.trim();
@@ -503,6 +620,7 @@ impl Config {
         out.push_str("AI Cost Firewall configuration\n");
         out.push_str("--------------------------------\n");
         out.push_str(&format!("version = {}\n", release::PRODUCT_VERSION));
+        out.push_str(&format!("config_version = {}\n", self.config_version));
         out.push_str(&format!("release = {}\n", release::RELEASE_TITLE));
         out.push_str(&format!(
             "compatibility_model = {}\n",
@@ -514,6 +632,10 @@ impl Config {
         out.push_str(&format!(
             "redis_url = {}\n",
             mask_secret_value(&self.redis_url)
+        ));
+        out.push_str(&format!(
+            "redis_timeout_seconds = {}\n",
+            self.redis_timeout_seconds
         ));
 
         out.push_str(&format!(
@@ -670,6 +792,10 @@ impl Config {
             "audit_retry_initial_backoff_ms = {}\n",
             self.audit_retry_initial_backoff_ms
         ));
+        out.push_str(&format!(
+            "audit_retry_max_backoff_ms = {}\n",
+            self.audit_retry_max_backoff_ms
+        ));
 
         out.push_str("\nLifecycle\n");
         out.push_str("--------------------------------\n");
@@ -759,8 +885,14 @@ impl Config {
             parse_or_default(&map, "embedding_timeout_seconds", request_timeout_seconds)?;
 
         let cfg = Self {
+            config_version: parse_or_default(
+                &map,
+                "config_version",
+                release::CONFIG_SCHEMA_VERSION,
+            )?,
             listen_addr: get_or_default(&map, "listen_addr", "0.0.0.0:8080"),
             redis_url: get_required(&map, "redis_url")?,
+            redis_timeout_seconds: parse_or_default(&map, "redis_timeout_seconds", 2u64)?,
 
             upstream_provider: parse_or_default(
                 &map,
@@ -859,7 +991,7 @@ impl Config {
                 "privacy_guard_timeout_seconds",
                 10u64,
             )?,
-            guard_fail_open: parse_or_default(&map, "guard_fail_open", true)?,
+            guard_fail_open: parse_or_default(&map, "guard_fail_open", false)?,
 
             audit_enabled: parse_or_default(&map, "audit_enabled", false)?,
             audit_url: get_or_default(&map, "audit_url", "http://127.0.0.1:8092"),
@@ -878,6 +1010,11 @@ impl Config {
                 &map,
                 "audit_retry_initial_backoff_ms",
                 250u64,
+            )?,
+            audit_retry_max_backoff_ms: parse_or_default(
+                &map,
+                "audit_retry_max_backoff_ms",
+                5_000u64,
             )?,
 
             cache_bypass_header: get_or_default(&map, "cache_bypass_header", "X-AIF-Cache-Bypass"),
@@ -912,6 +1049,12 @@ impl Config {
                 .transpose()?
                 .unwrap_or(1_048_576usize),
             max_prompt_chars: parse_or_default(&map, "max_prompt_chars", 200_000usize)?,
+            max_inflight_requests: parse_or_default(&map, "max_inflight_requests", 1000usize)?,
+            max_inflight_upstream_requests: parse_or_default(
+                &map,
+                "max_inflight_upstream_requests",
+                500usize,
+            )?,
         };
 
         let cache_ttl_was_set = map.contains_key("cache_ttl_seconds");
@@ -968,9 +1111,14 @@ impl Config {
         };
 
         let cfg = Self {
+            config_version: env::var("AIF_CONFIG_VERSION")
+                .unwrap_or_else(|_| release::CONFIG_SCHEMA_VERSION.to_string())
+                .parse()
+                .map_err(|e| cfg_err(format!("invalid AIF_CONFIG_VERSION: {e}")))?,
             listen_addr: env::var("AIF_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             redis_url: env::var("AIF_REDIS_URL")
                 .map_err(|_| cfg_err("AIF_REDIS_URL is required when no config file is used"))?,
+            redis_timeout_seconds: parse_env_or_default("AIF_REDIS_TIMEOUT_SECONDS", 2u64)?,
 
             upstream_provider: {
                 let raw = env::var("AIF_UPSTREAM_PROVIDER")
@@ -1210,7 +1358,7 @@ impl Config {
                 })?
             },
             guard_fail_open: {
-                let raw = env::var("AIF_GUARD_FAIL_OPEN").unwrap_or_else(|_| "true".into());
+                let raw = env::var("AIF_GUARD_FAIL_OPEN").unwrap_or_else(|_| "false".into());
                 raw.parse().map_err(|e| {
                     cfg_err(format!(
                         "invalid AIF_GUARD_FAIL_OPEN value '{}': {}",
@@ -1232,6 +1380,10 @@ impl Config {
             audit_retry_initial_backoff_ms: parse_env_or_default(
                 "AIF_AUDIT_RETRY_INITIAL_BACKOFF_MS",
                 250u64,
+            )?,
+            audit_retry_max_backoff_ms: parse_env_or_default(
+                "AIF_AUDIT_RETRY_MAX_BACKOFF_MS",
+                5_000u64,
             )?,
 
             cache_bypass_header: env::var("AIF_CACHE_BYPASS_HEADER")
@@ -1319,6 +1471,14 @@ impl Config {
                     ))
                 })?
             },
+            max_inflight_requests: env::var("AIF_MAX_INFLIGHT_REQUESTS")
+                .unwrap_or_else(|_| "1000".into())
+                .parse()
+                .map_err(|e| cfg_err(format!("invalid AIF_MAX_INFLIGHT_REQUESTS: {e}")))?,
+            max_inflight_upstream_requests: env::var("AIF_MAX_INFLIGHT_UPSTREAM_REQUESTS")
+                .unwrap_or_else(|_| "500".into())
+                .parse()
+                .map_err(|e| cfg_err(format!("invalid AIF_MAX_INFLIGHT_UPSTREAM_REQUESTS: {e}")))?,
         };
 
         warn_if_suspicious(&cfg);
@@ -1371,6 +1531,7 @@ impl Config {
             format!("- max request body: {} bytes", self.max_request_body_bytes),
             format!("- max prompt chars: {}", self.max_prompt_chars),
             format!("- exact cache TTL: {}s", self.exact_cache_ttl_seconds),
+            format!("- Redis operation timeout: {}s", self.redis_timeout_seconds),
             format!("- exact fail-open: {}", self.exact_cache_fail_open),
             format!("- cache bypass header: {}", self.cache_bypass_header),
             format!("- security guard enabled: {}", self.security_guard_enabled),
@@ -1422,8 +1583,10 @@ impl Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
+            .field("config_version", &self.config_version)
             .field("listen_addr", &self.listen_addr)
-            .field("redis_url", &self.redis_url)
+            .field("redis_url", &mask_url_credentials(&self.redis_url))
+            .field("redis_timeout_seconds", &self.redis_timeout_seconds)
             .field("upstream_provider", &self.upstream_provider.as_str())
             .field("upstream_base_url", &self.upstream_base_url)
             .field("upstream_api_key", &mask_secret(&self.upstream_api_key))
@@ -1449,6 +1612,11 @@ impl fmt::Debug for Config {
             .field("upstream_timeout_seconds", &self.upstream_timeout_seconds)
             .field("embedding_timeout_seconds", &self.embedding_timeout_seconds)
             .field("max_prompt_chars", &self.max_prompt_chars)
+            .field("max_inflight_requests", &self.max_inflight_requests)
+            .field(
+                "max_inflight_upstream_requests",
+                &self.max_inflight_upstream_requests,
+            )
             .field("exact_cache_enabled", &self.exact_cache_enabled)
             .field("exact_cache_fail_open", &self.exact_cache_fail_open)
             .field("exact_cache_store_enabled", &self.exact_cache_store_enabled)
@@ -1509,6 +1677,10 @@ impl fmt::Debug for Config {
                 "audit_retry_initial_backoff_ms",
                 &self.audit_retry_initial_backoff_ms,
             )
+            .field(
+                "audit_retry_max_backoff_ms",
+                &self.audit_retry_max_backoff_ms,
+            )
             .field("cache_bypass_header", &self.cache_bypass_header)
             .field("metrics_auth_required", &self.metrics_auth_required)
             .field(
@@ -1535,6 +1707,19 @@ impl fmt::Debug for Config {
     }
 }
 
+fn mask_url_credentials(value: &str) -> String {
+    if let Ok(mut url) = reqwest::Url::parse(value) {
+        if url.password().is_some() {
+            let _ = url.set_password(Some("****"));
+        }
+        if !url.username().is_empty() {
+            let _ = url.set_username("****");
+        }
+        return url.to_string();
+    }
+    mask_secret(value)
+}
+
 fn mask_secret(s: &str) -> String {
     let s = s.trim();
 
@@ -1552,8 +1737,10 @@ fn mask_secret(s: &str) -> String {
 
 fn allowed_directives() -> HashSet<&'static str> {
     HashSet::from([
+        "config_version",
         "listen_addr",
         "redis_url",
+        "redis_timeout_seconds",
         "upstream_provider",
         "upstream_base_url",
         "upstream_api_key",
@@ -1602,6 +1789,7 @@ fn allowed_directives() -> HashSet<&'static str> {
         "audit_timeout_seconds",
         "audit_retry_max_attempts",
         "audit_retry_initial_backoff_ms",
+        "audit_retry_max_backoff_ms",
         "cache_bypass_header",
         "metrics_auth_required",
         "metrics_auth_token",
@@ -1613,6 +1801,8 @@ fn allowed_directives() -> HashSet<&'static str> {
         "graceful_shutdown_timeout_seconds",
         "max_request_body_bytes",
         "max_prompt_chars",
+        "max_inflight_requests",
+        "max_inflight_upstream_requests",
     ])
 }
 

@@ -1,0 +1,16 @@
+# Release hardening
+
+Release builds are reproducible at the Rust dependency-selection level only when `Cargo.lock` is committed and every build uses `--locked`. v0.5.0 CI and the release helper intentionally fail when the lock file is absent.
+
+Before tagging a release run `scripts/build-release.sh`, the destructive failure suites, and the full integration test against the supported VCAL module combinations.
+
+The container image carries OCI title, vendor, version, revision, build-date and license metadata. Generate and retain a CycloneDX SBOM alongside the image digest, release notes and checksums.
+
+Recommended release artifacts:
+
+- container image pinned by digest;
+- source tag;
+- `Cargo.lock`;
+- CycloneDX SBOM;
+- SHA-256 checksums for distributable archives;
+- release notes and upgrade notes.
