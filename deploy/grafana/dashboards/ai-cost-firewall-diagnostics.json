@@ -1206,7 +1206,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * rate(aif_semantic_store_errors_total[$__rate_interval]) / clamp_min(rate(aif_semantic_store_total[$__rate_interval]), 1)",
+          "expr": "100 * rate(aif_semantic_store_errors_total[$__rate_interval]) / clamp_min(rate(aif_semantic_store_total[$__rate_interval]), 0.000001)",
           "legendFormat": "Store error %",
           "range": true,
           "refId": "C"
@@ -1786,6 +1786,318 @@
       ],
       "title": "Guard Orchestration Latency",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (dependency, class) (rate(aif_dependency_failures_total[$__rate_interval]))",
+          "legendFormat": "{{dependency}} {{class}}/sec",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Dependency Failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "aif_evidence_queue_depth",
+          "legendFormat": "Queue depth",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (reason) (rate(aif_evidence_events_dropped_total[$__rate_interval]))",
+          "legendFormat": "Dropped {{reason}}/sec",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (result) (rate(aif_evidence_events_delivered_total[$__rate_interval]))",
+          "legendFormat": "Delivered {{result}}/sec",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(aif_evidence_retries_total[$__rate_interval])",
+          "legendFormat": "Retries/sec",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Evidence Delivery Health",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (guard, phase) (rate(aif_guard_hook_errors_total[$__rate_interval]))",
+          "legendFormat": "{{guard}} {{phase}} hook errors/sec",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (guard) (rate(aif_guard_rejections_total[$__rate_interval]))",
+          "legendFormat": "{{guard}} rejections/sec",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (stage, rule_id) (rate(aif_security_blocks_total[$__rate_interval]))",
+          "legendFormat": "security {{stage}} {{rule_id}} blocks/sec",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (reason) (rate(aif_privacy_restore_skipped_total[$__rate_interval]))",
+          "legendFormat": "privacy restore skipped {{reason}}/sec",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Guard Operational Signals",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -1798,7 +2110,7 @@
     "prometheus",
     "semantic-cache",
     "cost-intelligence",
-    "v0.4.2",
+    "v0.5.0",
     "guard-orchestration"
   ],
   "templating": {
@@ -1814,5 +2126,5 @@
   "uid": "ai-cost-firewall-diagnostics",
   "version": 8,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall v0.4.2 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, guard orchestration outcomes and latency, and operational health. Detailed Privacy Guard and Security Guard findings remain in their product-specific dashboards."
+  "description": "Diagnostics dashboard for AI Cost Firewall v0.5.0 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, dependency failures, evidence delivery health, guard orchestration outcomes and latency, and operational health. Detailed Privacy Guard and Security Guard findings remain in their product-specific dashboards."
 }

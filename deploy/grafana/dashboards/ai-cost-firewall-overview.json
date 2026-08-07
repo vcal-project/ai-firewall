@@ -1140,7 +1140,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (model, cache_type) (rate(aif_net_saved_micro_usd_total[$__rate_interval])) / clamp_min(sum by (model, cache_type) (rate(aif_cache_hits_total[$__rate_interval])), 1) / 1000000",
+          "expr": "sum by (model, cache_type) (rate(aif_net_saved_micro_usd_total[$__rate_interval])) / clamp_min(sum by (model, cache_type) (rate(aif_cache_hits_total[$__rate_interval])), 0.000001) / 1000000",
           "legendFormat": "{{model}} / {{cache_type}}",
           "range": true,
           "refId": "A"
@@ -1525,6 +1525,68 @@
       ],
       "title": "Guard Orchestration Errors",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "bool"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 21,
+        "y": 0
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max(aif_readiness_state)",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Readiness",
+      "type": "stat"
     }
   ],
   "refresh": "30s",
@@ -1538,7 +1600,7 @@
     "prometheus",
     "runtime",
     "semantic-cache",
-    "v0.4.2",
+    "v0.5.0",
     "guard-orchestration"
   ],
   "templating": {
@@ -1554,5 +1616,5 @@
   "uid": "ai-cost-firewall",
   "version": 7,
   "weekStart": "",
-  "description": "Overview dashboard for AI Cost Firewall v0.4.2: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, and a high-level guard orchestration error indicator."
+  "description": "Overview dashboard for AI Cost Firewall v0.5.0: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, and high-level guard orchestration health."
 }
