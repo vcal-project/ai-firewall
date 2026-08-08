@@ -7,11 +7,13 @@
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
 ![Status](https://img.shields.io/badge/status-pilot--ready-blue)
 
-## OpenAI-compatible control layer for AI cost, privacy, security, audit, and compliance
+## OpenAI-compatible control layer for AI cost, with optional privacy, security, audit, and compliance integrations
 
 AI Cost Firewall is a lightweight OpenAI-compatible gateway that reduces unnecessary LLM API calls through exact and semantic cache reuse.
 
-It can run independently as a caching and cost-control gateway or orchestrate optional VCAL modules for privacy, security, audit, and compliance.
+AI Cost Firewall can be deployed independently as a complete caching and cost-control gateway.
+
+It can also integrate with separately licensed VCAL modules for privacy, security, audit, and compliance.
 
 <p align="center">
   <img
@@ -64,18 +66,22 @@ Supported OpenAI-compatible providers include:
 
 # Production Capabilities
 
-AI Cost Firewall provides:
+AI Cost Firewall includes:
 
 - exact Redis caching
 - semantic Qdrant caching
 - OpenAI-compatible request routing
 - configurable cache fail-open/fail-closed behavior
-- VCAL Privacy Guard orchestration
-- VCAL Security Guard orchestration
 - structured lifecycle evidence
-- VCAL Audit integration
 - Prometheus metrics and Grafana dashboards
 - readiness, liveness, graceful shutdown, and runtime diagnostics
+
+Optional integrations with separately licensed VCAL modules include:
+
+- VCAL Privacy Guard
+- VCAL Security Guard
+- VCAL Audit
+- VCAL Compliance
 
 See the latest GitHub release for release-specific changes.
 
@@ -317,7 +323,9 @@ AI Cost Firewall includes operational safeguards and observability features desi
 
 ---
 
-## Optional VCAL Guard Integration
+## Optional VCAL Modules
+
+VCAL Privacy Guard, VCAL Security Guard, VCAL Audit, and VCAL Compliance are separate commercial products. They are not required to deploy or use AI Cost Firewall.
 
 AI Cost Firewall can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard before forwarding non-streaming chat requests upstream.
 
