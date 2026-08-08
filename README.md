@@ -3,19 +3,27 @@
 
 ![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![License](https://img.shields.io/github/license/vcal-project/ai-firewall)
+![GitHub Release](https://img.shields.io/github/v/release/vcal-project/ai-firewall)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
 ![Status](https://img.shields.io/badge/status-pilot--ready-blue)
 
-## OpenAI-compatible gateway for LLM caching, cost control, observability, and guard orchestration
+## OpenAI-compatible control layer for AI cost, privacy, security, audit, and compliance
 
-AI Cost Firewall is a lightweight OpenAI-compatible API gateway that reduces LLM API cost and latency through two cache layers:
+AI Cost Firewall is a lightweight OpenAI-compatible gateway that reduces unnecessary LLM API calls through exact and semantic cache reuse.
 
-* exact cache using Redis
-* semantic cache using Qdrant
+It can run independently as a caching and cost-control gateway or orchestrate optional VCAL modules for privacy, security, audit, and compliance.
 
-Only cache misses are forwarded to the upstream LLM endpoint.
+<p align="center">
+  <img
+    src="assets/ai-cost-firewall-overview.gif"
+    alt="AI Cost Firewall and VCAL platform overview"
+    width="900"
+  >
+</p>
 
-AI Cost Firewall also supports optional guard orchestration for enterprise privacy and security deployments, while remaining fully usable as a standalone caching and cost-control gateway.
+<p align="center">
+  <em>AI Cost Firewall controls the request path between AI applications and model providers.</em>
+</p>
 
 AI Cost Firewall is developed and maintained by VCAL Labs, Inc.
 
@@ -54,41 +62,22 @@ Supported OpenAI-compatible providers include:
 
 ---
 
-# Current Release Focus
+# Production Capabilities
 
-AI Cost Firewall v0.4.2 expands the VCAL Audit integration introduced in v0.4.1 by adding structured Privacy Guard and Security Guard activity evidence for accurate compliance reporting, investigations, and downstream control mapping.
+AI Cost Firewall provides:
 
-This release adds or finalizes:
+- exact Redis caching
+- semantic Qdrant caching
+- OpenAI-compatible request routing
+- configurable cache fail-open/fail-closed behavior
+- VCAL Privacy Guard orchestration
+- VCAL Security Guard orchestration
+- structured lifecycle evidence
+- VCAL Audit integration
+- Prometheus metrics and Grafana dashboards
+- readiness, liveness, graceful shutdown, and runtime diagnostics
 
-* `vcal.evidence.event` schema v1.1 structured evidence events;
-* stable `trace_id` correlation across request processing stages;
-* asynchronous buffered HTTP delivery to VCAL Audit;
-* bounded evidence queue, batching, request timeout, retry, and exponential backoff controls;
-* configurable Audit endpoint, API key, producer instance ID, and delivery limits;
-* exactly one terminal `request.completed` or `request.failed` event for every trace that emits `request.received`;
-* structured Security Guard request-scan evidence through `guard.security.request.scan`;
-* structured Security Guard response-scan evidence through `guard.security.response.scan`;
-* structured Privacy Guard request-scan evidence through `guard.privacy.request.scan`;
-* explicit Privacy Guard request-failure evidence through `guard.privacy.request.failed`;
-* structured Privacy Guard response-restoration evidence through `guard.privacy.response.restore`;
-* Security Guard allow, warn, block, and failure outcomes represented through structured decision and outcome fields;
-* propagation of Security Guard `rule_id`, reason, action, stage, and latency values into evidence events;
-* Privacy Guard finding types and counts, operating mode, transformation action, modification status, and restoration-mapping status in evidence events;
-* evidence for Privacy Guard fail-open errors, restore failures, and skipped restoration;
-* trace ID propagation through exact-cache, semantic-cache, and upstream response guard processing;
-* request-side and response-side VCAL Security Guard orchestration;
-* VCAL Privacy Guard detection, redaction, anonymization, and restoration orchestration;
-* explicit Privacy Guard restore skipping after response-side Security Guard blocks;
-* guard orchestration metrics and latency histograms;
-* global rejection of `stream=true` requests with HTTP 422;
-* safer preservation of OpenAI-compatible request and response metadata;
-* sanitized upstream error handling that does not expose upstream response bodies;
-* production wiring for the buffered VCAL Audit evidence sink.
-
-Guard evidence contains structured operational metadata only. Prompt and response content is not included.
-
-VCAL Security Guard, VCAL Privacy Guard, and VCAL Audit are optional commercial add-ons. They are not required to run AI Cost Firewall as a standalone caching and cost-control gateway.
-
+See the latest GitHub release for release-specific changes.
 
 ---
 
@@ -297,25 +286,9 @@ The `/version` endpoint returns release metadata, including the AI Cost Firewall
 
 ## Streaming behavior
 
-AI Cost Firewall v0.4.2 supports non-streaming chat completions only. Requests with `"stream": true` are rejected with HTTP `422` before cache, guard, or upstream processing.
+Streaming chat completions are currently not supported.
 
-## Example Request
-
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini-2024-07-18",
-    "messages": [
-      {"role": "user", "content": "Explain Redis briefly."}
-    ]
-  }'
-```
-
-Run the same request twice.
-
-- The first request should go upstream.
-- The second request should be served from cache.
+Requests with `"stream": true` are rejected with HTTP `422` before cache, guard, or upstream processing.
 
 ---
 
@@ -493,9 +466,8 @@ The upstream provider and embedding provider may use different OpenAI-compatible
 Important limitations:
 
 * AI Cost Firewall does not claim universal compatibility with every OpenAI-like API.
-* Native Anthropic, Gemini, Mistral, and Cohere APIs are not directly supported in v0.4.2.
+* Native Anthropic, Gemini, Mistral, and Cohere APIs are not currently supported directly.
 * Mistral, Anthropic, Gemini, or other providers may be used only when exposed through an OpenAI-compatible layer such as LiteLLM, OpenRouter, or another compatible gateway.
-* Provider-specific config blocks, fallback chains, native provider transformations, and provider-specific pricing catalogs are not included in v0.4.2.
 
 See:
 
@@ -579,7 +551,7 @@ Full documentation:
 
 ---
 
-## Benchmarks
+# Benchmarks
 
 AI Cost Firewall has been benchmarked with a local simulated OpenAI-compatible upstream provider to isolate gateway behavior, Redis/Qdrant integration, cache effectiveness, and Prometheus metrics without external API cost or provider rate-limit noise.
 
@@ -591,41 +563,18 @@ See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limit
 
 ---
 
-# v0.4.2 Validation
-
-AI Cost Firewall v0.4.2 was validated with VCAL Privacy Guard, VCAL Security Guard, and VCAL Audit.
-
-Validated behavior includes:
-
-- safe requests are allowed through AI Firewall;
-- request-side prompt attacks are blocked by VCAL Security Guard with HTTP 403;
-- sensitive text is anonymized by VCAL Privacy Guard before cache/upstream processing;
-- placeholders are restored before the final client response;
-- streaming requests are rejected globally with HTTP 422 before cache, guard, or upstream processing;
-- cache bypass requests still run through guard orchestration;
-- Prometheus metrics are emitted for Security Guard, Privacy Guard, and AI Firewall guard stages;
-- response-side Security Guard blocks skip Privacy Guard restore;
-- failure paths emit `request.failed` exactly once;
-- successful upstream requests emit `request.completed` exactly once;
-- Security Guard rule IDs are preserved in responses, metrics, and evidence events;
-- the short mixed-traffic simulation completed with no unexpected HTTP errors;
-- buffered evidence batches were delivered to VCAL Audit;
-- stored traces were reconstructed by `trace_id`;
-- the VCAL Audit SHA-256 record chain verified successfully;
-- the SQLite evidence database persisted across container restarts.
-
-The current guard modules inspect text content. Non-text content such as images, audio, video, or binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
-
 # Evidence Events and VCAL Audit
 
-AI Cost Firewall v0.4.2 emits structured evidence using schema:
+AI Cost Firewall emits structured evidence using:
 
 ```text
 vcal.evidence.event
 schema_version: 1.1
 ```
 
-Each request trace that emits `request.received` ends with exactly one terminal event:
+Each request trace uses a stable trace_id to correlate request validation, cache activity, upstream calls, guard decisions, response processing, and the terminal request outcome.
+
+Every received request trace ends with exactly one terminal event:
 
 ```text
 request.completed
@@ -637,56 +586,21 @@ or:
 request.failed
 ```
 
-Evidence events use a stable `trace_id` to correlate request validation, exact and semantic cache activity, upstream calls, guard decisions, response processing, and terminal outcomes.
+AI Cost Firewall also emits structured evidence for VCAL Security Guard and VCAL Privacy Guard activity.
 
-AI Cost Firewall also emits structured guard activity evidence using the following event types:
+Guard evidence contains operational metadata only. Prompt and response content is not included.
 
-```text
-guard.security.request.scan
-guard.security.response.scan
-guard.privacy.request.scan
-guard.privacy.request.failed
-guard.privacy.response.restore
-```
+Evidence can be emitted through structured application logs and optionally delivered asynchronously to VCAL Audit.
 
-Security Guard evidence includes the processing stage, outcome, action, reason, rule ID when available, and guard latency.
+VCAL Audit provides:
 
-Privacy Guard evidence includes finding types and counts, operating mode, transformation action, whether content was modified, whether a restoration mapping was created, and restoration success, failure, or skip status.
+- authenticated evidence ingestion
+- durable event persistence
+- ordered trace reconstruction
+- NDJSON export
+- integrity verification
 
-Guard evidence contains structured operational metadata only. Prompt and response content is not included.
-
-By default, evidence is emitted through structured application logs. Enable it with:
-
-```text
-RUST_LOG=info,vcal_evidence=info
-```
-
-Inspect logged evidence with:
-
-```bash
-docker compose logs firewall | grep 'VCAL evidence event'
-```
-
-AI Cost Firewall can also deliver evidence asynchronously to VCAL Audit through a bounded, buffered HTTP sink.
-
-Example configuration:
-
-```text
-audit_enabled true;
-audit_url http://vcal-audit:8092;
-audit_api_key replace-with-shared-audit-token;
-audit_producer_instance_id ai-firewall-01;
-audit_queue_capacity 10000;
-audit_batch_size 100;
-audit_flush_interval_ms 1000;
-audit_timeout_seconds 5;
-audit_retry_max_attempts 5;
-audit_retry_initial_backoff_ms 250;
-```
-
-VCAL Audit provides authenticated batch ingestion, SQLite persistence, ordered event queries, trace reconstruction, NDJSON export, and SHA-256 hash-chain verification.
-
-The current AI Cost Firewall sender queue is memory-backed. After retry exhaustion, an undelivered batch is dropped and logged rather than blocking the LLM request path. This preserves request availability but means operators should monitor Audit delivery metrics and logs for dropped evidence batches.
+See `docs/audit-integration.md` for configuration, delivery behavior, retry handling, and operational guidance.
 
 ---
 
@@ -797,6 +711,14 @@ CONTRIBUTING.md
 AI Cost Firewall can optionally integrate with VCAL Semantic Cache for advanced semantic caching and distributed vector storage.
 
 https://vcal-project.com/vcal-server
+
+---
+
+# Releases
+
+For release-specific features, fixes, compatibility notes, and validation
+results, see the [GitHub Releases](https://github.com/vcal-project/ai-firewall/releases)
+page.
 
 ---
 
