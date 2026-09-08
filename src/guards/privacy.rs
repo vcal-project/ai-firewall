@@ -118,6 +118,8 @@ fn placeholder_signature_from_findings(findings: &[PrivacyFinding]) -> String {
         ("BEARER_TOKEN", 0usize),
         ("PRIVATE_KEY", 0usize),
         ("CREDIT_CARD_LIKE", 0usize),
+        ("SSN", 0usize),
+        ("IBAN", 0usize),
         ("OTHER", 0usize),
     ]);
 
@@ -135,6 +137,8 @@ fn placeholder_signature_from_findings(findings: &[PrivacyFinding]) -> String {
         "BEARER_TOKEN",
         "PRIVATE_KEY",
         "CREDIT_CARD_LIKE",
+        "SSN",
+        "IBAN",
         "OTHER",
     ]
     .iter()
@@ -621,6 +625,8 @@ enum PrivacyFindingKind {
     BearerToken,
     PrivateKey,
     CreditCardLike,
+    Ssn,
+    Iban,
     #[serde(other)]
     Other,
 }
@@ -636,6 +642,8 @@ impl PrivacyFindingKind {
             Self::BearerToken => "bearer_token",
             Self::PrivateKey => "private_key",
             Self::CreditCardLike => "credit_card_like",
+            Self::Ssn => "ssn",
+            Self::Iban => "iban",
             Self::Other => "other",
         }
     }
@@ -650,6 +658,8 @@ impl PrivacyFindingKind {
             Self::BearerToken => "BEARER_TOKEN",
             Self::PrivateKey => "PRIVATE_KEY",
             Self::CreditCardLike => "CREDIT_CARD_LIKE",
+            Self::Ssn => "SSN",
+            Self::Iban => "IBAN",
             Self::Other => "OTHER",
         }
     }
@@ -687,6 +697,27 @@ mod tests {
             role: role.to_string(),
             content: content.to_string(),
         }
+    }
+
+    #[test]
+    fn placeholder_signature_includes_ssn_and_iban_findings() {
+        let findings = vec![
+            PrivacyFinding {
+                kind: PrivacyFindingKind::Ssn,
+                count: 1,
+                severity: PrivacySeverity::High,
+            },
+            PrivacyFinding {
+                kind: PrivacyFindingKind::Iban,
+                count: 2,
+                severity: PrivacySeverity::High,
+            },
+        ];
+
+        assert_eq!(
+            placeholder_signature_from_findings(&findings),
+            "EMAIL:0|IP:0|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|SSN:1|IBAN:2|OTHER:0"
+        );
     }
 
     #[test]
