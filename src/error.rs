@@ -110,6 +110,25 @@ pub enum AppError {
         message: String,
     },
 
+    #[error("usage guard blocked request: {message}")]
+    UsageRequestBlocked {
+        message: String,
+        rule_id: Option<String>,
+        category: Option<String>,
+    },
+
+    #[error("usage guard unavailable during {stage}: {message}")]
+    UsageGuardUnavailable {
+        stage: &'static str,
+        message: String,
+    },
+
+    #[error("usage guard timeout during {stage}: {message}")]
+    UsageGuardTimeout {
+        stage: &'static str,
+        message: String,
+    },
+
     #[error("privacy guard anonymization failed: {message}")]
     PrivacyAnonymizationFailed { message: String },
 
@@ -181,6 +200,32 @@ impl AppError {
 
     pub fn security_guard_timeout(stage: &'static str, message: impl Into<String>) -> Self {
         Self::SecurityGuardTimeout {
+            stage,
+            message: message.into(),
+        }
+    }
+
+    pub fn usage_request_blocked(
+        message: impl Into<String>,
+        rule_id: Option<String>,
+        category: Option<String>,
+    ) -> Self {
+        Self::UsageRequestBlocked {
+            message: message.into(),
+            rule_id,
+            category,
+        }
+    }
+
+    pub fn usage_guard_unavailable(stage: &'static str, message: impl Into<String>) -> Self {
+        Self::UsageGuardUnavailable {
+            stage,
+            message: message.into(),
+        }
+    }
+
+    pub fn usage_guard_timeout(stage: &'static str, message: impl Into<String>) -> Self {
+        Self::UsageGuardTimeout {
             stage,
             message: message.into(),
         }
@@ -258,6 +303,8 @@ impl AppError {
             )),
             Self::SecurityGuardTimeout { .. } => Some(("security_guard", "timeout")),
             Self::SecurityGuardUnavailable { .. } => Some(("security_guard", "unavailable")),
+            Self::UsageGuardTimeout { .. } => Some(("usage_guard", "timeout")),
+            Self::UsageGuardUnavailable { .. } => Some(("usage_guard", "unavailable")),
             Self::PrivacyAnonymizationFailed { .. } | Self::PrivacyRestoreFailed { .. } => {
                 Some(("privacy_guard", "unavailable"))
             }
@@ -311,6 +358,9 @@ impl AppError {
                 UpstreamErrorKind::Other => "UPSTREAM_RESPONSE_DECODE_ERROR",
             },
             AppError::Backpressure { .. } => "BACKPRESSURE_LIMIT",
+            AppError::UsageRequestBlocked { .. } => "USAGE_POLICY_BLOCK",
+            AppError::UsageGuardUnavailable { .. } => "USAGE_GUARD_DEPENDENCY_ERROR",
+            AppError::UsageGuardTimeout { .. } => "USAGE_GUARD_TIMEOUT",
             AppError::DependencyFailure {
                 dependency, class, ..
             } => match (dependency, class) {
@@ -335,6 +385,9 @@ impl AppError {
             AppError::SecurityResponseBlocked { .. } => "security_response_blocked",
             AppError::SecurityGuardUnavailable { .. } => "security_guard_unavailable",
             AppError::SecurityGuardTimeout { .. } => "security_guard_timeout",
+            AppError::UsageRequestBlocked { .. } => "usage_request_blocked",
+            AppError::UsageGuardUnavailable { .. } => "usage_guard_unavailable",
+            AppError::UsageGuardTimeout { .. } => "usage_guard_timeout",
             AppError::PrivacyAnonymizationFailed { .. } => "privacy_anonymization_failed",
             AppError::PrivacyRestoreFailed { .. } => "privacy_restore_failed",
             AppError::GuardContractViolation { .. } => "guard_contract_violation",
@@ -390,6 +443,9 @@ impl AppError {
             AppError::SecurityResponseBlocked { .. } => "security_response_blocked",
             AppError::SecurityGuardUnavailable { .. } => "security_guard_unavailable",
             AppError::SecurityGuardTimeout { .. } => "security_guard_timeout",
+            AppError::UsageRequestBlocked { .. } => "usage_request_blocked",
+            AppError::UsageGuardUnavailable { .. } => "usage_guard_unavailable",
+            AppError::UsageGuardTimeout { .. } => "usage_guard_timeout",
             AppError::PrivacyAnonymizationFailed { .. } => "privacy_anonymization_failed",
             AppError::PrivacyRestoreFailed { .. } => "privacy_restore_failed",
             AppError::GuardContractViolation { .. } => "guard_contract_violation",
@@ -413,6 +469,9 @@ impl AppError {
             AppError::SecurityResponseBlocked { .. } => StatusCode::FORBIDDEN,
             AppError::SecurityGuardUnavailable { .. } => StatusCode::BAD_GATEWAY,
             AppError::SecurityGuardTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+            AppError::UsageRequestBlocked { .. } => StatusCode::FORBIDDEN,
+            AppError::UsageGuardUnavailable { .. } => StatusCode::BAD_GATEWAY,
+            AppError::UsageGuardTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
             AppError::PrivacyAnonymizationFailed { .. } => StatusCode::BAD_GATEWAY,
             AppError::PrivacyRestoreFailed { .. } => StatusCode::BAD_GATEWAY,
             AppError::GuardContractViolation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
@@ -431,6 +490,9 @@ impl AppError {
             AppError::SecurityResponseBlocked { message, .. } => message,
             AppError::SecurityGuardUnavailable { message, .. } => message,
             AppError::SecurityGuardTimeout { message, .. } => message,
+            AppError::UsageRequestBlocked { message, .. } => message,
+            AppError::UsageGuardUnavailable { message, .. } => message,
+            AppError::UsageGuardTimeout { message, .. } => message,
             AppError::PrivacyAnonymizationFailed { message } => message,
             AppError::PrivacyRestoreFailed { message } => message,
             AppError::GuardContractViolation { message } => message,
@@ -453,6 +515,9 @@ impl AppError {
             | AppError::SecurityGuardTimeout { stage, .. } => Some(*stage),
             AppError::SecurityRequestBlocked { .. } => Some("request"),
             AppError::SecurityResponseBlocked { .. } => Some("response"),
+            AppError::UsageRequestBlocked { .. } => Some("request"),
+            AppError::UsageGuardUnavailable { stage, .. }
+            | AppError::UsageGuardTimeout { stage, .. } => Some(*stage),
             AppError::PrivacyAnonymizationFailed { .. } => Some("request"),
             AppError::PrivacyRestoreFailed { .. } => Some("response"),
             _ => None,
@@ -468,6 +533,9 @@ impl AppError {
             AppError::PrivacyAnonymizationFailed { .. } | AppError::PrivacyRestoreFailed { .. } => {
                 Some("privacy")
             }
+            AppError::UsageRequestBlocked { .. }
+            | AppError::UsageGuardUnavailable { .. }
+            | AppError::UsageGuardTimeout { .. } => Some("usage"),
             _ => None,
         }
     }
@@ -475,7 +543,15 @@ impl AppError {
     fn rule_id(&self) -> Option<&str> {
         match self {
             AppError::SecurityRequestBlocked { rule_id, .. }
-            | AppError::SecurityResponseBlocked { rule_id, .. } => rule_id.as_deref(),
+            | AppError::SecurityResponseBlocked { rule_id, .. }
+            | AppError::UsageRequestBlocked { rule_id, .. } => rule_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn usage_category(&self) -> Option<&str> {
+        match self {
+            AppError::UsageRequestBlocked { category, .. } => category.as_deref(),
             _ => None,
         }
     }
@@ -508,6 +584,10 @@ impl IntoResponse for AppError {
 
         if let Some(rule_id) = self.rule_id() {
             error["rule_id"] = json!(rule_id);
+        }
+
+        if let Some(category) = self.usage_category() {
+            error["category"] = json!(category);
         }
 
         (
@@ -560,6 +640,23 @@ mod tests {
         assert_eq!(value["error"]["guard"], "security");
         assert_eq!(value["error"]["stage"], "response");
         assert_eq!(value["error"]["rule_id"], "rule-123");
+    }
+
+    #[tokio::test]
+    async fn usage_block_contract_preserves_policy_metadata() {
+        let value = response_json(AppError::usage_request_blocked(
+            "blocked by organizational AI usage policy",
+            Some("VUG-PER-001".to_string()),
+            Some("personal_travel".to_string()),
+        ))
+        .await;
+
+        assert_eq!(value["error"]["code"], 403);
+        assert_eq!(value["error"]["type"], "usage_request_blocked");
+        assert_eq!(value["error"]["guard"], "usage");
+        assert_eq!(value["error"]["stage"], "request");
+        assert_eq!(value["error"]["rule_id"], "VUG-PER-001");
+        assert_eq!(value["error"]["category"], "personal_travel");
     }
 
     #[tokio::test]

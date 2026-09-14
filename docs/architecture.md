@@ -10,7 +10,7 @@ The firewall reduces:
 - latency
 - repeated token usage
 
-and can optionally add request/response guard controls through VCAL Security Guard and VCAL Privacy Guard.
+and can optionally add security, privacy, and organizational usage-policy controls through VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard.
 
 The default open-source deployment uses a two-layer caching strategy:
 
@@ -27,7 +27,7 @@ Only requests that miss all enabled cache layers are forwarded upstream.
   <a href="../assets/architecture/ai-cost-firewall-0-4-1.png">
     <img
       src="../assets/architecture/ai-cost-firewall-0-4-1.png"
-      alt="AI Cost Firewall v0.4.2 architecture diagram"
+      alt="AI Cost Firewall architecture diagram"
     />
   </a>
 </p>
@@ -71,20 +71,20 @@ without requiring provider-specific configuration blocks.
 
 ## Enterprise Guard Orchestration
 
-AI Cost Firewall v0.4.2 can orchestrate optional VCAL enterprise modules while keeping the core gateway focused on caching and cost control.
+AI Cost Firewall can orchestrate optional VCAL enterprise modules while keeping the core gateway focused on caching and cost control.
 
-Supported modes:
+VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard can be enabled independently or in combination. A representative full deployment is:
 
 ```text
-AI Firewall only
-AI Firewall + VCAL Security Guard
-AI Firewall + VCAL Privacy Guard
-AI Firewall + VCAL Security Guard + VCAL Privacy Guard
+AI Firewall
++ VCAL Security Guard
++ VCAL Privacy Guard
++ VCAL Usage Guard
 ```
 
-When both guards are enabled, the firewall becomes the orchestrator for request-side Security Guard scanning, Privacy Guard anonymization/redaction, exact and semantic cache lookup, upstream forwarding on cache miss, response-side Security Guard scanning, and Privacy Guard restoration before returning the final response.
+When all three guards are enabled, the firewall orchestrates request-side Security Guard scanning, Privacy Guard anonymization/redaction, Usage Guard policy evaluation, exact and semantic cache lookup, upstream forwarding on cache miss, response-side Security Guard scanning, and Privacy Guard restoration before returning the final response.
 
-VCAL Security Guard and VCAL Privacy Guard are optional commercial add-ons and are not required for standalone AI Firewall caching deployments.
+The guard modules are optional commercial add-ons and are not required for standalone AI Firewall caching deployments.
 
 ---
 ## Operational Visibility
@@ -117,6 +117,8 @@ flowchart LR
 
     Privacy[VCAL Privacy Guard<br/>optional]
 
+    Usage[VCAL Usage Guard<br/>optional]
+
     Redis[Redis / Valkey<br/>Exact Cache]
 
     Qdrant[Qdrant<br/>Semantic Cache]
@@ -133,6 +135,7 @@ flowchart LR
 
     Firewall --> Security
     Firewall --> Privacy
+    Firewall --> Usage
 
     Firewall --> Redis
     Firewall --> Qdrant
@@ -143,6 +146,7 @@ flowchart LR
     Firewall --> Prom
     Security --> Prom
     Privacy --> Prom
+    Usage --> Prom
     Prom --> Graf
 ```
 
@@ -162,6 +166,7 @@ receive request
 → normalize request
 → Security Guard request scan, if enabled
 → Privacy Guard scan/anonymize/redact, if enabled
+→ Usage Guard policy evaluation, if enabled
 → check per-request cache bypass
 → exact cache lookup, if enabled
 → semantic cache lookup, if enabled
@@ -264,7 +269,7 @@ flowchart TD
 
 # Full Enterprise Guard Flow
 
-When VCAL Security Guard and VCAL Privacy Guard are both enabled, the recommended v0.4.2 flow is:
+When VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard are enabled, the recommended flow is:
 
 ```text
 Client
@@ -273,6 +278,8 @@ Client
           -> block unsafe request with HTTP 403, if needed
       -> VCAL Privacy Guard scan
           -> anonymize or redact sensitive text
+      -> VCAL Usage Guard policy evaluation
+          -> allow/warn and continue, or block/escalate before cache/upstream
       -> Redis/Qdrant cache lookup or upstream LLM
       -> VCAL Security Guard response scan
           -> block unsafe model output, if needed
@@ -281,7 +288,7 @@ Client
       -> Client
 ```
 
-Guard ordering matters: Security Guard runs before Privacy Guard on the request path, Privacy Guard runs before cache/upstream processing, Security Guard scans output before restore, and Privacy Guard restore is the final transformation before returning the response to the client.
+Guard ordering matters: Security Guard sees the raw request first, Privacy Guard can anonymize sensitive text before Usage Guard evaluates organizational policy, Usage Guard runs before cache/upstream processing, Security Guard scans output before restore, and Privacy Guard restore is the final transformation before returning the response to the client.
 
 ---
 # Core Components
@@ -347,6 +354,28 @@ anonymize
 In `anonymize` mode, sensitive values can be replaced with placeholders before cache/upstream processing. When restore is enabled, AI Firewall calls `/v1/restore` after the upstream/cache response path to replace placeholders with the original values before returning the final response to the client.
 
 ---
+
+# VCAL Usage Guard — Optional
+
+VCAL Usage Guard is an optional request-side policy module called by AI Firewall after Privacy Guard and before cache lookup or upstream forwarding.
+
+It evaluates whether a request is permitted under organizational AI usage policy. AI Firewall sends the request text together with configured tenant, policy, and mode metadata to Usage Guard.
+
+Usage Guard decisions can include:
+
+```text
+allow
+warn
+block
+escalate
+```
+
+`allow` and `warn` decisions continue through the cache/upstream path. `block` and `escalate` decisions stop request processing and are returned by AI Firewall as structured Usage Guard errors.
+
+When Privacy Guard anonymization is enabled, Usage Guard evaluates the anonymized request rather than the original sensitive values.
+
+---
+
 # Redis / Valkey — Exact Cache
 
 Redis stores exact request-response matches.
@@ -835,7 +864,7 @@ flowchart LR
 
 # VCAL Audit Integration
 
-AI Cost Firewall v0.4.2 can send structured evidence to VCAL Audit through a buffered HTTP sink.
+AI Cost Firewall can send structured evidence to VCAL Audit through a buffered HTTP sink.
 
 ```text
 Request processing
@@ -859,13 +888,13 @@ The Audit integration is optional and disabled by default.
 
 AI Firewall remains the producer of lifecycle evidence. VCAL Audit becomes the authoritative receiver and assigns persistent sequence numbers and record hashes.
 
-The producer queue is not durable in v0.4.2. Audit availability is therefore decoupled from request availability, but prolonged outages can cause evidence loss after retry exhaustion.
+The producer queue is memory-backed and not durable. Audit availability is therefore decoupled from request availability, but prolonged outages can cause evidence loss after retry exhaustion.
 
 # Streaming Behavior
 
-AI Cost Firewall v0.4.2 supports non-streaming chat completions only.
+AI Cost Firewall supports non-streaming chat completions only.
 
-Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing.
+Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing, regardless of which optional guard modules are enabled.
 
 Example:
 
@@ -874,12 +903,6 @@ Example:
   "stream": true
 }
 ```
-
-Current behavior:
-
-- streaming requests bypass semantic cache
-- streaming responses are not stored in semantic cache
-- exact cache behavior may vary depending on request flow
 
 ---
 
@@ -1035,6 +1058,8 @@ Shows:
 - cache bypass request rate
 - per-model spend and savings
 - savings by cache type
+- Usage Guard policy blocks
+- high-level guard orchestration health
 
 ---
 
@@ -1053,6 +1078,8 @@ Shows:
 - gross vs net semantic savings
 - semantic store health
 - provider error classes
+- guard orchestration outcomes and latency
+- Usage Guard policy blocks by category
 
 Dashboards are provisioned automatically in Docker deployments that use the provided Grafana provisioning files.
 
@@ -1130,9 +1157,10 @@ aif_guard_requests_total
 aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
+aif_usage_blocks_total
 ```
 
-These metrics show guard calls by guard/stage/result, guard latency, Security Guard blocks by stage/rule ID, and skipped Privacy Guard restore when a response is blocked before restore.
+These metrics show guard calls by guard/stage/result, guard latency, Security Guard blocks by stage/rule ID, skipped Privacy Guard restore when a response is blocked before restore, and Usage Guard blocks by policy category/rule ID.
 
 ---
 # Summary

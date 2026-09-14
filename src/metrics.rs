@@ -489,7 +489,7 @@ pub static GUARD_FINDINGS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new(
             "aif_guard_findings_total",
-            "Privacy/security findings reported to AI Firewall by guard modules",
+            "Guard findings reported to AI Firewall by guard modules",
         ),
         &["guard", "kind", "severity"],
     )
@@ -562,6 +562,17 @@ pub static SECURITY_BLOCKS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric aif_security_blocks_total must be valid")
 });
 
+pub static USAGE_BLOCKS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_usage_blocks_total",
+            "Usage Guard blocks observed by AI Firewall by category and rule ID",
+        ),
+        &["category", "rule_id"],
+    )
+    .expect("metric aif_usage_blocks_total must be valid")
+});
+
 pub static PRIVACY_RESTORE_SKIPPED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new(
@@ -588,6 +599,12 @@ pub fn observe_guard_latency_seconds(guard: &str, stage: &str, seconds: f64) {
 pub fn observe_security_block(stage: &str, rule_id: Option<&str>) {
     SECURITY_BLOCKS_TOTAL
         .with_label_values(&[stage, rule_id.unwrap_or("unknown")])
+        .inc();
+}
+
+pub fn observe_usage_block(category: Option<&str>, rule_id: Option<&str>) {
+    USAGE_BLOCKS_TOTAL
+        .with_label_values(&[category.unwrap_or("unknown"), rule_id.unwrap_or("unknown")])
         .inc();
 }
 
@@ -642,6 +659,7 @@ pub fn init() {
     Lazy::force(&GUARD_REQUESTS_TOTAL);
     Lazy::force(&GUARD_LATENCY_SECONDS);
     Lazy::force(&SECURITY_BLOCKS_TOTAL);
+    Lazy::force(&USAGE_BLOCKS_TOTAL);
     Lazy::force(&PRIVACY_RESTORE_SKIPPED_TOTAL);
     Lazy::force(&EVIDENCE_EVENTS_ENQUEUED_TOTAL);
     Lazy::force(&EVIDENCE_EVENTS_DROPPED_TOTAL);
@@ -714,6 +732,7 @@ pub fn init() {
             Box::new(GUARD_REQUESTS_TOTAL.clone()),
             Box::new(GUARD_LATENCY_SECONDS.clone()),
             Box::new(SECURITY_BLOCKS_TOTAL.clone()),
+            Box::new(USAGE_BLOCKS_TOTAL.clone()),
             Box::new(PRIVACY_RESTORE_SKIPPED_TOTAL.clone()),
             Box::new(EVIDENCE_EVENTS_ENQUEUED_TOTAL.clone()),
             Box::new(EVIDENCE_EVENTS_DROPPED_TOTAL.clone()),

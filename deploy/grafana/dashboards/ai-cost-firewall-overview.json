@@ -1587,6 +1587,73 @@
       ],
       "title": "Readiness",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 42
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(increase(aif_usage_blocks_total[$__range])) or vector(0)",
+          "legendFormat": "policy stops",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Usage Policy Stops",
+      "type": "stat"
     }
   ],
   "refresh": "30s",
@@ -1600,8 +1667,9 @@
     "prometheus",
     "runtime",
     "semantic-cache",
-    "v0.5.1",
-    "guard-orchestration"
+    "v0.6.0",
+    "guard-orchestration",
+    "usage-guard"
   ],
   "templating": {
     "list": []
@@ -1614,7 +1682,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Overview",
   "uid": "ai-cost-firewall",
-  "version": 7,
+  "version": 9,
   "weekStart": "",
-  "description": "Overview dashboard for AI Cost Firewall v0.5.1: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, and high-level guard orchestration health."
+  "description": "Overview dashboard for AI Cost Firewall v0.6.0: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, Usage Guard policy stops, and high-level guard orchestration health. Intentional Security/Usage policy decisions are control outcomes and are not treated as operational errors."
 }

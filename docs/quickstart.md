@@ -11,7 +11,7 @@ It reduces LLM API cost and latency using two cache layers:
 
 Only cache misses are forwarded to the upstream LLM endpoint unless a request explicitly bypasses cache.
 
-AI Cost Firewall v0.4.2 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules for enterprise security and privacy flows. These modules are not required for the default caching-only quick start.
+AI Cost Firewall can also orchestrate optional VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard modules for enterprise security, privacy, and organizational usage-policy flows. These modules are not required for the default caching-only quick start.
 
 The current product model is intentionally simple: AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a flat configuration model.
 
@@ -29,6 +29,7 @@ AI Cost Firewall
    │
    ├── VCAL Security Guard (optional)
    ├── VCAL Privacy Guard (optional)
+   ├── VCAL Usage Guard (optional)
    ├── VCAL Audit (optional evidence delivery)
    ├── Redis / Valkey (exact cache)
    ├── Qdrant (semantic cache)
@@ -310,7 +311,7 @@ aif_cache_bypass_requests_total
 
 # Optional Enterprise Guard Quick Check
 
-After validating the standalone caching deployment, enterprise deployments can enable VCAL Security Guard and VCAL Privacy Guard.
+After validating the standalone caching deployment, enterprise deployments can enable VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard independently or together.
 
 Typical AI Firewall configuration:
 
@@ -326,6 +327,14 @@ privacy_guard_api_key dev-privacy-key;
 privacy_guard_mode anonymize;
 privacy_guard_restore_enabled true;
 privacy_guard_timeout_seconds 3;
+
+usage_guard_enabled true;
+usage_guard_url http://vcal-usage-guard:8095;
+usage_guard_api_key dev-usage-key;
+usage_guard_mode enforce;
+usage_guard_tenant_id example-tenant;
+usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
 
 guard_fail_open false;
 ```
@@ -356,7 +365,7 @@ Expected behavior when Security Guard is enabled in enforce mode:
 HTTP/1.1 403 Forbidden
 ```
 
-AI Cost Firewall v0.4.2 rejects all `stream=true` requests with HTTP 422 before cache, guard, or upstream processing. Use non-streaming requests.
+AI Cost Firewall rejects all `stream=true` requests with HTTP 422 before cache, guard, or upstream processing. Use non-streaming requests.
 
 ---
 ---
@@ -587,6 +596,14 @@ privacy_guard_enabled false;
 privacy_guard_mode anonymize;
 privacy_guard_restore_enabled true;
 privacy_guard_timeout_seconds 3;
+
+usage_guard_enabled false;
+# usage_guard_url http://vcal-usage-guard:8095;
+# usage_guard_api_key replace-with-usage-guard-key;
+usage_guard_mode detect_only;
+# usage_guard_tenant_id your-tenant-id;
+# usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
 
 guard_fail_open false;
 
@@ -869,6 +886,7 @@ aif_guard_requests_total
 aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
+aif_usage_blocks_total
 ```
 
 Useful semantic diagnostics:

@@ -57,7 +57,7 @@ The configuration is logically divided into:
 | Per-request Controls | Cache bypass behavior |
 | Model Pricing | Cost tracking |
 | Metrics & Observability | Prometheus metrics and metrics endpoint access |
-| Guard Orchestration | Optional VCAL Security Guard and VCAL Privacy Guard integration |
+| Guard Orchestration | Optional VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard integration |
 | Audit Delivery | Optional buffered evidence delivery to VCAL Audit |
 | Readiness Behavior | Dependency-aware readiness checks |
 | Operational Settings | Shutdown, reload, and maintenance behavior |
@@ -116,6 +116,14 @@ privacy_guard_enabled false;
 privacy_guard_mode anonymize;
 privacy_guard_restore_enabled true;
 privacy_guard_timeout_seconds 3;
+
+usage_guard_enabled false;
+# usage_guard_url http://vcal-usage-guard:8095;
+# usage_guard_api_key replace-with-usage-guard-key;
+usage_guard_mode detect_only;
+# usage_guard_tenant_id your-tenant-id;
+# usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
 
 guard_fail_open false;
 
@@ -827,7 +835,7 @@ Default:
 120
 ```
 
-In v0.3.x, prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+Prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 ---
 
@@ -911,22 +919,14 @@ aif_cache_bypass_requests_total
 
 # Guard Orchestration
 
-AI Firewall v0.4.2 can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard.
-
-Supported modes:
-
-```text
-AI Firewall only
-AI Firewall + VCAL Security Guard
-AI Firewall + VCAL Privacy Guard
-AI Firewall + VCAL Security Guard + VCAL Privacy Guard
-```
+AI Firewall can optionally orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard. The modules can be enabled independently or in combination.
 
 Recommended full enterprise order:
 
 ```text
 Security Guard request scan
 → Privacy Guard scan/anonymize/redact
+→ Usage Guard policy evaluation
 → exact/semantic cache lookup or upstream LLM
 → Security Guard response scan
 → Privacy Guard restore
@@ -1022,6 +1022,79 @@ Timeout for Privacy Guard scan and restore calls.
 privacy_guard_timeout_seconds 3;
 ```
 
+## usage_guard_enabled
+
+Enable VCAL Usage Guard request-side policy orchestration.
+
+```conf
+usage_guard_enabled true;
+```
+
+Default: `false`.
+
+## usage_guard_url
+
+Base URL for VCAL Usage Guard.
+
+```conf
+usage_guard_url http://vcal-usage-guard:8095;
+```
+
+Do not include `/v1/scan`; AI Firewall appends the endpoint internally.
+
+## usage_guard_api_key
+
+Service-to-service API key for VCAL Usage Guard.
+
+```conf
+usage_guard_api_key your-usage-guard-key;
+```
+
+## usage_guard_mode
+
+Usage Guard policy mode sent with each request scan.
+
+```conf
+usage_guard_mode enforce;
+```
+
+Supported values:
+
+```text
+detect_only
+warn
+enforce
+escalate
+```
+
+Default: `detect_only`.
+
+## usage_guard_tenant_id
+
+Optional tenant identifier passed to Usage Guard.
+
+```conf
+usage_guard_tenant_id your-tenant-id;
+```
+
+## usage_guard_policy_id
+
+Optional Usage Guard policy identifier.
+
+```conf
+usage_guard_policy_id business-use-only;
+```
+
+## usage_guard_timeout_seconds
+
+Timeout for Usage Guard request scans.
+
+```conf
+usage_guard_timeout_seconds 3;
+```
+
+Default: `10`.
+
 ## guard_fail_open
 
 Controls what AI Firewall does when an enabled guard is unavailable, times out, or returns an invalid contract.
@@ -1030,7 +1103,9 @@ Controls what AI Firewall does when an enabled guard is unavailable, times out, 
 guard_fail_open false;
 ```
 
-For security-sensitive or privacy-sensitive deployments, fail-closed is recommended.
+For deployments where Security Guard, Privacy Guard, or Usage Guard is an enforcement control, fail-closed is recommended.
+
+`guard_fail_open` applies to operational guard failures such as transport errors, timeouts, or invalid responses. It does not override an intentional Security Guard block or a Usage Guard `block`/`escalate` decision.
 
 ## Full enterprise example
 
@@ -1046,6 +1121,14 @@ privacy_guard_api_key dev-privacy-key;
 privacy_guard_mode anonymize;
 privacy_guard_restore_enabled true;
 privacy_guard_timeout_seconds 3;
+
+usage_guard_enabled true;
+usage_guard_url http://vcal-usage-guard:8095;
+usage_guard_api_key dev-usage-key;
+usage_guard_mode enforce;
+usage_guard_tenant_id example-tenant;
+usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
 
 guard_fail_open false;
 ```
@@ -1319,6 +1402,14 @@ AIF_PRIVACY_GUARD_MODE=anonymize
 AIF_PRIVACY_GUARD_RESTORE_ENABLED=true
 AIF_PRIVACY_GUARD_TIMEOUT_SECONDS=3
 
+AIF_USAGE_GUARD_ENABLED=true
+AIF_USAGE_GUARD_URL=http://vcal-usage-guard:8095
+AIF_USAGE_GUARD_API_KEY=your-usage-guard-key
+AIF_USAGE_GUARD_MODE=enforce
+AIF_USAGE_GUARD_TENANT_ID=your-tenant-id
+AIF_USAGE_GUARD_POLICY_ID=business-use-only
+AIF_USAGE_GUARD_TIMEOUT_SECONDS=3
+
 AIF_GUARD_FAIL_OPEN=false
 ```
 
@@ -1423,6 +1514,7 @@ aif_guard_requests_total
 aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
+aif_usage_blocks_total
 ```
 
 

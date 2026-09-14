@@ -92,6 +92,18 @@ fn minimal_valid_config() -> Config {
         security_guard_url: "http://vcal-security-guard:8091".to_string(),
         security_guard_api_key: None,
         security_guard_timeout_seconds: 3,
+        security_guard_block_response: SecurityGuardBlockResponse::Completion,
+        security_guard_block_message: DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE.to_string(),
+
+        usage_guard_enabled: false,
+        usage_guard_url: "http://vcal-usage-guard:8095".to_string(),
+        usage_guard_api_key: None,
+        usage_guard_mode: UsageGuardMode::DetectOnly,
+        usage_guard_tenant_id: None,
+        usage_guard_policy_id: None,
+        usage_guard_timeout_seconds: 3,
+        usage_guard_block_response: UsageGuardBlockResponse::Completion,
+        usage_guard_block_message: DEFAULT_USAGE_GUARD_BLOCK_MESSAGE.to_string(),
 
         cache_bypass_header: "X-AIF-Cache-Bypass".to_string(),
         metrics_auth_required: false,
@@ -867,6 +879,224 @@ fn audit_retry_max_backoff_must_cover_initial_backoff() {
 }
 
 #[test]
+fn security_guard_block_response_defaults_to_completion_from_file() {
+    let path = temp_config_path("security_guard_block_response_default");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(
+        cfg.security_guard_block_response,
+        SecurityGuardBlockResponse::Completion
+    );
+    assert_eq!(
+        cfg.security_guard_block_message,
+        DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE
+    );
+}
+
+#[test]
+fn parses_security_guard_error_json_and_custom_block_message_from_file() {
+    let path = temp_config_path("security_guard_error_json");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+semantic_cache_enabled false;
+security_guard_block_response error_json;
+security_guard_block_message "This interaction was blocked by the enterprise security policy.";
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(
+        cfg.security_guard_block_response,
+        SecurityGuardBlockResponse::ErrorJson
+    );
+    assert_eq!(
+        cfg.security_guard_block_message,
+        "This interaction was blocked by the enterprise security policy."
+    );
+}
+
+#[test]
+fn empty_security_completion_message_is_rejected_when_security_guard_is_enabled() {
+    let mut cfg = minimal_valid_config();
+    cfg.security_guard_enabled = true;
+    cfg.security_guard_block_response = SecurityGuardBlockResponse::Completion;
+    cfg.security_guard_block_message.clear();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains(
+        "security_guard_block_message must not be empty when security_guard_block_response=completion"
+    ));
+}
+
+#[test]
+fn security_error_json_does_not_require_a_block_message() {
+    let mut cfg = minimal_valid_config();
+    cfg.security_guard_enabled = true;
+    cfg.security_guard_block_response = SecurityGuardBlockResponse::ErrorJson;
+    cfg.security_guard_block_message.clear();
+
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+#[serial]
+fn parses_security_guard_block_response_from_env() {
+    unsafe {
+        std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
+        std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
+        std::env::set_var("AIF_SECURITY_GUARD_BLOCK_RESPONSE", "error_json");
+        std::env::set_var(
+            "AIF_SECURITY_GUARD_BLOCK_MESSAGE",
+            "Custom security policy message.",
+        );
+    }
+
+    let cfg = Config::from_env().unwrap();
+
+    unsafe {
+        std::env::remove_var("AIF_REDIS_URL");
+        std::env::remove_var("AIF_UPSTREAM_API_KEY");
+        std::env::remove_var("AIF_SECURITY_GUARD_BLOCK_RESPONSE");
+        std::env::remove_var("AIF_SECURITY_GUARD_BLOCK_MESSAGE");
+    }
+
+    assert_eq!(
+        cfg.security_guard_block_response,
+        SecurityGuardBlockResponse::ErrorJson
+    );
+    assert_eq!(
+        cfg.security_guard_block_message,
+        "Custom security policy message."
+    );
+}
+
+#[test]
+fn usage_guard_block_response_defaults_to_completion_from_file() {
+    let path = temp_config_path("usage_guard_block_response_default");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(
+        cfg.usage_guard_block_response,
+        UsageGuardBlockResponse::Completion
+    );
+    assert_eq!(
+        cfg.usage_guard_block_message,
+        DEFAULT_USAGE_GUARD_BLOCK_MESSAGE
+    );
+}
+
+#[test]
+fn parses_usage_guard_error_json_and_custom_block_message_from_file() {
+    let path = temp_config_path("usage_guard_error_json");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+semantic_cache_enabled false;
+usage_guard_block_response error_json;
+usage_guard_block_message "Contact your administrator if you believe this request is business-related.";
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(
+        cfg.usage_guard_block_response,
+        UsageGuardBlockResponse::ErrorJson
+    );
+    assert_eq!(
+        cfg.usage_guard_block_message,
+        "Contact your administrator if you believe this request is business-related."
+    );
+}
+
+#[test]
+fn empty_completion_block_message_is_rejected_when_usage_guard_is_enabled() {
+    let mut cfg = minimal_valid_config();
+    cfg.usage_guard_enabled = true;
+    cfg.usage_guard_block_response = UsageGuardBlockResponse::Completion;
+    cfg.usage_guard_block_message.clear();
+
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains(
+        "usage_guard_block_message must not be empty when usage_guard_block_response=completion"
+    ));
+}
+
+#[test]
+fn error_json_does_not_require_a_block_message() {
+    let mut cfg = minimal_valid_config();
+    cfg.usage_guard_enabled = true;
+    cfg.usage_guard_block_response = UsageGuardBlockResponse::ErrorJson;
+    cfg.usage_guard_block_message.clear();
+
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+#[serial]
+fn parses_usage_guard_block_response_from_env() {
+    unsafe {
+        std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
+        std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
+        std::env::set_var("AIF_USAGE_GUARD_BLOCK_RESPONSE", "error_json");
+        std::env::set_var(
+            "AIF_USAGE_GUARD_BLOCK_MESSAGE",
+            "Custom environment policy message.",
+        );
+    }
+
+    let cfg = Config::from_env().unwrap();
+
+    unsafe {
+        std::env::remove_var("AIF_REDIS_URL");
+        std::env::remove_var("AIF_UPSTREAM_API_KEY");
+        std::env::remove_var("AIF_USAGE_GUARD_BLOCK_RESPONSE");
+        std::env::remove_var("AIF_USAGE_GUARD_BLOCK_MESSAGE");
+    }
+
+    assert_eq!(
+        cfg.usage_guard_block_response,
+        UsageGuardBlockResponse::ErrorJson
+    );
+    assert_eq!(
+        cfg.usage_guard_block_message,
+        "Custom environment policy message."
+    );
+}
+
+#[test]
 fn debug_output_masks_all_configured_secrets() {
     let mut cfg = minimal_valid_config();
     cfg.redis_url = "redis://user:redis-secret@127.0.0.1:6379".into();
@@ -876,6 +1106,7 @@ fn debug_output_masks_all_configured_secrets() {
     cfg.security_guard_api_key = Some("security-secret-value".into());
     cfg.privacy_guard_api_key = Some("privacy-secret-value".into());
     cfg.audit_api_key = Some("audit-secret-value".into());
+    cfg.usage_guard_api_key = Some("usage-secret-value".into());
     cfg.metrics_auth_token = Some("metrics-secret-value".into());
 
     let rendered = format!("{cfg:?}");
@@ -887,6 +1118,7 @@ fn debug_output_masks_all_configured_secrets() {
         "security-secret-value",
         "privacy-secret-value",
         "audit-secret-value",
+        "usage-secret-value",
         "metrics-secret-value",
     ] {
         assert!(

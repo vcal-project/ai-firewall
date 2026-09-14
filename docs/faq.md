@@ -1,6 +1,6 @@
 # AI Cost Firewall — FAQ
 
-This FAQ is for users browsing the `docs/` directory in the AI Cost Firewall GitHub repository. It gives quick answers for installation, configuration, caching, observability, troubleshooting, and optional VCAL Security Guard / VCAL Privacy Guard integration and VCAL Audit evidence delivery.
+This FAQ is for users browsing the `docs/` directory in the AI Cost Firewall GitHub repository. It gives quick answers for installation, configuration, caching, observability, troubleshooting, and optional VCAL Security Guard / VCAL Privacy Guard / VCAL Usage Guard integration and VCAL Audit evidence delivery.
 
 For full configuration details, see:
 
@@ -26,7 +26,7 @@ Typical flow:
 ```text
 Application
 → AI Cost Firewall
-→ optional Security Guard / Privacy Guard orchestration
+→ optional Security Guard / Privacy Guard / Usage Guard orchestration
 → cache lookup
 → upstream LLM provider only when needed
 ```
@@ -37,7 +37,7 @@ The firewall behaves similarly to:
 nginx for LLM APIs
 ```
 
-but with LLM-specific controls such as exact cache, semantic cache, model pricing, token-cost metrics, request limits, and optional Security Guard / Privacy Guard orchestration.
+but with LLM-specific controls such as exact cache, semantic cache, model pricing, token-cost metrics, request limits, and optional Security Guard / Privacy Guard / Usage Guard orchestration.
 
 ---
 
@@ -728,7 +728,7 @@ VCAL Audit is an optional commercial evidence receiver for retained event storag
 
 ### Is Audit delivery guaranteed?
 
-Not in v0.4.2.
+No. Producer-side delivery is best-effort.
 
 The AI Firewall sender uses a bounded in-memory queue. An undelivered batch can be dropped after retry exhaustion, when the queue is full, or if the process terminates before queued events are flushed.
 
@@ -738,7 +738,7 @@ Deployments requiring guaranteed producer-side delivery need a future disk-backe
 
 ### Are streaming requests supported?
 
-No. AI Cost Firewall v0.4.2 supports non-streaming chat completions only.
+No. AI Cost Firewall supports non-streaming chat completions only.
 
 Requests with:
 
@@ -986,24 +986,109 @@ Deployments should still review cache-retention settings, access controls, metri
 
 ---
 
-## Full Security + Privacy Mode
+## VCAL Usage Guard
 
-### Can AI Firewall use Security Guard and Privacy Guard together?
+### What is VCAL Usage Guard?
 
-Yes. AI Firewall v0.4.2 can orchestrate both modules in a single request/response flow:
+VCAL Usage Guard is an optional enterprise policy module that evaluates whether AI requests are permitted under organizational usage rules before they reach cache or an upstream LLM.
+
+It is distinct from Security Guard and Privacy Guard:
+
+- Security Guard asks whether content is malicious or unsafe.
+- Privacy Guard protects sensitive data.
+- Usage Guard asks whether the interaction is allowed under organizational policy.
+
+---
+
+### Is VCAL Usage Guard required to use AI Cost Firewall?
+
+No. AI Cost Firewall can run without VCAL Usage Guard.
+
+---
+
+### How does VCAL Usage Guard work with AI Cost Firewall?
+
+When enabled, AI Firewall calls Usage Guard after Privacy Guard and before exact cache, semantic cache, or upstream processing.
+
+If Privacy Guard anonymization is enabled, Usage Guard evaluates the anonymized request.
+
+Usage Guard can return `allow`, `warn`, `block`, or `escalate` decisions. `allow` and `warn` continue. `block` and `escalate` stop processing and AI Firewall returns a structured HTTP 403 error such as:
+
+```json
+{
+  "error": {
+    "code": 403,
+    "guard": "usage",
+    "type": "usage_request_blocked",
+    "stage": "request",
+    "rule_id": "VUG-PER-001",
+    "category": "personal_travel"
+  }
+}
+```
+
+---
+
+### What Usage Guard settings are used by AI Firewall?
+
+```conf
+usage_guard_enabled true;
+usage_guard_url http://vcal-usage-guard:8095;
+usage_guard_api_key your-shared-api-key;
+usage_guard_mode enforce;
+usage_guard_tenant_id your-tenant-id;
+usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
+guard_fail_open false;
+```
+
+The tenant and policy identifiers are optional.
+
+---
+
+### What context does AI Firewall currently send to Usage Guard?
+
+AI Firewall sends the request trace ID, optional configured tenant ID, optional configured policy ID, selected Usage Guard mode, request direction, and string chat-message content.
+
+Per-request department, role, application, or user identity context is not currently propagated by the AI Firewall adapter.
+
+---
+
+### What happens if VCAL Usage Guard is unavailable?
+
+Operational failures follow `guard_fail_open`.
+
+With:
+
+```conf
+guard_fail_open false;
+```
+
+the request fails closed.
+
+With fail-open enabled, transport or service failures may allow the request to continue. Intentional Usage Guard `block` and `escalate` decisions are enforcement outcomes and are not converted into fail-open allows.
+
+---
+
+## Full Guard Mode
+
+### Can AI Firewall use Security Guard, Privacy Guard, and Usage Guard together?
+
+Yes. AI Firewall can orchestrate all three modules in a single request/response flow:
 
 ```text
 Client
 → AI Firewall
 → Security Guard request scan
 → Privacy Guard anonymize/redact
+→ Usage Guard policy evaluation
 → exact/semantic cache or upstream LLM
 → Security Guard response scan
 → Privacy Guard restore
 → Client
 ```
 
-This lets the firewall block malicious prompts before privacy mapping or upstream processing, while still anonymizing sensitive text before it reaches Redis, Qdrant, semantic cache payloads, or the upstream LLM.
+This lets the firewall block malicious prompts first, anonymize sensitive text before policy/cache/upstream processing, and then enforce organizational usage policy before the request reaches Redis, Qdrant, or the upstream LLM.
 
 ---
 
@@ -1011,7 +1096,7 @@ This lets the firewall block malicious prompts before privacy mapping or upstrea
 
 Guarded streaming requests are rejected in the current guard contract.
 
-Use non-streaming requests when Security Guard or Privacy Guard orchestration is enabled.
+Use non-streaming requests. Streaming requests are rejected before cache, guard, or upstream processing.
 
 ---
 

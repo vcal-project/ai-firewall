@@ -13,6 +13,10 @@ scrape_configs:
   - job_name: "vcal-security-guard"
     static_configs:
       - targets: ["vcal-security-guard:8091"]
+
+  - job_name: "vcal-usage-guard"
+    static_configs:
+      - targets: ["vcal-usage-guard:8095"]
   
   - job_name: "vcal-audit"
     static_configs:

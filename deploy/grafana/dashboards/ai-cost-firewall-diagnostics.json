@@ -2094,9 +2094,106 @@
           "legendFormat": "privacy restore skipped {{reason}}/sec",
           "range": true,
           "refId": "D"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (category, rule_id) (rate(aif_usage_blocks_total[$__rate_interval]))",
+          "legendFormat": "usage {{category}} {{rule_id}} stops/sec",
+          "range": true,
+          "refId": "E"
         }
       ],
       "title": "Guard Operational Signals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
+      "id": 24,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (category) (rate(aif_usage_blocks_total[$__rate_interval]))",
+          "legendFormat": "{{category}} stops/sec",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Usage Guard Policy Stops by Category",
       "type": "timeseries"
     }
   ],
@@ -2110,8 +2207,9 @@
     "prometheus",
     "semantic-cache",
     "cost-intelligence",
-    "v0.5.1",
-    "guard-orchestration"
+    "v0.6.0",
+    "guard-orchestration",
+    "usage-guard"
   ],
   "templating": {
     "list": []
@@ -2124,7 +2222,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Diagnostics",
   "uid": "ai-cost-firewall-diagnostics",
-  "version": 8,
+  "version": 10,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall v0.5.1 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, dependency failures, evidence delivery health, guard orchestration outcomes and latency, and operational health. Detailed Privacy Guard and Security Guard findings remain in their product-specific dashboards."
+  "description": "Diagnostics dashboard for AI Cost Firewall v0.6.0 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, dependency failures, evidence delivery health, guard orchestration outcomes and latency, Usage Guard policy stops, and operational health. Intentional Security/Usage policy decisions remain control outcomes rather than operational errors. Detailed Privacy Guard, Security Guard, and Usage Guard findings remain in their product-specific dashboards."
 }

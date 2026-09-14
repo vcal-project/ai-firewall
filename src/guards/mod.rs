@@ -6,27 +6,74 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::{
-    config::{Config, PrivacyGuardMode},
+    config::{Config, PrivacyGuardMode, SecurityGuardBlockResponse, UsageGuardBlockResponse},
     error::AppError,
     evidence::{
         DataFinding, DecisionEvidence, EventCategory, EventOutcome, EvidenceEvent, EvidenceSink,
-        EvidenceSource,
+        EvidenceSource, PolicyRef,
     },
     services::chat_service::CacheControl,
-    types::openai::{ChatCompletionRequest, ChatCompletionResponse},
+    types::openai::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage},
 };
 
 mod privacy;
 mod security_guard;
+mod usage_guard;
 
 pub use privacy::PrivacyGuardOrchestrator;
 pub use security_guard::SecurityGuardClient;
+pub use usage_guard::UsageGuardClient;
+use usage_guard::UsageScanResponse;
 
 pub struct CompositeGuardOrchestrator {
     security: Option<SecurityGuardClient>,
+    security_block_response: SecurityGuardBlockResponse,
+    security_block_message: String,
     privacy: Option<PrivacyGuardOrchestrator>,
+    usage: Option<UsageGuardClient>,
+    usage_block_response: UsageGuardBlockResponse,
+    usage_block_message: String,
     evidence_sink: Arc<dyn EvidenceSink>,
     guard_fail_open: bool,
+}
+
+fn security_policy_completion(
+    response: &ChatCompletionResponse,
+    trace_id: Uuid,
+    message: &str,
+) -> ChatCompletionResponse {
+    let created = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX);
+
+    ChatCompletionResponse {
+        id: format!("chatcmpl-vcal-security-{}", trace_id.simple()),
+        object: "chat.completion".to_string(),
+        created,
+        model: response.model.clone(),
+        choices: vec![Choice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: Value::String(message.to_string()),
+                name: None,
+                extra: serde_json::Map::new(),
+            },
+            finish_reason: Some("stop".to_string()),
+            extra: serde_json::Map::new(),
+        }],
+        usage: Some(Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            extra: serde_json::Map::new(),
+        }),
+        extra: serde_json::Map::new(),
+    }
 }
 
 #[async_trait]
@@ -94,6 +141,17 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                             err.security_block_stage().unwrap_or("request"),
                             err.security_block_rule_id(),
                         );
+
+                        if self.security_block_response == SecurityGuardBlockResponse::Completion {
+                            guarded.context.security_policy_block_message =
+                                Some(self.security_block_message.clone());
+                            guarded.cache_control = CacheControl {
+                                bypass_lookup: true,
+                                bypass_store: true,
+                            };
+                            return Ok(guarded);
+                        }
+
                         return Err(err);
                     }
 
@@ -150,6 +208,100 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                         started.elapsed().as_secs_f64(),
                     );
                     return Err(err);
+                }
+            }
+        }
+
+        if let Some(usage) = &self.usage {
+            let started = Instant::now();
+
+            match usage.scan_request(&guarded.request, trace_id).await {
+                Ok(Some(decision)) => {
+                    let result = decision.decision_label().to_ascii_lowercase();
+                    metrics::observe_guard_request("usage", "request", &result);
+                    metrics::observe_guard_latency_seconds(
+                        "usage",
+                        "request",
+                        started.elapsed().as_secs_f64(),
+                    );
+
+                    for finding in &decision.findings {
+                        metrics::GUARD_FINDINGS_TOTAL
+                            .with_label_values(&[
+                                "usage",
+                                finding.category.as_str(),
+                                finding.classification.as_str(),
+                            ])
+                            .inc();
+                    }
+
+                    self.emit_usage_decision_event(trace_id, &decision, started.elapsed())
+                        .await;
+
+                    for warning in &decision.warnings {
+                        tracing::warn!(
+                            guard = "usage",
+                            warning = %warning,
+                            "Usage Guard warning"
+                        );
+                    }
+
+                    if decision.should_stop() {
+                        metrics::GUARD_REJECTIONS_TOTAL
+                            .with_label_values(&["usage"])
+                            .inc();
+                        metrics::observe_usage_block(
+                            decision.category.as_deref(),
+                            decision.rule_id.as_deref(),
+                        );
+
+                        if self.usage_block_response == UsageGuardBlockResponse::Completion {
+                            guarded.context.usage_policy_block_message =
+                                Some(self.usage_block_message.clone());
+                            guarded.cache_control = CacheControl {
+                                bypass_lookup: true,
+                                bypass_store: true,
+                            };
+                            return Ok(guarded);
+                        }
+
+                        return Err(AppError::usage_request_blocked(
+                            decision.reason_or_default(),
+                            decision.rule_id.clone(),
+                            decision.category.clone(),
+                        ));
+                    }
+                }
+                Ok(None) => {
+                    metrics::observe_guard_request("usage", "request", "skipped");
+                    metrics::observe_guard_latency_seconds(
+                        "usage",
+                        "request",
+                        started.elapsed().as_secs_f64(),
+                    );
+                    self.emit_usage_skipped_event(trace_id, started.elapsed())
+                        .await;
+                }
+                Err(err) => {
+                    metrics::observe_guard_request("usage", "request", "error");
+                    metrics::observe_guard_latency_seconds(
+                        "usage",
+                        "request",
+                        started.elapsed().as_secs_f64(),
+                    );
+                    self.emit_usage_failure_event(trace_id, &err, started.elapsed())
+                        .await;
+
+                    if self.guard_fail_open {
+                        tracing::warn!(
+                            guard = "usage",
+                            stage = "request",
+                            error = %err.message(),
+                            "Usage Guard request scan failed; guard_fail_open=true so request continues"
+                        );
+                    } else {
+                        return Err(err);
+                    }
                 }
             }
         }
@@ -219,6 +371,15 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                         if self.privacy.is_some() {
                             metrics::observe_privacy_restore_skipped("security_response_blocked");
                         }
+
+                        if self.security_block_response == SecurityGuardBlockResponse::Completion {
+                            return Ok(security_policy_completion(
+                                &response,
+                                trace_id,
+                                &self.security_block_message,
+                            ));
+                        }
+
                         return Err(err);
                     }
 
@@ -346,6 +507,145 @@ impl CompositeGuardOrchestrator {
                 severity: None,
             });
         }
+        self.emit(event).await;
+    }
+
+    async fn emit_usage_decision_event(
+        &self,
+        trace_id: Uuid,
+        decision: &UsageScanResponse,
+        elapsed: std::time::Duration,
+    ) {
+        let outcome = if decision.should_stop() {
+            EventOutcome::Blocked
+        } else {
+            EventOutcome::Allowed
+        };
+
+        // Keep source=ai_firewall for Evidence Schema v1.1 compatibility with
+        // existing Audit deployments. The event category/type identify Usage Guard.
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Policy,
+            "guard.usage.request.scan",
+            outcome,
+        );
+        event
+            .attributes
+            .insert("guard".into(), Value::String("usage".into()));
+        event
+            .attributes
+            .insert("stage".into(), Value::String("request".into()));
+        event.attributes.insert(
+            "classification".into(),
+            Value::String(decision.classification.clone()),
+        );
+        event
+            .attributes
+            .insert("confidence".into(), Value::from(decision.confidence as f64));
+        event
+            .attributes
+            .insert("action".into(), Value::String(decision.action.clone()));
+        event
+            .attributes
+            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        if let Some(category) = &decision.category {
+            event
+                .attributes
+                .insert("usage_category".into(), Value::String(category.clone()));
+        }
+        if !decision.warnings.is_empty() {
+            event.attributes.insert(
+                "warnings_count".into(),
+                Value::from(decision.warnings.len() as u64),
+            );
+        }
+        if let (Some(policy_id), Some(policy_version)) =
+            (&decision.policy_id, &decision.policy_version)
+        {
+            event.policy = Some(PolicyRef {
+                policy_id: policy_id.clone(),
+                policy_version: policy_version.clone(),
+                policy_hash: None,
+                policy_type: Some("usage".into()),
+            });
+        }
+        event.decision = Some(DecisionEvidence {
+            action: decision.decision.clone(),
+            reason_code: if decision.should_stop() {
+                "usage_policy_block".into()
+            } else if decision.decision.eq_ignore_ascii_case("warn") {
+                "usage_policy_warn".into()
+            } else {
+                "usage_policy_allowed".into()
+            },
+            rule_id: decision.rule_id.clone(),
+            severity: None,
+        });
+
+        self.emit(event).await;
+    }
+
+    async fn emit_usage_skipped_event(&self, trace_id: Uuid, elapsed: std::time::Duration) {
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Policy,
+            "guard.usage.request.scan",
+            EventOutcome::Skipped,
+        );
+        event
+            .attributes
+            .insert("guard".into(), Value::String("usage".into()));
+        event
+            .attributes
+            .insert("stage".into(), Value::String("request".into()));
+        event
+            .attributes
+            .insert("reason".into(), Value::String("no_string_content".into()));
+        event
+            .attributes
+            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        self.emit(event).await;
+    }
+
+    async fn emit_usage_failure_event(
+        &self,
+        trace_id: Uuid,
+        error: &AppError,
+        elapsed: std::time::Duration,
+    ) {
+        let mut event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Policy,
+            "guard.usage.request.failed",
+            EventOutcome::Failed,
+        );
+        event
+            .attributes
+            .insert("guard".into(), Value::String("usage".into()));
+        event
+            .attributes
+            .insert("stage".into(), Value::String("request".into()));
+        event
+            .attributes
+            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        event.attributes.insert(
+            "error_class".into(),
+            Value::String(error.metrics_class().into()),
+        );
+        event.decision = Some(DecisionEvidence {
+            action: if self.guard_fail_open {
+                "continue_fail_open".into()
+            } else {
+                "fail_request".into()
+            },
+            reason_code: error.evidence_reason_code().into(),
+            rule_id: None,
+            severity: None,
+        });
         self.emit(event).await;
     }
 
@@ -503,6 +803,12 @@ pub struct GuardContext {
     pub privacy_modified: bool,
     pub privacy_scan_skipped: bool,
     pub privacy_failure_reason: Option<String>,
+    /// Set when Security Guard intentionally blocks the request and AIF should
+    /// return a synthetic OpenAI-compatible assistant completion.
+    pub security_policy_block_message: Option<String>,
+    /// Set when Usage Guard intentionally stops a request and AIF should return
+    /// a synthetic OpenAI-compatible assistant completion instead of an HTTP error.
+    pub usage_policy_block_message: Option<String>,
 }
 
 impl GuardContext {
@@ -614,12 +920,35 @@ pub fn build_guard_orchestrator(
         None
     };
 
-    if security.is_none() && privacy.is_none() {
+    let usage = if cfg.usage_guard_enabled {
+        Some(
+            UsageGuardClient::new(
+                cfg.usage_guard_url.clone(),
+                cfg.usage_guard_api_key.clone(),
+                cfg.usage_guard_tenant_id.clone(),
+                cfg.usage_guard_policy_id.clone(),
+                cfg.usage_guard_mode,
+                cfg.usage_guard_timeout_seconds,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("failed to initialize Usage Guard client: {}", e.message())
+            })?,
+        )
+    } else {
+        None
+    };
+
+    if security.is_none() && privacy.is_none() && usage.is_none() {
         Ok(Arc::new(NoopGuardOrchestrator))
     } else {
         Ok(Arc::new(CompositeGuardOrchestrator {
             security,
+            security_block_response: cfg.security_guard_block_response,
+            security_block_message: cfg.security_guard_block_message.clone(),
             privacy,
+            usage,
+            usage_block_response: cfg.usage_guard_block_response,
+            usage_block_message: cfg.usage_guard_block_message.clone(),
             evidence_sink,
             guard_fail_open: cfg.guard_fail_open,
         }))
@@ -638,10 +967,14 @@ pub fn privacy_mode_as_str(mode: PrivacyGuardMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, EmbeddingPrice, ModelPrice, PrivacyGuardMode, ProviderKind};
+    use crate::config::{
+        Config, EmbeddingPrice, ModelPrice, PrivacyGuardMode, ProviderKind,
+        SecurityGuardBlockResponse, UsageGuardBlockResponse, UsageGuardMode,
+        DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE, DEFAULT_USAGE_GUARD_BLOCK_MESSAGE,
+    };
     use std::collections::HashMap;
 
-    fn test_config(security_enabled: bool, privacy_enabled: bool) -> Config {
+    fn test_config(security_enabled: bool, privacy_enabled: bool, usage_enabled: bool) -> Config {
         let mut model_prices = HashMap::new();
         model_prices.insert(
             "gpt-4o-mini".to_string(),
@@ -699,6 +1032,8 @@ mod tests {
             security_guard_url: "http://127.0.0.1:8091".to_string(),
             security_guard_api_key: Some("test-security-key".to_string()),
             security_guard_timeout_seconds: 1,
+            security_guard_block_response: SecurityGuardBlockResponse::Completion,
+            security_guard_block_message: DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE.to_string(),
 
             privacy_guard_enabled: privacy_enabled,
             privacy_guard_url: "http://127.0.0.1:8090".to_string(),
@@ -708,6 +1043,17 @@ mod tests {
             privacy_guard_tenant_id: None,
             privacy_guard_policy_id: None,
             privacy_guard_timeout_seconds: 1,
+
+            usage_guard_enabled: usage_enabled,
+            usage_guard_url: "http://127.0.0.1:8095".to_string(),
+            usage_guard_api_key: Some("test-usage-key".to_string()),
+            usage_guard_mode: UsageGuardMode::Enforce,
+            usage_guard_tenant_id: Some("test-tenant".to_string()),
+            usage_guard_policy_id: Some("business-use-only".to_string()),
+            usage_guard_timeout_seconds: 1,
+            usage_guard_block_response: UsageGuardBlockResponse::Completion,
+            usage_guard_block_message: DEFAULT_USAGE_GUARD_BLOCK_MESSAGE.to_string(),
+
             guard_fail_open: false,
 
             audit_enabled: false,
@@ -753,9 +1099,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn security_policy_completion_replaces_blocked_response_content() {
+        let original = ChatCompletionResponse {
+            id: "upstream-id".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1,
+            model: "gpt-4o-mini".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!("blocked upstream content"),
+                    name: None,
+                    extra: serde_json::Map::new(),
+                },
+                finish_reason: Some("stop".to_string()),
+                extra: serde_json::Map::new(),
+            }],
+            usage: None,
+            extra: serde_json::Map::new(),
+        };
+
+        let response = security_policy_completion(
+            &original,
+            uuid::Uuid::nil(),
+            "This interaction was blocked by security policy.",
+        );
+
+        assert!(response.id.starts_with("chatcmpl-vcal-security-"));
+        assert_eq!(response.model, "gpt-4o-mini");
+        assert_eq!(
+            response.choices[0].message.content,
+            serde_json::json!("This interaction was blocked by security policy.")
+        );
+        assert_eq!(response.choices[0].finish_reason.as_deref(), Some("stop"));
+        let usage = response
+            .usage
+            .expect("synthetic response should include usage");
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
     #[tokio::test]
     async fn security_transport_failure_respects_fail_open() {
-        let mut cfg = test_config(true, false);
+        let mut cfg = test_config(true, false, false);
         cfg.security_guard_url = "http://127.0.0.1:9".to_string();
         cfg.guard_fail_open = true;
         let guard = build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
@@ -773,7 +1162,7 @@ mod tests {
 
     #[tokio::test]
     async fn security_transport_failure_respects_fail_closed() {
-        let mut cfg = test_config(true, false);
+        let mut cfg = test_config(true, false, false);
         cfg.security_guard_url = "http://127.0.0.1:9".to_string();
         cfg.guard_fail_open = false;
         let guard = build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
@@ -787,17 +1176,55 @@ mod tests {
         assert_eq!(error.metrics_class(), "security_guard_unavailable");
     }
 
+    #[tokio::test]
+    async fn usage_transport_failure_respects_fail_open() {
+        let mut cfg = test_config(false, false, true);
+        cfg.usage_guard_url = "http://127.0.0.1:9".to_string();
+        cfg.guard_fail_open = true;
+        let guard = build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
+            .expect("guard should initialize");
+
+        let result = guard
+            .before_cache(test_request(), uuid::Uuid::new_v4())
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Usage Guard outage must fail open when configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_transport_failure_respects_fail_closed() {
+        let mut cfg = test_config(false, false, true);
+        cfg.usage_guard_url = "http://127.0.0.1:9".to_string();
+        cfg.guard_fail_open = false;
+        let guard = build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
+            .expect("guard should initialize");
+
+        let error = guard
+            .before_cache(test_request(), uuid::Uuid::new_v4())
+            .await
+            .expect_err("Usage Guard outage must fail closed when configured");
+
+        assert_eq!(error.metrics_class(), "usage_guard_unavailable");
+    }
+
     #[test]
-    fn all_four_guard_module_combinations_build_successfully() {
+    fn all_guard_module_combinations_build_successfully() {
         let combinations = [
-            (false, false, "core_only"),
-            (false, true, "privacy_only"),
-            (true, false, "security_only"),
-            (true, true, "security_and_privacy"),
+            (false, false, false, "core_only"),
+            (false, false, true, "usage_only"),
+            (false, true, false, "privacy_only"),
+            (false, true, true, "privacy_and_usage"),
+            (true, false, false, "security_only"),
+            (true, false, true, "security_and_usage"),
+            (true, true, false, "security_and_privacy"),
+            (true, true, true, "security_privacy_and_usage"),
         ];
 
-        for (security_enabled, privacy_enabled, mode) in combinations {
-            let cfg = test_config(security_enabled, privacy_enabled);
+        for (security_enabled, privacy_enabled, usage_enabled, mode) in combinations {
+            let cfg = test_config(security_enabled, privacy_enabled, usage_enabled);
             let _orchestrator =
                 build_guard_orchestrator(&cfg, Arc::new(crate::evidence::NoopEvidenceSink))
                     .expect("guard orchestrator should initialize");

@@ -21,6 +21,7 @@ AI Cost Firewall
         │
         ├── VCAL Security Guard (optional)
         ├── VCAL Privacy Guard (optional)
+        ├── VCAL Usage Guard (optional)
         ├── VCAL Audit (optional evidence delivery)
         ├── Redis (exact cache)
         ├── Qdrant (semantic cache)
@@ -48,15 +49,16 @@ AI Cost Firewall evaluates requests in stages:
 2. normalize request
 3. call Security Guard request scan, if enabled
 4. call Privacy Guard scan/anonymize/redact, if enabled
-5. evaluate per-request cache bypass
-6. exact cache lookup, if enabled
-7. semantic cache lookup, if enabled and not bypassed
-8. upstream request on miss or bypass
-9. call Security Guard response scan, if enabled
-10. call Privacy Guard restore, if enabled and mapping exists
-11. cache storage, if store controls allow it
-12. emit terminal evidence and enqueue Audit delivery, if enabled
-13. response return
+5. call Usage Guard policy evaluation, if enabled
+6. evaluate per-request cache bypass
+7. exact cache lookup, if enabled
+8. semantic cache lookup, if enabled and not bypassed
+9. upstream request on miss or bypass
+10. call Security Guard response scan, if enabled
+11. call Privacy Guard restore, if enabled and mapping exists
+12. cache storage, if store controls allow it
+13. emit terminal evidence and enqueue Audit delivery, if enabled
+14. response return
 
 ---
 
@@ -143,9 +145,9 @@ flowchart TD
 
 # Guard Orchestration Flow
 
-AI Firewall v0.4.2 can run as a guard orchestrator in addition to a cache gateway.
+AI Firewall can run as a guard orchestrator in addition to a cache gateway.
 
-When both VCAL Security Guard and VCAL Privacy Guard are enabled, the flow is:
+When VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard are enabled, the flow is:
 
 ```text
 Client request
@@ -153,12 +155,16 @@ Client request
 → Security Guard scans request text
 → block with HTTP 403 if Security Guard rejects the request
 → Privacy Guard anonymizes or redacts sensitive text
+→ Usage Guard evaluates organizational usage policy
+→ continue on allow/warn; stop on block/escalate
 → exact/semantic cache lookup or upstream request
 → Security Guard scans assistant response text
 → block response if Security Guard rejects the output
 → Privacy Guard restores placeholders, if a mapping exists
 → AI Firewall returns final response
 ```
+
+Usage Guard is request-side only in the current AI Firewall integration and runs after Privacy Guard, so anonymized text is evaluated when Privacy Guard modifies the request.
 
 ---
 # Example Request
@@ -694,11 +700,11 @@ When Audit delivery is enabled, events are enqueued without synchronously blocki
 {audit_url}/v1/events/batch
 ```
 
-Failed deliveries are retried with configurable backoff. The queue is bounded and memory-backed, so v0.4.2 does not guarantee durable replay after process termination or retry exhaustion.
+Failed deliveries are retried with configurable backoff. The queue is bounded and memory-backed, so producer-side delivery does not guarantee durable replay after process termination or retry exhaustion.
 
 # Streaming Behavior
 
-AI Cost Firewall v0.4.2 supports non-streaming chat completions only.
+AI Cost Firewall supports non-streaming chat completions only.
 
 Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing.
 
@@ -709,12 +715,6 @@ Example:
   "stream": true
 }
 ```
-
-Current behavior:
-
-- streaming requests bypass semantic cache
-- streaming responses are not stored in semantic cache
-- exact cache behavior may vary depending on request flow
 
 ---
 
@@ -879,6 +879,7 @@ aif_guard_requests_total
 aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
+aif_usage_blocks_total
 ```
 
 ---
@@ -896,6 +897,8 @@ Overview dashboard:
 - exact and semantic cache activity
 - cache bypass request rate
 - per-model spend and savings
+- Usage Guard policy blocks
+- high-level guard orchestration health
 
 Diagnostics dashboard:
 

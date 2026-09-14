@@ -23,7 +23,7 @@ AI Cost Firewall provides:
 - structured runtime error classification
 - per-request cache bypass support
 - request body and prompt-size protection
-- optional VCAL Security Guard and VCAL Privacy Guard orchestration
+- optional VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard orchestration
 - configurable guard fail-open/fail-closed behavior
 - structured evidence lifecycle events
 - optional buffered evidence delivery to VCAL Audit
@@ -40,6 +40,7 @@ AI Cost Firewall
         │
         ├── VCAL Security Guard (optional)
         ├── VCAL Privacy Guard (optional)
+        ├── VCAL Usage Guard (optional)
         ├── VCAL Audit (optional evidence delivery)
         ├── Redis (exact cache)
         ├── Qdrant (semantic cache)
@@ -187,13 +188,14 @@ It does not bypass invalid configuration validation. Dependency startup behavior
 
 # Guard Runtime Behavior
 
-AI Firewall v0.4.2 can orchestrate VCAL Security Guard and VCAL Privacy Guard.
+AI Firewall can orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard.
 
 Recommended full enterprise order:
 
 ```text
 Security Guard request scan
 → Privacy Guard scan/anonymize/redact
+→ Usage Guard policy evaluation
 → exact/semantic cache lookup or upstream LLM
 → Security Guard response scan
 → Privacy Guard restore
@@ -207,7 +209,7 @@ Security Guard request scan
 guard_fail_open false;
 ```
 
-For enterprise security and privacy deployments, fail-closed is recommended.
+For deployments where any guard is an enforcement control, fail-closed is recommended.
 
 ## Security Guard Blocks
 
@@ -225,11 +227,19 @@ When Security Guard blocks a request, AI Firewall returns a structured error suc
 }
 ```
 
-Request-side blocks happen before Privacy Guard, cache lookup, or upstream forwarding.
+Security Guard request-side blocks happen before Privacy Guard, Usage Guard, cache lookup, or upstream forwarding.
 
 ## Privacy Guard Restore
 
 When Privacy Guard runs in `anonymize` mode, AI Firewall stores the returned `mapping_id` for the request flow and calls `/v1/restore` on assistant output when restoration is enabled and a mapping exists.
+
+## Usage Guard Decisions
+
+Usage Guard runs on request text after Privacy Guard and before cache/upstream processing.
+
+`allow` and `warn` decisions continue through the request path. `block` and `escalate` decisions stop processing and return a structured Usage Guard HTTP 403 response.
+
+Operational Usage Guard failures follow `guard_fail_open`; intentional policy blocks do not fail open.
 
 ---
 # Health & Readiness Endpoints
@@ -762,12 +772,13 @@ aif_guard_requests_total
 aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
+aif_usage_blocks_total
 ```
 
 Useful checks:
 
 ```bash
-curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total|aif_privacy_restore_skipped_total'
+curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total|aif_privacy_restore_skipped_total|aif_usage_blocks_total'
 ```
 
 ---
@@ -926,14 +937,17 @@ curl http://localhost:8091/healthz
 curl http://localhost:8091/readyz
 curl http://localhost:8090/healthz
 curl http://localhost:8090/readyz
+curl http://localhost:8095/healthz
+curl http://localhost:8095/readyz
 ```
 
 Typical full-stack metrics checks:
 
 ```bash
-curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total'
+curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total|aif_usage_blocks_total'
 curl -s http://localhost:8091/metrics | grep vcal_security
 curl -s http://localhost:8090/metrics | grep vcal_privacy
+curl -s http://localhost:8095/metrics | grep vcal_usage
 ```
 
 ---

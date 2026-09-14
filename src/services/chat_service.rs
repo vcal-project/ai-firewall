@@ -21,7 +21,7 @@ use crate::{
         EMBEDDING_OPERATION_LOOKUP, EMBEDDING_OPERATION_STORE,
     },
     semantic::semantic_cache::SemanticCache,
-    types::openai::{ChatCompletionRequest, ChatCompletionResponse},
+    types::openai::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage},
     upstream::llm::LlmUpstream,
 };
 
@@ -93,6 +93,61 @@ fn redis_failure_class(error: &anyhow::Error) -> FailureClass {
         FailureClass::Timeout
     } else {
         FailureClass::Unavailable
+    }
+}
+
+fn request_policy_completion(
+    req: &ChatCompletionRequest,
+    trace_id: uuid::Uuid,
+    id_scope: &str,
+    message: &str,
+) -> ChatCompletionResponse {
+    let created = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX);
+
+    ChatCompletionResponse {
+        id: format!("chatcmpl-vcal-{}-{}", id_scope, trace_id.simple()),
+        object: "chat.completion".to_string(),
+        created,
+        model: req.model.clone(),
+        choices: vec![Choice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: serde_json::Value::String(message.to_string()),
+                name: None,
+                extra: serde_json::Map::new(),
+            },
+            finish_reason: Some("stop".to_string()),
+            extra: serde_json::Map::new(),
+        }],
+        usage: Some(Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            extra: serde_json::Map::new(),
+        }),
+        extra: serde_json::Map::new(),
+    }
+}
+
+fn is_security_policy_completion(response: &ChatCompletionResponse) -> bool {
+    response.id.starts_with("chatcmpl-vcal-security-")
+}
+
+fn completed_delivery_path(
+    response: &ChatCompletionResponse,
+    normal_path: &'static str,
+) -> &'static str {
+    if is_security_policy_completion(response) {
+        "security_policy"
+    } else {
+        normal_path
     }
 }
 
@@ -256,6 +311,30 @@ impl ChatService {
         }
 
         let guarded = self.guard_orchestrator.before_cache(req, trace_id).await?;
+
+        if let Some(message) = guarded.context.security_policy_block_message.as_deref() {
+            tracing::debug!(
+                model = %guarded.request.normalized_model(),
+                "Security Guard request block returned as synthetic completion"
+            );
+            let response =
+                request_policy_completion(&guarded.request, trace_id, "security", message);
+            self.emit(self.request_completed_event(trace_id, "security_policy"))
+                .await;
+            return Ok(response);
+        }
+
+        if let Some(message) = guarded.context.usage_policy_block_message.as_deref() {
+            tracing::debug!(
+                model = %guarded.request.normalized_model(),
+                "Usage Guard policy stop returned as synthetic completion"
+            );
+            let response = request_policy_completion(&guarded.request, trace_id, "policy", message);
+            self.emit(self.request_completed_event(trace_id, "usage_policy"))
+                .await;
+            return Ok(response);
+        }
+
         let req = guarded.request;
         let guard_context = guarded.context;
         let cache_control = CacheControl {
@@ -308,10 +387,22 @@ impl ChatService {
                     self.emit(event).await;
 
                     let response = self
-                        .finalize_guarded_response(&guard_context, hit, trace_id)
+                        .security_scan_response(&guard_context, hit, trace_id)
                         .await?;
+
+                    if is_security_policy_completion(&response) {
+                        self.emit(self.request_completed_event(trace_id, "security_policy"))
+                            .await;
+                        return Ok(response);
+                    }
+
+                    let response = self
+                        .restore_guarded_response(&guard_context, response, trace_id)
+                        .await?;
+
                     self.emit(self.request_completed_event(trace_id, "exact_cache"))
                         .await;
+
                     return Ok(response);
                 }
                 Ok(None) => {
@@ -415,11 +506,21 @@ impl ChatService {
                     });
                     self.emit(event).await;
 
+                    let response = self
+                        .security_scan_response(&guard_context, hit.response, trace_id)
+                        .await?;
+
+                    if is_security_policy_completion(&response) {
+                        self.emit(self.request_completed_event(trace_id, "security_policy"))
+                            .await;
+                        return Ok(response);
+                    }
+
                     if self.exact_cache_enabled
                         && self.exact_cache_store_enabled
                         && !cache_control.bypass_store
                     {
-                        if let Ok(raw) = serde_json::to_string(&hit.response) {
+                        if let Ok(raw) = serde_json::to_string(&response) {
                             match self.exact_cache.set(&exact_key, raw).await {
                                 Ok(()) => {
                                     self.set_redis_available(true);
@@ -435,7 +536,9 @@ impl ChatService {
                                     return Err(AppError::dependency_failure(
                                         DependencyKind::Redis,
                                         redis_failure_class(&e),
-                                        format!("exact cache set failed while warming semantic hit: {e}"),
+                                        format!(
+                                            "exact cache set failed while warming semantic hit: {e}"
+                                        ),
                                     ));
                                 }
                             }
@@ -445,11 +548,14 @@ impl ChatService {
                             );
                         }
                     }
+
                     let response = self
-                        .finalize_guarded_response(&guard_context, hit.response, trace_id)
+                        .restore_guarded_response(&guard_context, response, trace_id)
                         .await?;
+
                     self.emit(self.request_completed_event(trace_id, "semantic_cache"))
                         .await;
+
                     return Ok(response);
                 }
 
@@ -602,6 +708,16 @@ impl ChatService {
 
         self.record_upstream_model_cost(&response);
 
+        let response = self
+            .security_scan_response(&guard_context, response, trace_id)
+            .await?;
+
+        if is_security_policy_completion(&response) {
+            self.emit(self.request_completed_event(trace_id, "security_policy"))
+                .await;
+            return Ok(response);
+        }
+
         let raw = serde_json::to_string(&response)
             .map_err(|e| AppError::internal(format!("response encode failed: {e}")))?;
 
@@ -681,30 +797,31 @@ impl ChatService {
         }
 
         let response = self
-            .finalize_guarded_response(&guard_context, response, trace_id)
+            .restore_guarded_response(&guard_context, response, trace_id)
             .await?;
-        self.emit(self.request_completed_event(trace_id, "upstream"))
+        let delivery_path = completed_delivery_path(&response, "upstream");
+        self.emit(self.request_completed_event(trace_id, delivery_path))
             .await;
         Ok(response)
     }
 
-    async fn finalize_guarded_response(
+    async fn security_scan_response(
         &self,
         guard_context: &GuardContext,
         response: ChatCompletionResponse,
         trace_id: uuid::Uuid,
     ) -> Result<ChatCompletionResponse, AppError> {
-        // Response path guard order is intentional:
-        // 1. Security Guard scans the current assistant response.
-        //    If Privacy Guard is enabled, this response is still anonymized.
-        //    If Privacy Guard is disabled, this response is the original assistant response.
-        // 2. If Security Guard blocks the response, return the security error and do not restore.
-        // 3. Privacy Guard restores only responses that passed the response security scan.
-        let response = self
-            .guard_orchestrator
+        self.guard_orchestrator
             .before_response_restore(guard_context, response, trace_id)
-            .await?;
+            .await
+    }
 
+    async fn restore_guarded_response(
+        &self,
+        guard_context: &GuardContext,
+        response: ChatCompletionResponse,
+        trace_id: uuid::Uuid,
+    ) -> Result<ChatCompletionResponse, AppError> {
         self.guard_orchestrator
             .restore_response(guard_context, response, trace_id)
             .await
@@ -1343,6 +1460,362 @@ mod tests {
             self.events.lock().unwrap().push(event);
             Ok(())
         }
+    }
+
+    struct UsagePolicyCompletionGuard;
+
+    #[async_trait]
+    impl GuardOrchestrator for UsagePolicyCompletionGuard {
+        async fn before_cache(
+            &self,
+            request: ChatCompletionRequest,
+            _trace_id: uuid::Uuid,
+        ) -> Result<GuardedRequest, AppError> {
+            Ok(GuardedRequest {
+                request,
+                context: GuardContext {
+                    usage_policy_block_message: Some(
+                        "This request is outside approved business use.".to_string(),
+                    ),
+                    ..GuardContext::default()
+                },
+                cache_control: CacheControl {
+                    bypass_lookup: true,
+                    bypass_store: true,
+                },
+            })
+        }
+
+        async fn restore_response(
+            &self,
+            _context: &GuardContext,
+            response: ChatCompletionResponse,
+            _trace_id: uuid::Uuid,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(response)
+        }
+    }
+
+    struct SecurityRequestCompletionGuard;
+
+    #[async_trait]
+    impl GuardOrchestrator for SecurityRequestCompletionGuard {
+        async fn before_cache(
+            &self,
+            request: ChatCompletionRequest,
+            _trace_id: uuid::Uuid,
+        ) -> Result<GuardedRequest, AppError> {
+            Ok(GuardedRequest {
+                request,
+                context: GuardContext {
+                    security_policy_block_message: Some(
+                        "This interaction was blocked by security policy.".to_string(),
+                    ),
+                    ..GuardContext::default()
+                },
+                cache_control: CacheControl {
+                    bypass_lookup: true,
+                    bypass_store: true,
+                },
+            })
+        }
+
+        async fn restore_response(
+            &self,
+            _context: &GuardContext,
+            response: ChatCompletionResponse,
+            _trace_id: uuid::Uuid,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(response)
+        }
+    }
+
+    #[tokio::test]
+    async fn security_request_completion_skips_cache_and_upstream() {
+        let exact = FakeExactCache::new();
+        let exact_state = exact.state();
+        let semantic = FakeSemanticCache::new();
+        let semantic_state = semantic.state();
+        let upstream = FakeUpstream::new(response_with_content("must not be used"));
+        let upstream_state = upstream.state();
+
+        let service = ChatService::new_with_guards(
+            Arc::new(exact),
+            Arc::new(semantic),
+            Arc::new(upstream),
+            Arc::new(SecurityRequestCompletionGuard),
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let response = service.handle(request()).await.unwrap();
+
+        assert!(response.id.starts_with("chatcmpl-vcal-security-"));
+        assert_eq!(
+            response.choices[0].message.content,
+            json!("This interaction was blocked by security policy.")
+        );
+        assert_eq!(upstream_state.lock().unwrap().call_count, 0);
+        assert_eq!(exact_state.lock().unwrap().get_calls, 0);
+        assert_eq!(exact_state.lock().unwrap().set_calls, 0);
+        assert_eq!(semantic_state.lock().unwrap().lookup_calls, 0);
+        assert_eq!(semantic_state.lock().unwrap().store_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn security_blocked_semantic_hit_does_not_warm_exact_cache() {
+        let restore_state = Arc::new(Mutex::new(RestoreCallState::default()));
+
+        let semantic_cache = FakeSemanticCache::with_lookup_result(SemanticLookupHit {
+            response: response_with_content("blocked semantic response"),
+            embedding_usage: None,
+        });
+        let semantic_state = semantic_cache.state();
+
+        let exact_cache = FakeExactCache::new();
+        let exact_state = exact_cache.state();
+
+        let upstream = FakeUpstream::new(response_with_content("must not be called"));
+        let upstream_state = upstream.state();
+
+        let service = ChatService::new_with_guards(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            Arc::new(SecurityResponseCompletionGuard {
+                restore_state: Arc::clone(&restore_state),
+            }),
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let response = service.handle(request()).await.unwrap();
+
+        assert!(response.id.starts_with("chatcmpl-vcal-security-"));
+        assert_eq!(exact_state.lock().unwrap().set_calls, 0);
+        assert_eq!(semantic_state.lock().unwrap().lookup_calls, 1);
+        assert_eq!(upstream_state.lock().unwrap().call_count, 0);
+        assert_eq!(restore_state.lock().unwrap().calls, 0);
+    }
+
+    #[derive(Default)]
+    struct RestoreCallState {
+        calls: usize,
+    }
+
+    struct SecurityResponseCompletionGuard {
+        restore_state: Arc<Mutex<RestoreCallState>>,
+    }
+
+    #[async_trait]
+    impl GuardOrchestrator for SecurityResponseCompletionGuard {
+        async fn before_cache(
+            &self,
+            request: ChatCompletionRequest,
+            _trace_id: uuid::Uuid,
+        ) -> Result<GuardedRequest, AppError> {
+            Ok(GuardedRequest {
+                request,
+                context: GuardContext::default(),
+                cache_control: CacheControl::default(),
+            })
+        }
+
+        async fn before_response_restore(
+            &self,
+            _context: &GuardContext,
+            response: ChatCompletionResponse,
+            trace_id: uuid::Uuid,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            let mut replacement = response;
+            replacement.id = format!("chatcmpl-vcal-security-{}", trace_id.simple());
+            replacement.choices[0].message.content =
+                json!("This interaction was blocked by security policy.");
+            replacement.usage = Some(Usage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                extra: serde_json::Map::new(),
+            });
+            Ok(replacement)
+        }
+
+        async fn restore_response(
+            &self,
+            _context: &GuardContext,
+            response: ChatCompletionResponse,
+            _trace_id: uuid::Uuid,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            self.restore_state.lock().unwrap().calls += 1;
+            Ok(response)
+        }
+    }
+
+    #[tokio::test]
+    async fn security_response_completion_skips_privacy_restore_and_completes_trace() {
+        let restore_state = Arc::new(Mutex::new(RestoreCallState::default()));
+        let sink = RecordingEvidenceSink::default();
+        let events = Arc::clone(&sink.events);
+        let upstream = FakeUpstream::new(response_with_content("blocked upstream response"));
+
+        let service = ChatService::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache: Arc::new(FakeExactCache::new()),
+                semantic_cache: Arc::new(FakeSemanticCache::new()),
+                upstream: Arc::new(upstream),
+                guard_orchestrator: Arc::new(SecurityResponseCompletionGuard {
+                    restore_state: Arc::clone(&restore_state),
+                }),
+                evidence_sink: Arc::new(sink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".into(),
+                    provider_name: "test".into(),
+                },
+                dependencies: DependencyState::new(true, true, true),
+            },
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: false,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: false,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let trace_id = uuid::Uuid::new_v4();
+        let response = service
+            .handle_with_evidence(request(), CacheControl::default(), trace_id)
+            .await
+            .unwrap();
+
+        assert!(response.id.starts_with("chatcmpl-vcal-security-"));
+        assert_eq!(
+            response.choices[0].message.content,
+            json!("This interaction was blocked by security policy.")
+        );
+        assert_eq!(
+            restore_state.lock().unwrap().calls,
+            0,
+            "Privacy restore must be skipped for the safe Security Guard replacement"
+        );
+
+        let events = events.lock().unwrap();
+        let completed = events
+            .iter()
+            .find(|event| event.trace_id == trace_id && event.event_type == "request.completed")
+            .expect("Security replacement should complete the request trace");
+        assert_eq!(
+            completed.attributes.get("delivery_path"),
+            Some(&serde_json::Value::String("security_policy".to_string()))
+        );
+        assert!(!events
+            .iter()
+            .any(|event| { event.trace_id == trace_id && event.event_type == "request.failed" }));
+    }
+
+    #[tokio::test]
+    async fn usage_policy_completion_skips_cache_and_upstream_and_completes_trace() {
+        let exact = FakeExactCache::new();
+        let exact_state = exact.state();
+        let semantic = FakeSemanticCache::new();
+        let semantic_state = semantic.state();
+        let upstream = FakeUpstream::new(response_with_content("must not be used"));
+        let upstream_state = upstream.state();
+        let sink = RecordingEvidenceSink::default();
+        let events = Arc::clone(&sink.events);
+
+        let service = ChatService::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache: Arc::new(exact),
+                semantic_cache: Arc::new(semantic),
+                upstream: Arc::new(upstream),
+                guard_orchestrator: Arc::new(UsagePolicyCompletionGuard),
+                evidence_sink: Arc::new(sink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".into(),
+                    provider_name: "test".into(),
+                },
+                dependencies: DependencyState::new(true, true, true),
+            },
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let trace_id = uuid::Uuid::new_v4();
+        let response = service
+            .handle_with_evidence(request(), CacheControl::default(), trace_id)
+            .await
+            .expect("Usage policy completion should be returned successfully");
+
+        assert!(response.id.starts_with("chatcmpl-vcal-policy-"));
+        assert_eq!(response.object, "chat.completion");
+        assert_eq!(response.model, "gpt-4o-mini-2024-07-18");
+        assert_eq!(
+            response.choices[0].message.content,
+            json!("This request is outside approved business use.")
+        );
+        assert_eq!(response.choices[0].finish_reason.as_deref(), Some("stop"));
+        let usage = response
+            .usage
+            .as_ref()
+            .expect("synthetic response should include usage");
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+
+        assert_eq!(upstream_state.lock().unwrap().call_count, 0);
+        assert_eq!(exact_state.lock().unwrap().get_calls, 0);
+        assert_eq!(exact_state.lock().unwrap().set_calls, 0);
+        assert_eq!(semantic_state.lock().unwrap().lookup_calls, 0);
+        assert_eq!(semantic_state.lock().unwrap().store_calls, 0);
+
+        let events = events.lock().unwrap();
+        let completed = events
+            .iter()
+            .find(|event| event.trace_id == trace_id && event.event_type == "request.completed")
+            .expect("synthetic policy response should complete the request trace");
+        assert_eq!(
+            completed.attributes.get("delivery_path"),
+            Some(&serde_json::Value::String("usage_policy".to_string()))
+        );
+        assert!(!events
+            .iter()
+            .any(|event| { event.trace_id == trace_id && event.event_type == "request.failed" }));
     }
 
     struct UserMappingGuard;

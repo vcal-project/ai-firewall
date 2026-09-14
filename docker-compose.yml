@@ -34,10 +34,7 @@ services:
     restart: unless-stopped
 
   firewall:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: vcalproject/ai-firewall:v0.5.1
+    image: vcal-project/ai-firewall:v0.6.0
     depends_on:
       redis:
         condition: service_healthy

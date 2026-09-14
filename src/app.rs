@@ -284,21 +284,33 @@ fn log_startup_summary(cfg: &Config) {
 }
 
 fn log_guard_pipeline_summary(cfg: &Config) {
-    let mode = match (cfg.security_guard_enabled, cfg.privacy_guard_enabled) {
-        (false, false) => "core_only",
-        (false, true) => "privacy_only",
-        (true, false) => "security_only",
-        (true, true) => "security_and_privacy",
+    let mut enabled = Vec::new();
+    if cfg.security_guard_enabled {
+        enabled.push("security");
+    }
+    if cfg.privacy_guard_enabled {
+        enabled.push("privacy");
+    }
+    if cfg.usage_guard_enabled {
+        enabled.push("usage");
+    }
+    let mode = if enabled.is_empty() {
+        "core_only".to_string()
+    } else {
+        enabled.join("+")
     };
 
     tracing::info!(
-        mode = mode,
+        mode = %mode,
         security_guard_enabled = cfg.security_guard_enabled,
         security_guard_url = %cfg.security_guard_url,
         privacy_guard_enabled = cfg.privacy_guard_enabled,
         privacy_guard_url = %cfg.privacy_guard_url,
         privacy_guard_mode = ?cfg.privacy_guard_mode,
         privacy_guard_restore_enabled = cfg.privacy_guard_restore_enabled,
+        usage_guard_enabled = cfg.usage_guard_enabled,
+        usage_guard_url = %cfg.usage_guard_url,
+        usage_guard_mode = ?cfg.usage_guard_mode,
         guard_fail_open = cfg.guard_fail_open,
         "guard orchestration pipeline selected"
     );
@@ -309,19 +321,25 @@ fn log_guard_pipeline_summary(cfg: &Config) {
         );
     }
 
-    if cfg.security_guard_enabled && cfg.privacy_guard_enabled {
-        tracing::info!(
-            "guard order: security request scan -> privacy anonymize -> cache/upstream -> security response scan -> privacy restore"
-        );
-    } else if cfg.security_guard_enabled {
-        tracing::info!(
-            "guard order: security request scan -> cache/upstream -> security response scan"
-        );
-    } else if cfg.privacy_guard_enabled {
-        tracing::info!("guard order: privacy anonymize -> cache/upstream -> privacy restore");
-    } else {
-        tracing::info!("guard order: cache/upstream only");
+    let mut request_pipeline = Vec::new();
+    if cfg.security_guard_enabled {
+        request_pipeline.push("security request scan");
     }
+    if cfg.privacy_guard_enabled {
+        request_pipeline.push("privacy anonymize");
+    }
+    if cfg.usage_guard_enabled {
+        request_pipeline.push("usage request scan");
+    }
+    request_pipeline.push("cache/upstream");
+    if cfg.security_guard_enabled {
+        request_pipeline.push("security response scan");
+    }
+    if cfg.privacy_guard_enabled {
+        request_pipeline.push("privacy restore");
+    }
+
+    tracing::info!("guard order: {}", request_pipeline.join(" -> "));
 }
 
 pub struct RuntimeBuild {

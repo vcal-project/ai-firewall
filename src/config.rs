@@ -87,6 +87,111 @@ impl std::str::FromStr for PrivacyGuardMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UsageGuardMode {
+    #[default]
+    DetectOnly,
+    Warn,
+    Enforce,
+    Escalate,
+}
+
+impl UsageGuardMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DetectOnly => "detect_only",
+            Self::Warn => "warn",
+            Self::Enforce => "enforce",
+            Self::Escalate => "escalate",
+        }
+    }
+}
+
+impl std::str::FromStr for UsageGuardMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "detect_only" | "detect-only" | "detectonly" | "observe" => Ok(Self::DetectOnly),
+            "warn" => Ok(Self::Warn),
+            "enforce" => Ok(Self::Enforce),
+            "escalate" => Ok(Self::Escalate),
+            other => Err(format!(
+                "unsupported usage_guard_mode '{}'. Supported modes: detect_only, warn, enforce, escalate",
+                other
+            )),
+        }
+    }
+}
+
+pub const DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE: &str =
+    "This interaction cannot be completed because it was blocked by your organization's AI security policy.";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SecurityGuardBlockResponse {
+    #[default]
+    Completion,
+    ErrorJson,
+}
+
+impl SecurityGuardBlockResponse {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completion => "completion",
+            Self::ErrorJson => "error_json",
+        }
+    }
+}
+
+impl std::str::FromStr for SecurityGuardBlockResponse {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "completion" => Ok(Self::Completion),
+            "error_json" | "error-json" | "errorjson" => Ok(Self::ErrorJson),
+            other => Err(format!(
+                "unsupported security_guard_block_response '{}'. Supported values: completion, error_json",
+                other
+            )),
+        }
+    }
+}
+
+pub const DEFAULT_USAGE_GUARD_BLOCK_MESSAGE: &str =
+    "This request appears to fall outside your organization's approved AI usage policy and cannot be processed.";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UsageGuardBlockResponse {
+    #[default]
+    Completion,
+    ErrorJson,
+}
+
+impl UsageGuardBlockResponse {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completion => "completion",
+            Self::ErrorJson => "error_json",
+        }
+    }
+}
+
+impl std::str::FromStr for UsageGuardBlockResponse {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "completion" => Ok(Self::Completion),
+            "error_json" | "error-json" | "errorjson" => Ok(Self::ErrorJson),
+            other => Err(format!(
+                "unsupported usage_guard_block_response '{}'. Supported values: completion, error_json",
+                other
+            )),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub config_version: u32,
@@ -134,6 +239,8 @@ pub struct Config {
     pub security_guard_url: String,
     pub security_guard_api_key: Option<String>,
     pub security_guard_timeout_seconds: u64,
+    pub security_guard_block_response: SecurityGuardBlockResponse,
+    pub security_guard_block_message: String,
 
     pub privacy_guard_enabled: bool,
     pub privacy_guard_url: String,
@@ -143,6 +250,17 @@ pub struct Config {
     pub privacy_guard_tenant_id: Option<String>,
     pub privacy_guard_policy_id: Option<String>,
     pub privacy_guard_timeout_seconds: u64,
+
+    pub usage_guard_enabled: bool,
+    pub usage_guard_url: String,
+    pub usage_guard_api_key: Option<String>,
+    pub usage_guard_mode: UsageGuardMode,
+    pub usage_guard_tenant_id: Option<String>,
+    pub usage_guard_policy_id: Option<String>,
+    pub usage_guard_timeout_seconds: u64,
+    pub usage_guard_block_response: UsageGuardBlockResponse,
+    pub usage_guard_block_message: String,
+
     pub guard_fail_open: bool,
 
     pub audit_enabled: bool,
@@ -333,6 +451,15 @@ impl Config {
                         .into(),
                 );
             }
+
+            if self.security_guard_block_response == SecurityGuardBlockResponse::Completion
+                && self.security_guard_block_message.trim().is_empty()
+            {
+                errors.push(
+                    "security_guard_block_message must not be empty when security_guard_block_response=completion"
+                        .into(),
+                );
+            }
         }
 
         if self.privacy_guard_enabled {
@@ -350,6 +477,33 @@ impl Config {
             if self.privacy_guard_timeout_seconds == 0 {
                 errors.push(
                     "privacy_guard_timeout_seconds must be > 0 when privacy_guard_enabled=true"
+                        .into(),
+                );
+            }
+        }
+
+        if self.usage_guard_enabled {
+            if self.usage_guard_url.trim().is_empty() {
+                errors
+                    .push("usage_guard_url must not be empty when usage_guard_enabled=true".into());
+            } else if !looks_like_http_url(&self.usage_guard_url) {
+                errors.push(format!(
+                    "invalid usage_guard_url '{}': must start with http:// or https://",
+                    self.usage_guard_url
+                ));
+            }
+
+            if self.usage_guard_timeout_seconds == 0 {
+                errors.push(
+                    "usage_guard_timeout_seconds must be > 0 when usage_guard_enabled=true".into(),
+                );
+            }
+
+            if self.usage_guard_block_response == UsageGuardBlockResponse::Completion
+                && self.usage_guard_block_message.trim().is_empty()
+            {
+                errors.push(
+                    "usage_guard_block_message must not be empty when usage_guard_block_response=completion"
                         .into(),
                 );
             }
@@ -496,7 +650,9 @@ impl Config {
     pub fn hardening_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
 
-        if (self.security_guard_enabled || self.privacy_guard_enabled) && self.guard_fail_open {
+        if (self.security_guard_enabled || self.privacy_guard_enabled || self.usage_guard_enabled)
+            && self.guard_fail_open
+        {
             warnings.push(
                 "guard_fail_open=true allows requests to continue when an enabled guard is unavailable; use false for fail-closed production enforcement".into(),
             );
@@ -544,8 +700,19 @@ impl Config {
                 self.semantic_cache_enabled, self.semantic_cache_fail_open
             ),
             format!(
-                "security_guard={} privacy_guard={} guard_fail_open={}",
-                self.security_guard_enabled, self.privacy_guard_enabled, self.guard_fail_open
+                "security_guard={} privacy_guard={} usage_guard={} guard_fail_open={}",
+                self.security_guard_enabled,
+                self.privacy_guard_enabled,
+                self.usage_guard_enabled,
+                self.guard_fail_open
+            ),
+            format!(
+                "security_guard_block_response={}",
+                self.security_guard_block_response.as_str()
+            ),
+            format!(
+                "usage_guard_block_response={}",
+                self.usage_guard_block_response.as_str()
             ),
             format!("audit={} delivery=best_effort", self.audit_enabled),
             format!(
@@ -733,6 +900,14 @@ impl Config {
             "security_guard_timeout_seconds = {}\n",
             self.security_guard_timeout_seconds
         ));
+        out.push_str(&format!(
+            "security_guard_block_response = {}\n",
+            self.security_guard_block_response.as_str()
+        ));
+        out.push_str(&format!(
+            "security_guard_block_message = {}\n",
+            self.security_guard_block_message
+        ));
 
         out.push_str("\nVCAL Privacy Guard\n");
         out.push_str("--------------------------------\n");
@@ -756,6 +931,42 @@ impl Config {
         out.push_str(&format!(
             "privacy_guard_timeout_seconds = {}\n",
             self.privacy_guard_timeout_seconds
+        ));
+
+        out.push_str("\nVCAL Usage Guard\n");
+        out.push_str("--------------------------------\n");
+        out.push_str(&format!(
+            "usage_guard_enabled = {}\n",
+            self.usage_guard_enabled
+        ));
+        out.push_str(&format!("usage_guard_url = {}\n", self.usage_guard_url));
+        out.push_str(&format!(
+            "usage_guard_api_key = {}\n",
+            mask_optional_secret(&self.usage_guard_api_key)
+        ));
+        out.push_str(&format!(
+            "usage_guard_mode = {}\n",
+            self.usage_guard_mode.as_str()
+        ));
+        out.push_str(&format!(
+            "usage_guard_tenant_id = {}\n",
+            self.usage_guard_tenant_id.as_deref().unwrap_or("<not set>")
+        ));
+        out.push_str(&format!(
+            "usage_guard_policy_id = {}\n",
+            self.usage_guard_policy_id.as_deref().unwrap_or("<not set>")
+        ));
+        out.push_str(&format!(
+            "usage_guard_timeout_seconds = {}\n",
+            self.usage_guard_timeout_seconds
+        ));
+        out.push_str(&format!(
+            "usage_guard_block_response = {}\n",
+            self.usage_guard_block_response.as_str()
+        ));
+        out.push_str(&format!(
+            "usage_guard_block_message = {}\n",
+            self.usage_guard_block_message
         ));
         out.push_str(&format!("guard_fail_open = {}\n", self.guard_fail_open));
 
@@ -970,6 +1181,16 @@ impl Config {
                 "security_guard_timeout_seconds",
                 10u64,
             )?,
+            security_guard_block_response: parse_or_default(
+                &map,
+                "security_guard_block_response",
+                SecurityGuardBlockResponse::Completion,
+            )?,
+            security_guard_block_message: get_or_default(
+                &map,
+                "security_guard_block_message",
+                DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE,
+            ),
 
             privacy_guard_enabled: parse_or_default(&map, "privacy_guard_enabled", false)?,
             privacy_guard_url: get_or_default(&map, "privacy_guard_url", "http://127.0.0.1:8090"),
@@ -991,6 +1212,33 @@ impl Config {
                 "privacy_guard_timeout_seconds",
                 10u64,
             )?,
+
+            usage_guard_enabled: parse_or_default(&map, "usage_guard_enabled", false)?,
+            usage_guard_url: get_or_default(&map, "usage_guard_url", "http://127.0.0.1:8095"),
+            usage_guard_api_key: map.get("usage_guard_api_key").cloned(),
+            usage_guard_mode: parse_or_default(
+                &map,
+                "usage_guard_mode",
+                UsageGuardMode::DetectOnly,
+            )?,
+            usage_guard_tenant_id: map.get("usage_guard_tenant_id").cloned(),
+            usage_guard_policy_id: map.get("usage_guard_policy_id").cloned(),
+            usage_guard_timeout_seconds: parse_or_default(
+                &map,
+                "usage_guard_timeout_seconds",
+                10u64,
+            )?,
+            usage_guard_block_response: parse_or_default(
+                &map,
+                "usage_guard_block_response",
+                UsageGuardBlockResponse::Completion,
+            )?,
+            usage_guard_block_message: get_or_default(
+                &map,
+                "usage_guard_block_message",
+                DEFAULT_USAGE_GUARD_BLOCK_MESSAGE,
+            ),
+
             guard_fail_open: parse_or_default(&map, "guard_fail_open", false)?,
 
             audit_enabled: parse_or_default(&map, "audit_enabled", false)?,
@@ -1312,6 +1560,12 @@ impl Config {
                     ))
                 })?
             },
+            security_guard_block_response: parse_env_or_default(
+                "AIF_SECURITY_GUARD_BLOCK_RESPONSE",
+                SecurityGuardBlockResponse::Completion,
+            )?,
+            security_guard_block_message: env::var("AIF_SECURITY_GUARD_BLOCK_MESSAGE")
+                .unwrap_or_else(|_| DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE.to_string()),
 
             privacy_guard_enabled: {
                 let raw = env::var("AIF_PRIVACY_GUARD_ENABLED").unwrap_or_else(|_| "false".into());
@@ -1357,6 +1611,33 @@ impl Config {
                     ))
                 })?
             },
+
+            usage_guard_enabled: parse_env_or_default("AIF_USAGE_GUARD_ENABLED", false)?,
+            usage_guard_url: env::var("AIF_USAGE_GUARD_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8095".into()),
+            usage_guard_api_key: env::var("AIF_USAGE_GUARD_API_KEY").ok(),
+            usage_guard_mode: {
+                let raw = env::var("AIF_USAGE_GUARD_MODE").unwrap_or_else(|_| "detect_only".into());
+                raw.parse::<UsageGuardMode>().map_err(|e| {
+                    cfg_err(format!(
+                        "invalid AIF_USAGE_GUARD_MODE value '{}': {}",
+                        raw, e
+                    ))
+                })?
+            },
+            usage_guard_tenant_id: env::var("AIF_USAGE_GUARD_TENANT_ID").ok(),
+            usage_guard_policy_id: env::var("AIF_USAGE_GUARD_POLICY_ID").ok(),
+            usage_guard_timeout_seconds: parse_env_or_default(
+                "AIF_USAGE_GUARD_TIMEOUT_SECONDS",
+                10u64,
+            )?,
+            usage_guard_block_response: parse_env_or_default(
+                "AIF_USAGE_GUARD_BLOCK_RESPONSE",
+                UsageGuardBlockResponse::Completion,
+            )?,
+            usage_guard_block_message: env::var("AIF_USAGE_GUARD_BLOCK_MESSAGE")
+                .unwrap_or_else(|_| DEFAULT_USAGE_GUARD_BLOCK_MESSAGE.to_string()),
+
             guard_fail_open: {
                 let raw = env::var("AIF_GUARD_FAIL_OPEN").unwrap_or_else(|_| "false".into());
                 raw.parse().map_err(|e| {
@@ -1535,7 +1816,17 @@ impl Config {
             format!("- exact fail-open: {}", self.exact_cache_fail_open),
             format!("- cache bypass header: {}", self.cache_bypass_header),
             format!("- security guard enabled: {}", self.security_guard_enabled),
+            format!(
+                "- security guard block response: {}",
+                self.security_guard_block_response.as_str()
+            ),
             format!("- privacy guard enabled: {}", self.privacy_guard_enabled),
+            format!("- usage guard enabled: {}", self.usage_guard_enabled),
+            format!("- usage guard mode: {}", self.usage_guard_mode.as_str()),
+            format!(
+                "- usage guard block response: {}",
+                self.usage_guard_block_response.as_str()
+            ),
             format!("- guard fail-open: {}", self.guard_fail_open),
             format!("- VCAL Audit enabled: {}", self.audit_enabled),
         ];
@@ -1640,6 +1931,14 @@ impl fmt::Debug for Config {
                 "security_guard_timeout_seconds",
                 &self.security_guard_timeout_seconds,
             )
+            .field(
+                "security_guard_block_response",
+                &self.security_guard_block_response.as_str(),
+            )
+            .field(
+                "security_guard_block_message",
+                &self.security_guard_block_message,
+            )
             .field("privacy_guard_enabled", &self.privacy_guard_enabled)
             .field("privacy_guard_url", &self.privacy_guard_url)
             .field(
@@ -1657,6 +1956,24 @@ impl fmt::Debug for Config {
                 "privacy_guard_timeout_seconds",
                 &self.privacy_guard_timeout_seconds,
             )
+            .field("usage_guard_enabled", &self.usage_guard_enabled)
+            .field("usage_guard_url", &self.usage_guard_url)
+            .field(
+                "usage_guard_api_key",
+                &self.usage_guard_api_key.as_ref().map(|k| mask_secret(k)),
+            )
+            .field("usage_guard_mode", &self.usage_guard_mode.as_str())
+            .field("usage_guard_tenant_id", &self.usage_guard_tenant_id)
+            .field("usage_guard_policy_id", &self.usage_guard_policy_id)
+            .field(
+                "usage_guard_timeout_seconds",
+                &self.usage_guard_timeout_seconds,
+            )
+            .field(
+                "usage_guard_block_response",
+                &self.usage_guard_block_response.as_str(),
+            )
+            .field("usage_guard_block_message", &self.usage_guard_block_message)
             .field("guard_fail_open", &self.guard_fail_open)
             .field("audit_enabled", &self.audit_enabled)
             .field("audit_url", &self.audit_url)
@@ -1770,6 +2087,8 @@ fn allowed_directives() -> HashSet<&'static str> {
         "security_guard_url",
         "security_guard_api_key",
         "security_guard_timeout_seconds",
+        "security_guard_block_response",
+        "security_guard_block_message",
         "privacy_guard_enabled",
         "privacy_guard_url",
         "privacy_guard_api_key",
@@ -1778,6 +2097,15 @@ fn allowed_directives() -> HashSet<&'static str> {
         "privacy_guard_tenant_id",
         "privacy_guard_policy_id",
         "privacy_guard_timeout_seconds",
+        "usage_guard_enabled",
+        "usage_guard_url",
+        "usage_guard_api_key",
+        "usage_guard_mode",
+        "usage_guard_tenant_id",
+        "usage_guard_policy_id",
+        "usage_guard_timeout_seconds",
+        "usage_guard_block_response",
+        "usage_guard_block_message",
         "guard_fail_open",
         "audit_enabled",
         "audit_url",
@@ -2074,6 +2402,7 @@ fn warn_if_suspicious(cfg: &Config) {
     if cfg.security_guard_enabled {
         tracing::info!(
             security_guard_url = cfg.security_guard_url,
+            security_guard_block_response = cfg.security_guard_block_response.as_str(),
             guard_fail_open = cfg.guard_fail_open,
             "VCAL Security Guard orchestration is enabled"
         );
@@ -2086,6 +2415,16 @@ fn warn_if_suspicious(cfg: &Config) {
             privacy_guard_restore_enabled = cfg.privacy_guard_restore_enabled,
             guard_fail_open = cfg.guard_fail_open,
             "VCAL Privacy Guard orchestration is enabled"
+        );
+    }
+
+    if cfg.usage_guard_enabled {
+        tracing::info!(
+            usage_guard_url = cfg.usage_guard_url,
+            usage_guard_mode = cfg.usage_guard_mode.as_str(),
+            usage_guard_block_response = cfg.usage_guard_block_response.as_str(),
+            guard_fail_open = cfg.guard_fail_open,
+            "VCAL Usage Guard orchestration is enabled"
         );
     }
 

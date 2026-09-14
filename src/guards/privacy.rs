@@ -347,6 +347,7 @@ impl GuardOrchestrator for PrivacyGuardOrchestrator {
                 privacy_modified: scan.modified,
                 privacy_scan_skipped: false,
                 privacy_failure_reason: None,
+                ..GuardContext::default()
             },
             cache_control: CacheControl::default(),
         })

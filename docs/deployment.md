@@ -1,11 +1,11 @@
 # Production deployment notes
 
-AI Cost Firewall v0.5.0 is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules.
+AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules.
 
 ## Security baseline
 
 - Keep Redis, Qdrant, Guard and Audit endpoints on private networks.
-- Use `guard_fail_open false` when Security Guard or Privacy Guard is an enforcement control.
+- Use `guard_fail_open false` when Security Guard, Privacy Guard, or Usage Guard is an enforcement control.
 - Protect `/metrics` or expose it only on a trusted monitoring network.
 - Supply credentials through deployment secrets; never commit real secrets to the config file.
 - Run the Firewall as non-root, read-only where possible, with Linux capabilities dropped and `no-new-privileges`.

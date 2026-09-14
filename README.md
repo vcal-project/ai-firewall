@@ -7,13 +7,13 @@
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
 ![Status](https://img.shields.io/badge/status-pilot--ready-blue)
 
-## OpenAI-compatible control layer for AI cost, with optional privacy, security, audit, and compliance integrations
+## OpenAI-compatible control layer for AI cost, with optional privacy, security, usage-policy, audit, and compliance integrations
 
 AI Cost Firewall is a lightweight OpenAI-compatible gateway that reduces unnecessary LLM API calls through exact and semantic cache reuse.
 
 AI Cost Firewall can be deployed independently as a complete caching and cost-control gateway.
 
-It can also integrate with separately licensed VCAL modules for privacy, security, audit, and compliance.
+It can also integrate with separately licensed VCAL modules for privacy, security, usage-policy enforcement, audit, and compliance.
 
 <p align="center">
   <img
@@ -80,6 +80,7 @@ Optional integrations with separately licensed VCAL modules include:
 
 - VCAL Privacy Guard
 - VCAL Security Guard
+- VCAL Usage Guard
 - VCAL Audit
 - VCAL Compliance
 
@@ -93,7 +94,7 @@ AI Cost Firewall includes Grafana dashboards for cost visibility, cache effectiv
 
 The dashboards are included in the Docker deployment files and are automatically provisioned by Grafana when using the provided Docker Compose setup.
 
-Detailed Privacy Guard and Security Guard findings remain in their product-specific dashboards. VCAL Audit provides its own dashboard for ingestion volume, durable persistence latency, authentication failures, hash-chain verification, and license status.
+Detailed Privacy Guard, Security Guard, and Usage Guard findings remain in their product-specific dashboards. VCAL Audit provides its own dashboard for ingestion volume, durable persistence latency, authentication failures, hash-chain verification, and license status.
 
 ## Cost Savings Overview
 
@@ -122,6 +123,8 @@ It demonstrates:
 - cache bypass request rate
 - per-model spend and savings
 - savings by cache type
+- Usage Guard policy blocks
+- high-level guard orchestration health
 
 This dashboard is intended for quick validation, demos, and cost-savings reviews.
 
@@ -154,6 +157,8 @@ It demonstrates:
 - provider error classes
 - guard orchestration outcomes by guard, stage, and result
 - guard orchestration latency
+- Usage Guard policy blocks by category
+- guard operational signals across Security Guard, Privacy Guard, and Usage Guard
 
 This dashboard is intended for troubleshooting, tuning semantic similarity thresholds, validating fail-open behavior, and understanding runtime cache behavior during pilots.
 
@@ -197,15 +202,17 @@ Client applications send requests to AI Cost Firewall instead of directly to the
 The firewall:
 
 1. validates requests
-2. optionally calls VCAL Security Guard before cache/upstream processing
+2. optionally calls VCAL Security Guard on the raw request
 3. optionally calls VCAL Privacy Guard to anonymize or redact sensitive text
-4. checks exact cache
-5. checks semantic cache
-6. forwards only cache misses upstream
-7. optionally scans assistant responses before Privacy Guard restore
-8. emits structured evidence events and Prometheus metrics
-9. optionally delivers evidence batches to VCAL Audit
-10. exposes operational diagnostics
+4. optionally calls VCAL Usage Guard to evaluate organizational usage policy
+5. checks exact cache
+6. checks semantic cache
+7. forwards only cache misses upstream
+8. optionally scans assistant responses with VCAL Security Guard before Privacy Guard restore
+9. optionally restores Privacy Guard placeholders in the final response
+10. emits structured evidence events and Prometheus metrics
+11. optionally delivers evidence batches to VCAL Audit
+12. exposes operational diagnostics
 
 Full architecture documentation:
 
@@ -314,7 +321,7 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - request size protection
 - runtime diagnostics
 - configurable semantic cache fail-open behavior
-- optional Security Guard and Privacy Guard orchestration
+- optional Security Guard, Privacy Guard, and Usage Guard orchestration
 - configurable guard fail-open/fail-closed behavior
 - structured evidence events with trace correlation
 - exactly one terminal request lifecycle event per received trace
@@ -325,33 +332,25 @@ AI Cost Firewall includes operational safeguards and observability features desi
 
 ## Optional VCAL Modules
 
-VCAL Privacy Guard, VCAL Security Guard, VCAL Audit, and VCAL Compliance are separate commercial products. They are not required to deploy or use AI Cost Firewall.
+VCAL Privacy Guard, VCAL Security Guard, VCAL Usage Guard, VCAL Audit, and VCAL Compliance are separate commercial products. They are not required to deploy or use AI Cost Firewall.
 
-AI Cost Firewall can optionally orchestrate VCAL Security Guard and VCAL Privacy Guard before forwarding non-streaming chat requests upstream.
+AI Cost Firewall can optionally orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard before forwarding non-streaming chat requests upstream. These modules can be enabled independently or in combination.
 
-Supported deployment modes:
-
-```text
-AI Firewall only
-AI Firewall + VCAL Security Guard
-AI Firewall + VCAL Privacy Guard
-AI Firewall + VCAL Security Guard + VCAL Privacy Guard
-```
-
-When both enterprise guards are enabled, the recommended request/response flow is:
+The recommended full guard flow is:
 
 ```text
 Client
   -> AI Cost Firewall
       -> VCAL Security Guard request scan
       -> VCAL Privacy Guard anonymize/redact
+      -> VCAL Usage Guard policy evaluation
       -> exact/semantic cache lookup or upstream LLM
       -> VCAL Security Guard response scan
       -> VCAL Privacy Guard restore
       -> Client
 ```
 
-Security Guard can block malicious request-side prompts before Privacy Guard, cache, or upstream processing. Privacy Guard can replace sensitive values with placeholders before cache/upstream processing and restore them in the final response.
+Security Guard can block malicious request-side prompts before Privacy Guard, Usage Guard, cache, or upstream processing. Privacy Guard can replace sensitive values with placeholders before Usage Guard, cache, or upstream processing and restore them in the final response. Usage Guard evaluates whether the request is permitted under organizational AI usage policy and can allow, warn, block, or escalate the request before cache or upstream processing.
 
 Example Privacy Guard transformation:
 
@@ -380,9 +379,24 @@ Example Security Guard block returned by AI Firewall:
 }
 ```
 
-Streaming requests are rejected globally in v0.4.2, regardless of whether guard modules are enabled. Requests with `stream=true` return HTTP 422 before cache, guard, or upstream processing.
+Example Usage Guard block returned by AI Firewall:
 
-Security Guard and Privacy Guard are disabled by default in `configs/ai-firewall.conf.example`.
+```json
+{
+  "error": {
+    "code": 403,
+    "guard": "usage",
+    "type": "usage_request_blocked",
+    "stage": "request",
+    "rule_id": "VUG-PER-001",
+    "category": "personal_travel"
+  }
+}
+```
+
+Streaming requests are rejected regardless of whether guard modules are enabled. Requests with `stream=true` return HTTP 422 before cache, guard, or upstream processing.
+
+Security Guard, Privacy Guard, and Usage Guard are disabled by default in `configs/ai-firewall.conf.example`.
 
 ---
 
@@ -511,6 +525,7 @@ aif_guard_requests_total
 aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
+aif_usage_blocks_total
 ```
 
 AI Cost Firewall reports:
@@ -524,6 +539,7 @@ AI Cost Firewall reports:
 - guard request counts by guard, stage, and result
 - Security Guard block counts by stage and rule ID
 - Privacy Guard restore-skip counters when response Security blocks occur
+- Usage Guard block counts by policy category and rule ID
 
 Evidence events are emitted through structured application logs and can optionally be delivered to VCAL Audit. Enable evidence logging with:
 
@@ -594,7 +610,7 @@ or:
 request.failed
 ```
 
-AI Cost Firewall also emits structured evidence for VCAL Security Guard and VCAL Privacy Guard activity.
+AI Cost Firewall also emits structured evidence for VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard activity.
 
 Guard evidence contains operational metadata only. Prompt and response content is not included.
 
@@ -684,6 +700,7 @@ AI Cost Firewall includes tests for:
 - guard configuration parsing
 - Privacy Guard orchestration
 - Security Guard orchestration
+- Usage Guard orchestration
 - OpenAI-compatible metadata preservation
 - evidence lifecycle completion
 - request and response Security Guard block evidence

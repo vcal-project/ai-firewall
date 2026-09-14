@@ -139,6 +139,18 @@ security_guard_url http://vcal-security-guard:8091;
 # security_guard_api_key your-security-guard-api-key;
 security_guard_timeout_seconds 3;
 
+# Client response for both request-side and response-side Security Guard
+# policy blocks.
+#
+# completion = return HTTP 200 with a safe OpenAI-compatible assistant message.
+#              For response-side blocks, the blocked assistant content is not
+#              returned to the caller and Privacy Guard restore is skipped.
+# error_json = return HTTP 403 with the existing structured Security Guard error.
+#
+# Default: completion
+security_guard_block_response completion;
+security_guard_block_message "This interaction cannot be completed because it was blocked by your organization's AI security policy.";
+
 # Privacy Guard integration
 # Disabled by default because VCAL Privacy Guard is an optional enterprise add-on.
 #
@@ -150,6 +162,34 @@ privacy_guard_url http://vcal-privacy-guard:8090;
 privacy_guard_mode detect_only;
 privacy_guard_restore_enabled true;
 privacy_guard_timeout_seconds 3;
+
+# Usage Guard integration
+# Disabled by default because VCAL Usage Guard is an optional enterprise add-on.
+#
+# Usage Guard runs after Privacy Guard on the request path, so when Privacy Guard
+# anonymization is enabled the usage policy is evaluated against anonymized text.
+# It returns structured allow, warn, block, or escalate decisions before cache
+# lookup or upstream LLM forwarding. No local LLM is required by default.
+usage_guard_enabled false;
+usage_guard_url http://vcal-usage-guard:8095;
+# usage_guard_api_key your-usage-guard-api-key;
+usage_guard_mode detect_only;
+# usage_guard_tenant_id your-tenant-id;
+# usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
+
+# Client response when Usage Guard blocks or escalates a request.
+#
+# completion = return HTTP 200 with an OpenAI-compatible assistant message.
+#              No cache lookup, cache write, or upstream LLM call is performed.
+# error_json = return HTTP 403 with the structured usage_request_blocked error.
+#
+# Default: completion
+usage_guard_block_response completion;
+
+# User-facing assistant message used only when
+# usage_guard_block_response=completion.
+usage_guard_block_message "This request appears to fall outside your organization's approved AI usage policy and cannot be processed.";
 
 # Shared guard failure behavior.
 # true  = fail open if an enabled guard is unavailable
@@ -164,6 +204,8 @@ guard_fail_open false;
 # security_guard_url http://vcal-security-guard:8091;
 # security_guard_api_key your-security-guard-api-key;
 # security_guard_timeout_seconds 3;
+# security_guard_block_response completion;
+# security_guard_block_message "This interaction cannot be completed because it was blocked by your organization's AI security policy.";
 #
 # privacy_guard_enabled true;
 # privacy_guard_url http://vcal-privacy-guard:8090;
@@ -172,14 +214,25 @@ guard_fail_open false;
 # privacy_guard_restore_enabled true;
 # privacy_guard_timeout_seconds 3;
 #
+# usage_guard_enabled true;
+# usage_guard_url http://vcal-usage-guard:8095;
+# usage_guard_api_key your-usage-guard-api-key;
+# usage_guard_mode enforce;
+# usage_guard_tenant_id your-tenant-id;
+# usage_guard_policy_id business-use-only;
+# usage_guard_timeout_seconds 3;
+# usage_guard_block_response completion;
+# usage_guard_block_message "This request appears to fall outside your organization's approved AI usage policy and cannot be processed.";
+#
 # guard_fail_open false;
 #
 # Enterprise guard flow:
 # 1. Security Guard request scan
 # 2. Privacy Guard anonymize/redact
-# 3. exact/semantic cache lookup or upstream LLM call
-# 4. Security Guard response scan
-# 5. Privacy Guard restore
+# 3. Usage Guard request policy evaluation
+# 4. exact/semantic cache lookup or upstream LLM call
+# 5. Security Guard response scan
+# 6. Privacy Guard restore
 #
 # Current guard modules inspect text content only. Non-text content such as
 # images, audio, video, or binary payloads is preserved where possible but is

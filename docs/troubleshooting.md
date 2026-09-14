@@ -2,13 +2,13 @@
 
 AI Cost Firewall is designed to fail fast during startup, expose clear runtime errors, and make cache, provider, and cost behavior observable.
 
-This document covers common deployment and operational issues for v0.4.2.
+This document covers common deployment and operational issues.
 
-AI Cost Firewall v0.4.2 supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
+AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a simple configuration model. It does not provide native provider-specific API integrations or provider-specific configuration blocks.
 
 ---
 
-AI Firewall v0.4.2 can also orchestrate optional VCAL Security Guard and VCAL Privacy Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
+AI Firewall can also orchestrate optional VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
 
 ---
 # Validate Configuration First
@@ -713,6 +713,52 @@ curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_se
 
 ---
 
+# Usage Guard Blocks or Errors
+
+## Symptoms
+
+Requests return `HTTP 403`, `HTTP 502`, or `HTTP 504`, with error types such as:
+
+```text
+usage_request_blocked
+usage_guard_unavailable
+usage_guard_timeout
+```
+
+## Common Causes
+
+- Usage Guard intentionally returned `block` or `escalate`
+- request category is disallowed by the selected organizational policy
+- Usage Guard is unavailable and `guard_fail_open false`
+- API key mismatch between AI Firewall and Usage Guard
+- wrong `usage_guard_url`
+- wrong or missing `usage_guard_policy_id`
+- Usage Guard returned an invalid response contract
+
+## Recommended Checks
+
+```conf
+usage_guard_enabled true;
+usage_guard_url http://vcal-usage-guard:8095;
+usage_guard_api_key dev-usage-key;
+usage_guard_mode enforce;
+usage_guard_tenant_id example-tenant;
+usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
+guard_fail_open false;
+```
+
+```bash
+curl http://localhost:8095/healthz
+curl http://localhost:8095/readyz
+curl -s http://localhost:8095/metrics | grep vcal_usage
+curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_usage_blocks_total'
+```
+
+A Usage Guard policy block is an intentional enforcement outcome and does not become an allow simply because `guard_fail_open` is enabled. Fail-open applies to operational guard failures.
+
+---
+
 # Privacy Guard Restore or Anonymization Errors
 
 ## Symptoms
@@ -759,11 +805,11 @@ curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_pr
 
 ---
 
-# Guarded Streaming Requests Rejected
+# Streaming Requests Rejected
 
-A request with `"stream": true` returns a validation response, often HTTP 422, when Security Guard or Privacy Guard orchestration is enabled.
+A request with `"stream": true` returns HTTP 422 before cache, guard, or upstream processing.
 
-Use non-streaming requests when guard modules are enabled.
+Use non-streaming requests in all deployment modes.
 
 ---
 
@@ -980,7 +1026,7 @@ upstream_timeout_seconds 120;
 embedding_timeout_seconds 30;
 ```
 
-`request_timeout_seconds` remains a backward-compatible fallback. In v0.4.2, prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
+`request_timeout_seconds` remains a backward-compatible fallback. Prefer setting `upstream_timeout_seconds` and `embedding_timeout_seconds` explicitly.
 
 Inspect latency metrics:
 
@@ -1127,6 +1173,7 @@ aif_guard_requests_total
 aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
+aif_usage_blocks_total
 ```
 
 ---
@@ -1183,7 +1230,7 @@ Check:
 - Audit logs
 - AI Firewall timeout and retry settings
 
-The v0.4.2 sender queue is memory-backed. Batches dropped after retry exhaustion are not replayed automatically.
+The sender queue is memory-backed. Batches dropped after retry exhaustion are not replayed automatically.
 
 ## Requests succeed while Audit is unavailable
 
@@ -1191,7 +1238,7 @@ This is expected. Audit delivery is asynchronous and does not normally fail the 
 
 # Provider Compatibility Notes
 
-AI Cost Firewall v0.4.2 supports OpenAI-compatible provider patterns.
+AI Cost Firewall supports OpenAI-compatible provider patterns.
 
 The expected configuration model is:
 
@@ -1204,9 +1251,9 @@ This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
 
 It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
 
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported in v0.4.2. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
+Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
 
-Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the v0.4.2 scope.
+Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the current scope.
 
 ## OpenAI
 
