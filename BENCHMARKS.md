@@ -1,10 +1,19 @@
 # Benchmarks
 
-This page summarizes benchmark results for AI Cost Firewall v0.2.0.
+This page records benchmark results from earlier AI Cost Firewall performance testing. The published measurements below were collected against AI Cost Firewall v0.2.0 and have not yet been re-run against v0.7.0.
+
+They remain useful as controlled reference measurements for cache behavior, gateway overhead, and single-VM throughput, but they should not be interpreted as current v0.7.0 performance claims.
 
 The benchmark profile uses a local simulated OpenAI-compatible upstream provider. This isolates AI Cost Firewall, Redis, Qdrant, cache behavior, and Prometheus metrics without external API cost, provider rate-limit noise, or variable upstream latency.
 
-These results are not universal capacity limits. Real-world performance depends on hardware, deployment configuration, Redis/Qdrant latency, upstream provider latency, request size, cache hit ratio, semantic-cache settings, and model pricing.
+## Benchmark status
+
+| Item | Value |
+|---|---|
+| Version tested | AI Cost Firewall v0.2.0 |
+| Current product version | v0.7.0 |
+| Upstream | Local simulated OpenAI-compatible provider |
+| Status | Historical reference; v0.7.0 revalidation pending |
 
 ## Methodology
 

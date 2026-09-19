@@ -163,7 +163,7 @@ Every request follows a staged pipeline.
 ```text
 receive request
 → enforce request body and prompt-size limits
-→ normalize request
+→ normalize request and transport-independent cache identity
 → Security Guard request scan, if enabled
 → Privacy Guard scan/anonymize/redact, if enabled
 → Usage Guard policy evaluation, if enabled
@@ -171,10 +171,13 @@ receive request
 → exact cache lookup, if enabled
 → semantic cache lookup, if enabled
 → upstream request on miss or bypass
+→ for stream=true cache misses, consume and assemble provider SSE internally
+→ normalize cache hits and upstream results into a canonical chat-completion response
 → Security Guard response scan, if enabled
-→ Privacy Guard restore, if enabled and mapping exists
 → cache storage, if enabled and allowed by the guard path
-→ response return
+→ Privacy Guard restore, if enabled and mapping exists
+→ usage/cost/evidence accounting
+→ JSON response or approved controlled-SSE replay
 ```
 
 A request can skip cache lookup and cache storage when the configured cache-bypass header is present.
@@ -770,7 +773,9 @@ Requests reach upstream providers when:
 - exact cache misses or is disabled
 - semantic cache misses or is disabled
 - cache infrastructure fails open
-- streaming/tool/structured-output behavior skips semantic cache
+- tool/function/structured-output behavior makes semantic reuse ineligible
+
+Streaming itself does not bypass cache. Controlled streaming and non-streaming delivery use the same transport-independent cache identity, so eligible cached completions can be reused across JSON and SSE delivery.
 
 Returned responses are stored only in enabled cache stores.
 
@@ -892,17 +897,71 @@ The producer queue is memory-backed and not durable. Audit availability is there
 
 # Streaming Behavior
 
-AI Cost Firewall supports non-streaming chat completions only.
+AI Cost Firewall supports **controlled OpenAI-compatible chat-completion streaming** with `stream=true`.
 
-Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing, regardless of which optional guard modules are enabled.
+Controlled streaming is intentionally different from raw SSE passthrough. On an upstream cache miss, AI Cost Firewall:
 
-Example:
+1. runs request-side Security Guard, Privacy Guard, and Usage Guard processing
+2. performs the normal exact/semantic cache lookup
+3. requests provider SSE internally
+4. consumes and parses the complete provider stream
+5. reconstructs a canonical `ChatCompletionResponse`, including fragmented content and tool-call arguments
+6. scans the complete response with Security Guard, when enabled
+7. stores eligible cache-miss responses using the normal pre-Privacy-restore cache semantics
+8. restores Privacy Guard placeholders, when required
+9. records usage, cost, metrics, and evidence
+10. encodes the approved canonical response as OpenAI-compatible SSE and returns `[DONE]`
 
-```json
-{
-  "stream": true
-}
+The JSON and controlled-streaming paths converge on the same canonical response pipeline and diverge only at final delivery:
+
+```text
+                          ┌── exact / semantic cache hit ───────────┐
+                          │                                         │
+stream=false cache miss ──┼─► ordinary upstream JSON ───────────────┤
+                          │                                         │
+stream=true cache miss ───┴─► provider SSE ─► parser / assembler ──┤
+                                                                    │
+                                                                    ▼
+                                                      canonical ChatCompletionResponse
+                                                                    │
+                                                                    ▼
+                                                      response Security Guard
+                                                      eligible cache store
+                                                      (cache miss only, pre-restore)
+                                                      Privacy Guard restore
+                                                      usage / cost accounting
+                                                      metrics / evidence
+                                                                    │
+                                                       ┌────────────┴────────────┐
+                                                       ▼                         ▼
+                                                JSON serializer            SSE encoder / replay
+                                                stream=false               stream=true
+                                                                           → [DONE]
 ```
+
+The architectural guarantee is:
+
+> No generated response content leaves AI Cost Firewall until AI Cost Firewall has approved the complete response.
+
+This commit barrier means malformed, truncated, failed, oversized, idle, or excessively long provider streams fail before any model-generated content is exposed to the client.
+
+Controlled streaming is enabled by default:
+
+```conf
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
+upstream_timeout_seconds 120;
+```
+
+`streaming_enabled` permits `stream=true`; it does not force streaming. `stream=false` or an omitted `stream` field continues to use the JSON response path.
+
+`max_stream_upstream_bytes` limits the **cumulative provider SSE bytes accepted for one controlled streaming request**. It is a total-response-size limit rather than a measurement of instantaneous parser-buffer occupancy, and a zero value is invalid.
+
+For controlled provider streams, `upstream_timeout_seconds` also limits the idle gap between SSE body chunks after response headers have arrived. Controlled generation additionally has a 15-minute absolute ceiling so a provider cannot retain an upstream concurrency permit indefinitely by continuously drip-feeding data.
+
+Cache identity is transport-independent: `stream` and client `stream_options` are excluded from the cache identity. An eligible completion stored through JSON delivery can therefore be replayed as SSE, and a completion assembled from an upstream stream can later satisfy a JSON request.
+
+Controlled streaming prioritizes response-control guarantees over token-by-token immediacy. Client SSE begins only after upstream generation and response controls have completed, so downstream time-to-first-byte includes the controlled-generation and approval phase.
 
 ---
 
@@ -1037,6 +1096,30 @@ These distinguish:
 
 ---
 
+# Controlled Streaming Metrics
+
+Controlled streaming exposes separate upstream-consumption and downstream-commit signals:
+
+```text
+aif_stream_requests_total
+aif_stream_completed_total
+aif_stream_errors_total
+aif_stream_aborted_total
+aif_stream_upstream_errors_total
+aif_stream_upstream_chunks_total
+aif_stream_upstream_bytes_total
+aif_stream_upstream_time_to_first_byte_seconds
+aif_stream_generation_duration_seconds
+aif_stream_client_time_to_first_byte_seconds
+aif_stream_upstream_response_bytes
+aif_stream_client_buffer_bytes
+aif_stream_duration_seconds
+```
+
+`upstream.stream.completed` and `upstream.stream.failed` evidence distinguish provider-stream assembly outcomes. Failure evidence records `committed_to_client=false` when controlled streaming fails before the commit barrier.
+
+---
+
 # Included Dashboards
 
 AI Cost Firewall includes pre-configured Grafana dashboards.
@@ -1139,6 +1222,8 @@ Actual performance depends on:
 - Fail-open controls apply to runtime cache behavior.
 - Providers are accessed through OpenAI-compatible APIs.
 - `request_timeout_seconds` remains a fallback for specific timeout settings.
+- `streaming_enabled` controls whether clients may request controlled streaming.
+- `max_stream_upstream_bytes` bounds cumulative provider SSE bytes accepted per controlled streaming request.
 
 ---
 

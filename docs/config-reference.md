@@ -48,6 +48,7 @@ The configuration is logically divided into:
 |---|---|
 | Core Settings | Runtime and server behavior |
 | Upstream Provider | Chat-completion provider |
+| Controlled Streaming | Buffered provider SSE assembly and approved SSE replay |
 | Embedding Provider | Embedding generation |
 | Qdrant | Semantic cache storage |
 | Cache Settings | TTL and retention |
@@ -74,6 +75,9 @@ redis_url redis://redis:6379;
 upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-key;
+
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
 
 embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
@@ -352,6 +356,66 @@ Local providers may use placeholders:
 ```conf
 upstream_api_key dummy;
 ```
+
+---
+
+# Controlled Streaming Settings
+
+Controlled streaming accepts OpenAI-compatible provider SSE internally, reconstructs the complete response, applies response controls, and only then replays approved SSE to the client.
+
+## streaming_enabled
+
+Controls whether clients may submit chat-completion requests with `stream=true`.
+
+Example:
+
+```conf
+streaming_enabled true;
+```
+
+Default:
+
+```text
+true
+```
+
+When `false`, a request with `stream=true` is rejected with HTTP `422`. This directive permits streaming; it does not force ordinary requests to stream.
+
+Environment variable:
+
+```text
+AIF_STREAMING_ENABLED=true
+```
+
+## max_stream_upstream_bytes
+
+Maximum **cumulative provider SSE bytes accepted** for one controlled streaming request before canonical assembly and response controls.
+
+Example:
+
+```conf
+max_stream_upstream_bytes 8M;
+```
+
+Default:
+
+```text
+8M
+```
+
+The value must be greater than zero. Byte-size suffixes accepted by the configuration parser can be used, for example `1M`, `8M`, or `16M`.
+
+The limit applies to total provider SSE bytes received during the request, not peak parser-buffer occupancy. A stream can therefore exceed the limit even when data is consumed incrementally and instantaneous memory use remains well below the configured value.
+
+If the provider stream exceeds the limit, the request fails before downstream SSE commit and partial provider content is not exposed to the client.
+
+Environment variable:
+
+```text
+AIF_MAX_STREAM_UPSTREAM_BYTES=8M
+```
+
+Operationally, controlled streaming uses a commit barrier: no generated response content leaves AI Cost Firewall until the complete response has been assembled and approved.
 
 ---
 
@@ -841,7 +905,7 @@ Prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` ex
 
 ## upstream_timeout_seconds
 
-Timeout for chat-completion upstream calls.
+Timeout for chat-completion upstream calls. For controlled `stream=true` requests, the same value also limits the idle gap between provider SSE body chunks after response headers have been received.
 
 Example:
 
@@ -850,6 +914,8 @@ upstream_timeout_seconds 120;
 ```
 
 If omitted, `request_timeout_seconds` is used as the fallback.
+
+Controlled streaming also enforces a separate 15-minute absolute provider-generation ceiling. This prevents an upstream from holding a concurrency permit indefinitely by sending occasional chunks frequently enough to avoid the idle timeout.
 
 ---
 
@@ -1385,6 +1451,8 @@ Example:
 ```text
 AIF_REDIS_URL=redis://127.0.0.1:6379
 AIF_UPSTREAM_API_KEY=sk-xxxx
+AIF_STREAMING_ENABLED=true
+AIF_MAX_STREAM_UPSTREAM_BYTES=8M
 AIF_EMBEDDING_MODEL=text-embedding-3-small
 AIF_MAX_REQUEST_BODY_BYTES=2M
 AIF_MAX_PROMPT_CHARS=200000
@@ -1478,6 +1546,24 @@ aif_cache_hits_total{cache_type="exact"}
 aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
 aif_upstream_calls_total
+```
+
+Controlled streaming:
+
+```text
+aif_stream_requests_total
+aif_stream_completed_total
+aif_stream_errors_total
+aif_stream_aborted_total
+aif_stream_upstream_errors_total
+aif_stream_upstream_chunks_total
+aif_stream_upstream_bytes_total
+aif_stream_upstream_time_to_first_byte_seconds
+aif_stream_generation_duration_seconds
+aif_stream_client_time_to_first_byte_seconds
+aif_stream_upstream_response_bytes
+aif_stream_client_buffer_bytes
+aif_stream_duration_seconds
 ```
 
 Semantic diagnostics:

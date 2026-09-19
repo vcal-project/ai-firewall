@@ -19,13 +19,15 @@ dependencies = [
 
 [[package]]
 name = "ai-firewall"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
  "axum 0.8.8",
  "chrono",
  "dotenvy",
+ "futures-util",
  "hex",
  "once_cell",
  "prometheus",

@@ -294,11 +294,13 @@ cache_bypass_header X-AIF-Cache-Bypass;
 
 ### Are streaming responses cached?
 
-Streaming support depends on the active request path and configuration.
+Yes, when the response is otherwise cache-eligible.
 
-In standalone gateway mode, streaming requests may be forwarded upstream, but streaming responses are generally not stored in semantic cache.
+Controlled streaming uses the same exact and semantic cache pipeline as non-streaming requests. Cache identity excludes transport-only fields such as `stream` and client `stream_options`, so an eligible completion can be reused across JSON and SSE delivery.
 
-When VCAL Privacy Guard orchestration is enabled, use non-streaming requests unless your deployed version explicitly documents streaming support for the privacy-guard path. Privacy restoration requires full assistant message content, which is not naturally available until a stream is complete.
+On a streaming cache miss, AI Cost Firewall consumes provider SSE internally, assembles the canonical completion, applies response controls, stores the eligible pre-Privacy-restore response, restores Privacy placeholders when needed, and then replays approved SSE to the client.
+
+Tool/function calling and structured-output requests may still be ineligible for semantic reuse for reasons unrelated to streaming.
 
 ---
 
@@ -738,15 +740,29 @@ Deployments requiring guaranteed producer-side delivery need a future disk-backe
 
 ### Are streaming requests supported?
 
-No. AI Cost Firewall supports non-streaming chat completions only.
-
-Requests with:
+Yes. AI Cost Firewall supports controlled OpenAI-compatible chat-completion streaming with:
 
 ```json
 {"stream": true}
 ```
 
-are rejected with HTTP `422` before cache, guard, or upstream processing.
+Controlled streaming does not forward provider chunks directly to the client. AI Cost Firewall fully consumes and assembles provider SSE, runs complete-response controls and Privacy restoration, and only then replays an approved OpenAI-compatible SSE response.
+
+The key guarantee is that no generated response content leaves AI Cost Firewall before the complete response has been approved.
+
+Streaming is enabled by default and can be controlled with:
+
+```conf
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
+upstream_timeout_seconds 120;
+```
+
+`max_stream_upstream_bytes` is a cumulative upstream SSE byte limit, not an instantaneous buffer-occupancy limit. For controlled streams, `upstream_timeout_seconds` also limits the idle gap between provider body chunks, and a separate 15-minute absolute generation ceiling prevents indefinite drip-feed generation.
+
+Set `streaming_enabled false` if a deployment must reject `stream=true` requests.
+
+---
 
 ## VCAL Security Guard
 
@@ -1094,9 +1110,11 @@ This lets the firewall block malicious prompts first, anonymize sensitive text b
 
 ### What happens to streaming requests when guards are enabled?
 
-Guarded streaming requests are rejected in the current guard contract.
+Controlled streaming uses the same guard order as the JSON path.
 
-Use non-streaming requests. Streaming requests are rejected before cache, guard, or upstream processing.
+Request-side Security Guard, Privacy Guard, and Usage Guard processing occurs before cache lookup or the upstream call. On a cache miss, provider SSE is assembled internally. Security Guard then scans the complete response, eligible cache storage occurs using the normal pre-Privacy-restore semantics, and Privacy Guard restoration runs before the approved result is replayed as SSE.
+
+Privacy flows that create anonymization mappings no longer need to reject streaming solely because restoration is required.
 
 ---
 
@@ -1199,7 +1217,7 @@ Common causes:
 - cache bypass header is set
 - exact cache is disabled
 - semantic cache is disabled
-- streaming or tool-calling path bypasses semantic storage
+- tool/function/structured-output behavior makes semantic reuse ineligible
 - cache entry expired
 
 Important request fields include:

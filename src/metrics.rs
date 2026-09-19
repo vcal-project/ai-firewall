@@ -278,6 +278,138 @@ pub static UPSTREAM_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 });
 
 // -----------------------------
+// Controlled streaming metrics
+// -----------------------------
+
+pub static STREAM_REQUESTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_stream_requests_total",
+        "Controlled streaming chat completion requests accepted by AI Firewall",
+    )
+    .expect("metric aif_stream_requests_total must be valid")
+});
+
+pub static STREAM_COMPLETED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_stream_completed_total",
+        "Controlled streaming responses committed after full response processing",
+    )
+    .expect("metric aif_stream_completed_total must be valid")
+});
+
+pub static STREAM_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_stream_errors_total",
+        "Controlled streaming requests that failed before response commit",
+    )
+    .expect("metric aif_stream_errors_total must be valid")
+});
+
+pub static STREAM_ABORTED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_stream_aborted_total",
+        "Controlled streaming requests cancelled before response commit",
+    )
+    .expect("metric aif_stream_aborted_total must be valid")
+});
+
+pub static STREAM_UPSTREAM_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_stream_upstream_errors_total",
+        "Upstream streaming body or assembly failures before response commit",
+    )
+    .expect("metric aif_stream_upstream_errors_total must be valid")
+});
+
+pub static STREAM_UPSTREAM_CHUNKS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_stream_upstream_chunks_total",
+        "Upstream byte chunks consumed internally for controlled streaming",
+    )
+    .expect("metric aif_stream_upstream_chunks_total must be valid")
+});
+
+pub static STREAM_UPSTREAM_BYTES_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_stream_upstream_bytes_total",
+        "Upstream bytes consumed internally for controlled streaming",
+    )
+    .expect("metric aif_stream_upstream_bytes_total must be valid")
+});
+
+pub static STREAM_UPSTREAM_TIME_TO_FIRST_BYTE_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_stream_upstream_time_to_first_byte_seconds",
+        "Time from upstream stream request start until the first upstream response bytes are received",
+    ))
+    .expect("metric aif_stream_upstream_time_to_first_byte_seconds must be valid")
+});
+
+pub static STREAM_GENERATION_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_stream_generation_duration_seconds",
+        "Duration spent receiving and assembling the upstream stream before response controls",
+    ))
+    .expect("metric aif_stream_generation_duration_seconds must be valid")
+});
+
+pub static STREAM_CLIENT_TIME_TO_FIRST_BYTE_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_stream_client_time_to_first_byte_seconds",
+        "Time from controlled streaming request start until an approved SSE response is ready for the client",
+    ))
+    .expect("metric aif_stream_client_time_to_first_byte_seconds must be valid")
+});
+
+pub static STREAM_UPSTREAM_RESPONSE_BYTES: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(
+        HistogramOpts::new(
+            "aif_stream_upstream_response_bytes",
+            "Total upstream SSE bytes consumed per completed controlled streaming request",
+        )
+        .buckets(vec![
+            1_024.0,
+            4_096.0,
+            16_384.0,
+            65_536.0,
+            262_144.0,
+            1_048_576.0,
+            4_194_304.0,
+            8_388_608.0,
+        ]),
+    )
+    .expect("metric aif_stream_upstream_response_bytes must be valid")
+});
+
+pub static STREAM_BUFFER_BYTES: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(
+        HistogramOpts::new(
+            "aif_stream_client_buffer_bytes",
+            "Size of the approved SSE payload prepared for downstream delivery",
+        )
+        .buckets(vec![
+            1_024.0,
+            4_096.0,
+            16_384.0,
+            65_536.0,
+            262_144.0,
+            1_048_576.0,
+            4_194_304.0,
+            8_388_608.0,
+        ]),
+    )
+    .expect("metric aif_stream_client_buffer_bytes must be valid")
+});
+
+pub static STREAM_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(HistogramOpts::new(
+        "aif_stream_duration_seconds",
+        "Duration from controlled streaming request start until commit, failure, or cancellation",
+    ))
+    .expect("metric aif_stream_duration_seconds must be valid")
+});
+
+// -----------------------------
 // VCAL evidence delivery metrics
 // -----------------------------
 
@@ -682,6 +814,19 @@ pub fn init() {
     Lazy::force(&GROSS_SAVED_MICRO_USD_TOTAL);
     Lazy::force(&NET_SAVED_MICRO_USD_TOTAL);
     Lazy::force(&EMBEDDING_OVERHEAD_MICRO_USD_TOTAL);
+    Lazy::force(&STREAM_REQUESTS_TOTAL);
+    Lazy::force(&STREAM_COMPLETED_TOTAL);
+    Lazy::force(&STREAM_ERRORS_TOTAL);
+    Lazy::force(&STREAM_ABORTED_TOTAL);
+    Lazy::force(&STREAM_UPSTREAM_ERRORS_TOTAL);
+    Lazy::force(&STREAM_UPSTREAM_CHUNKS_TOTAL);
+    Lazy::force(&STREAM_UPSTREAM_BYTES_TOTAL);
+    Lazy::force(&STREAM_UPSTREAM_TIME_TO_FIRST_BYTE_SECONDS);
+    Lazy::force(&STREAM_GENERATION_DURATION_SECONDS);
+    Lazy::force(&STREAM_CLIENT_TIME_TO_FIRST_BYTE_SECONDS);
+    Lazy::force(&STREAM_UPSTREAM_RESPONSE_BYTES);
+    Lazy::force(&STREAM_BUFFER_BYTES);
+    Lazy::force(&STREAM_DURATION_SECONDS);
 
     INIT.call_once(|| {
         let collectors: Vec<Box<dyn Collector>> = vec![
@@ -718,6 +863,19 @@ pub fn init() {
             Box::new(SHUTDOWN_REJECTIONS_TOTAL.clone()),
             Box::new(UPSTREAM_TIMEOUTS_TOTAL.clone()),
             Box::new(UPSTREAM_REQUEST_DURATION_SECONDS.clone()),
+            Box::new(STREAM_REQUESTS_TOTAL.clone()),
+            Box::new(STREAM_COMPLETED_TOTAL.clone()),
+            Box::new(STREAM_ERRORS_TOTAL.clone()),
+            Box::new(STREAM_ABORTED_TOTAL.clone()),
+            Box::new(STREAM_UPSTREAM_ERRORS_TOTAL.clone()),
+            Box::new(STREAM_UPSTREAM_CHUNKS_TOTAL.clone()),
+            Box::new(STREAM_UPSTREAM_BYTES_TOTAL.clone()),
+            Box::new(STREAM_UPSTREAM_TIME_TO_FIRST_BYTE_SECONDS.clone()),
+            Box::new(STREAM_GENERATION_DURATION_SECONDS.clone()),
+            Box::new(STREAM_CLIENT_TIME_TO_FIRST_BYTE_SECONDS.clone()),
+            Box::new(STREAM_UPSTREAM_RESPONSE_BYTES.clone()),
+            Box::new(STREAM_BUFFER_BYTES.clone()),
+            Box::new(STREAM_DURATION_SECONDS.clone()),
             Box::new(SEMANTIC_CANDIDATES_CHECKED_TOTAL.clone()),
             Box::new(SEMANTIC_THRESHOLD_RESULTS_TOTAL.clone()),
             Box::new(SEMANTIC_EXPIRED_ENTRIES_SKIPPED_TOTAL.clone()),

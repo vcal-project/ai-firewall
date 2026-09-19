@@ -1,7 +1,24 @@
 use async_trait::async_trait;
+use axum::body::Bytes;
+use futures_util::Stream;
+use std::{error::Error, pin::Pin, time::Duration};
 
 use crate::error::AppError;
 use crate::types::openai::{ChatCompletionRequest, ChatCompletionResponse};
+
+pub type UpstreamStreamError = Box<dyn Error + Send + Sync>;
+
+/// Default absolute ceiling for one provider-side controlled stream.
+/// Provider implementations may override this when they have a stronger bound.
+pub const DEFAULT_MAX_STREAM_GENERATION_DURATION: Duration = Duration::from_secs(15 * 60);
+
+pub type UpstreamByteStream =
+    Pin<Box<dyn Stream<Item = Result<Bytes, UpstreamStreamError>> + Send + 'static>>;
+
+pub struct UpstreamStreamResponse {
+    pub status: reqwest::StatusCode,
+    pub body: UpstreamByteStream,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamErrorKind {
@@ -96,8 +113,33 @@ impl UpstreamErrorKind {
 
 #[async_trait]
 pub trait LlmUpstream: Send + Sync {
+    /// Maximum idle interval between provider-side streaming body chunks.
+    /// OpenAI-compatible HTTP implementations should normally return their
+    /// configured upstream timeout here.
+    fn stream_idle_timeout(&self) -> Duration {
+        Duration::from_secs(120)
+    }
+
+    /// Absolute ceiling for provider-side streaming generation, independent of
+    /// chunk activity. This prevents a malicious or broken drip-feed stream from
+    /// holding an upstream concurrency permit indefinitely.
+    fn max_stream_generation_duration(&self) -> Duration {
+        DEFAULT_MAX_STREAM_GENERATION_DURATION
+    }
+
     async fn chat_completion(
         &self,
         req: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, AppError>;
+
+    /// Opens the provider-side streaming transport. AI Firewall consumes this
+    /// stream internally and does not expose these bytes directly to clients.
+    async fn chat_completion_stream(
+        &self,
+        _req: &ChatCompletionRequest,
+    ) -> Result<UpstreamStreamResponse, AppError> {
+        Err(AppError::unprocessable(
+            "stream=true is not supported by the configured upstream implementation",
+        ))
+    }
 }

@@ -95,15 +95,17 @@ OK
 READY
 ```
 
-The version endpoint should report AI Cost Firewall `v0.4.0`.
+The version endpoint should report AI Cost Firewall `v0.7.0`.
 
 ---
 
 ## Streaming behavior
 
-AI Cost Firewall v0.4.0 supports non-streaming chat completions only. Requests
-with `"stream": true` are rejected with HTTP `422` before cache, guard, or
-upstream processing.
+AI Cost Firewall v0.7.0 supports controlled OpenAI-compatible streaming. Ordinary requests continue to use the normal JSON completion path and do not require Ollama streaming support. When a client sends `"stream": true`, the configured Ollama OpenAI-compatible endpoint must provide compatible SSE; AIF consumes and assembles the complete response before returning approved SSE to the client.
+
+`streaming_enabled true;` permits controlled streaming; it does not force ordinary requests to stream.
+
+`max_stream_upstream_bytes` limits cumulative provider SSE bytes for a single controlled stream; it is not an instantaneous memory-buffer limit. `upstream_timeout_seconds` also bounds the maximum idle gap between provider SSE chunks, and AIF applies a 15-minute absolute ceiling to one provider-side controlled generation.
 
 ---
 
@@ -125,6 +127,25 @@ Run the same request twice.
 - The first request should go upstream to Ollama.
 - The second identical request should be served from the exact cache.
 - Similar follow-up prompts may hit the semantic cache after embeddings are generated and stored in Qdrant.
+
+### Controlled streaming request
+
+To test controlled streaming, add `"stream": true`:
+
+```bash
+curl -N http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama3.2:3b",
+    "messages": [
+      {"role": "user", "content": "Explain Redis briefly."}
+    ],
+    "stream": true,
+    "stream_options": {"include_usage": true}
+  }'
+```
+
+The client receives `text/event-stream` only after AIF has assembled and approved the complete response. Exact/semantic cache reuse remains available for controlled streaming, including reuse across JSON and SSE delivery modes.
 
 ---
 
@@ -155,6 +176,9 @@ Expected activity:
 - `aif_semantic_candidates_checked_total` increases during semantic lookups.
 - `aif_semantic_threshold_results_total` shows semantic threshold pass/fail counts.
 - `aif_semantic_lookup_duration_seconds` shows semantic lookup latency.
+- After a controlled streaming request, `aif_stream_requests_total` and `aif_stream_completed_total` increase.
+- On an upstream streaming miss, `aif_stream_upstream_chunks_total` and `aif_stream_upstream_bytes_total` show provider SSE intake.
+- `aif_stream_upstream_errors_total` remains zero for successful provider streams.
 - Cost metrics may remain zero or minimal unless local model pricing is configured.
 
 If the observability overlay is enabled, Grafana dashboards should begin populating after a few minutes of repeated traffic.

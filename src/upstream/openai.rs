@@ -3,10 +3,13 @@ use crate::metrics::{UPSTREAM_CALLS, UPSTREAM_REQUEST_DURATION_SECONDS, UPSTREAM
 use crate::types::openai::{
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionWireResponse,
 };
-use crate::upstream::llm::{LlmUpstream, UpstreamErrorKind};
+use crate::upstream::llm::{
+    LlmUpstream, UpstreamErrorKind, UpstreamStreamError, UpstreamStreamResponse,
+};
 use crate::upstream::openai_compat::should_send_bearer_auth;
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::{header, Client};
 use std::error::Error;
 use std::time::{Duration, Instant};
@@ -14,8 +17,10 @@ use std::time::{Duration, Instant};
 #[derive(Clone)]
 pub struct OpenAiUpstream {
     client: Client,
+    streaming_client: Client,
     base_url: String,
     api_key: String,
+    stream_headers_timeout: Duration,
 }
 
 impl OpenAiUpstream {
@@ -27,21 +32,38 @@ impl OpenAiUpstream {
         );
 
         let client = Client::builder()
-            .default_headers(headers)
+            .default_headers(headers.clone())
             .timeout(timeout)
             .build()
             .map_err(|e| AppError::internal(format!("failed to build reqwest client: {e}")))?;
 
+        // Streaming responses must not inherit the buffered client's total-body timeout.
+        // The configured upstream timeout bounds response headers and is also exposed
+        // as the provider-stream idle timeout. ChatService separately enforces an
+        // absolute controlled-stream generation ceiling while consuming the body.
+        let streaming_client = Client::builder()
+            .default_headers(headers)
+            .build()
+            .map_err(|e| {
+                AppError::internal(format!("failed to build streaming reqwest client: {e}"))
+            })?;
+
         Ok(Self {
             client,
+            streaming_client,
             base_url,
             api_key,
+            stream_headers_timeout: timeout,
         })
     }
 }
 
 #[async_trait]
 impl LlmUpstream for OpenAiUpstream {
+    fn stream_idle_timeout(&self) -> Duration {
+        self.stream_headers_timeout
+    }
+
     async fn chat_completion(
         &self,
         req: &ChatCompletionRequest,
@@ -195,6 +217,110 @@ impl LlmUpstream for OpenAiUpstream {
             })?;
 
         Ok(parsed)
+    }
+
+    async fn chat_completion_stream(
+        &self,
+        req: &ChatCompletionRequest,
+    ) -> Result<UpstreamStreamResponse, AppError> {
+        let url = crate::upstream::openai_compat::build_openai_compat_url(
+            &self.base_url,
+            crate::upstream::openai_compat::OpenAiCompatEndpoint::ChatCompletions,
+        )?;
+
+        let start = Instant::now();
+        UPSTREAM_CALLS.inc();
+
+        let mut request = self.streaming_client.post(url).json(req);
+        if should_send_bearer_auth(&self.api_key) {
+            request = request.bearer_auth(self.api_key.trim());
+        }
+
+        let response = match tokio::time::timeout(self.stream_headers_timeout, request.send()).await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                UPSTREAM_REQUEST_DURATION_SECONDS.observe(elapsed);
+                let kind = classify_reqwest_error(&error);
+                if kind == UpstreamErrorKind::Timeout {
+                    UPSTREAM_TIMEOUTS_TOTAL.inc();
+                }
+                return Err(AppError::upstream_kind(
+                    kind,
+                    format!(
+                        "{} Model: '{}'. Upstream: '{}'.",
+                        kind.default_message(),
+                        req.normalized_model(),
+                        self.base_url
+                    ),
+                ));
+            }
+            Err(_) => {
+                UPSTREAM_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
+                UPSTREAM_TIMEOUTS_TOTAL.inc();
+                return Err(AppError::upstream_kind(
+                    UpstreamErrorKind::Timeout,
+                    format!(
+                        "{} Model: '{}'. Upstream: '{}'.",
+                        UpstreamErrorKind::Timeout.default_message(),
+                        req.normalized_model(),
+                        self.base_url
+                    ),
+                ));
+            }
+        };
+
+        let status = response.status();
+        UPSTREAM_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
+
+        if !status.is_success() {
+            let kind = classify_upstream_status(status);
+            if kind == UpstreamErrorKind::Timeout {
+                UPSTREAM_TIMEOUTS_TOTAL.inc();
+            }
+            return Err(AppError::upstream_kind_with_status(
+                status,
+                kind,
+                format!(
+                    "{} Status: {}. Model: '{}'. Upstream: '{}'.",
+                    kind.default_message(),
+                    status,
+                    req.normalized_model(),
+                    self.base_url
+                ),
+            ));
+        }
+
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+
+        if !content_type
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase().starts_with("text/event-stream"))
+            .unwrap_or(false)
+        {
+            return Err(AppError::upstream_kind(
+                UpstreamErrorKind::Other,
+                format!(
+                    "Streaming response for model '{}' at '{}' did not use text/event-stream content type.",
+                    req.normalized_model(),
+                    self.base_url
+                ),
+            ));
+        }
+
+        let body = response
+            .bytes_stream()
+            .map(|item| item.map_err(|error| Box::new(error) as UpstreamStreamError));
+
+        Ok(UpstreamStreamResponse {
+            status,
+            body: Box::pin(body),
+        })
     }
 }
 

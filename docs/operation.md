@@ -599,6 +599,31 @@ aif_embedding_request_duration_seconds
 
 ---
 
+# Controlled Streaming Runtime Behavior
+
+Controlled streaming is enabled by default:
+
+```conf
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
+upstream_timeout_seconds 120;
+```
+
+For `stream=true`, AI Cost Firewall does not commit provider chunks directly to the client. It holds the upstream permit while consuming provider SSE, reconstructs the canonical response, applies response controls, performs eligible cache storage and Privacy restoration, records accounting/evidence, and only then prepares the downstream SSE payload.
+
+Operational consequences:
+
+- JSON and SSE delivery share the same cache identity and can reuse eligible cached completions across transport modes
+- response Security Guard scanning and Privacy restoration are applied before controlled SSE delivery
+- downstream time-to-first-byte occurs after generation and approval, not at the provider's first token
+- `max_stream_upstream_bytes` provides a hard per-request bound on cumulative provider SSE bytes
+- an upstream body/assembly failure, idle timeout, absolute generation timeout, or cumulative-byte-limit failure returns an HTTP error before model content is committed
+- successful replay is OpenAI-compatible SSE but not byte-for-byte provider framing
+
+For capacity planning, controlled-streaming requests may hold an upstream concurrency slot for the full provider generation/assembly period. `upstream_timeout_seconds` bounds provider-body idle time, and a 15-minute absolute generation ceiling bounds drip-feed behavior. `max_stream_upstream_bytes` is a cumulative provider-response limit rather than a direct memory-sizing control; peak memory also depends on assembler state and the approved downstream SSE payload.
+
+---
+
 # OpenAI-Compatible Provider Diagnostics
 
 AI Cost Firewall classifies common provider failures explicitly.
@@ -834,6 +859,28 @@ aif_upstream_request_duration_seconds
 aif_upstream_timeouts_total
 aif_upstream_calls_total
 ```
+
+---
+
+# Controlled Streaming Metrics
+
+```text
+aif_stream_requests_total
+aif_stream_completed_total
+aif_stream_errors_total
+aif_stream_aborted_total
+aif_stream_upstream_errors_total
+aif_stream_upstream_chunks_total
+aif_stream_upstream_bytes_total
+aif_stream_upstream_time_to_first_byte_seconds
+aif_stream_generation_duration_seconds
+aif_stream_client_time_to_first_byte_seconds
+aif_stream_upstream_response_bytes
+aif_stream_client_buffer_bytes
+aif_stream_duration_seconds
+```
+
+Use upstream TTFB and generation duration to understand provider behavior. Use client TTFB to measure the user-visible delay introduced by the controlled-generation/approval barrier. `aif_stream_upstream_response_bytes` records total upstream SSE size per controlled request, while `aif_stream_client_buffer_bytes` records the approved downstream SSE payload size.
 
 ---
 

@@ -71,6 +71,7 @@ AI Cost Firewall includes:
 - exact Redis caching
 - semantic Qdrant caching
 - OpenAI-compatible request routing
+- OpenAI-compatible streaming chat completions (SSE)
 - configurable cache fail-open/fail-closed behavior
 - structured lifecycle evidence
 - Prometheus metrics and Grafana dashboards
@@ -207,12 +208,15 @@ The firewall:
 4. optionally calls VCAL Usage Guard to evaluate organizational usage policy
 5. checks exact cache
 6. checks semantic cache
-7. forwards only cache misses upstream
-8. optionally scans assistant responses with VCAL Security Guard before Privacy Guard restore
-9. optionally restores Privacy Guard placeholders in the final response
-10. emits structured evidence events and Prometheus metrics
-11. optionally delivers evidence batches to VCAL Audit
-12. exposes operational diagnostics
+7. on a cache miss, calls the upstream provider using normal JSON for `stream=false`/omitted or consumes provider SSE internally for `stream=true`
+8. normalizes cache hits and upstream results into the same canonical chat-completion response
+9. optionally scans the complete assistant response with VCAL Security Guard
+10. stores eligible cache-miss responses using the existing pre-Privacy-restore cache semantics
+11. optionally restores Privacy Guard placeholders
+12. records usage, cost, metrics, and structured evidence
+13. returns JSON for non-streaming requests or replays an approved OpenAI-compatible SSE response for controlled streaming requests
+14. optionally delivers evidence batches to VCAL Audit
+15. exposes operational diagnostics
 
 Full architecture documentation:
 
@@ -259,6 +263,8 @@ Edit the configuration and add your API key:
 nano configs/ai-firewall.conf
 ```
 
+For the default OpenAI deployment, the upstream API key is the only provider-specific value that normally needs to be replaced before starting the stack. Provider streaming support is not required for ordinary JSON chat-completion requests; it is required only when a client sends `"stream": true`.
+
 ---
 
 ## Start the stack
@@ -299,9 +305,47 @@ The `/version` endpoint returns release metadata, including the AI Cost Firewall
 
 ## Streaming behavior
 
-Streaming chat completions are currently not supported.
+AI Cost Firewall supports **controlled OpenAI-compatible chat-completion streaming** with `"stream": true`. Controlled streaming accepts provider SSE internally, assembles the complete response, applies response controls, and only then replays an OpenAI-compatible Server-Sent Events (`text/event-stream`) response to the client.
 
-Requests with `"stream": true` are rejected with HTTP `422` before cache, guard, or upstream processing.
+The core guarantee is:
+
+> No generated response content leaves AI Cost Firewall until AI Cost Firewall has approved the complete response.
+
+Controlled streaming uses the same request controls, cache identity, response controls, Privacy restoration, accounting, and evidence pipeline as non-streaming requests:
+
+- Security Guard, Privacy Guard, and Usage Guard request-side processing runs before cache lookup or the upstream call.
+- Exact and semantic cache lookup/store remain active for streaming requests. JSON and SSE delivery share transport-independent cache identity, so an eligible cached completion can be reused across `stream=false` and `stream=true`.
+- On a cache miss, AI Cost Firewall requests provider SSE and consumes it internally. Provider chunks are parsed and assembled into the canonical chat-completion response before downstream delivery.
+- Security Guard response scanning runs on the complete assembled or cached response before any generated response content is committed to the client.
+- Eligible cache-miss responses are stored using the existing pre-Privacy-restore cache semantics.
+- Privacy Guard placeholder restoration runs before controlled SSE delivery, including flows that created an anonymization mapping on the request path.
+- Usage and model-cost accounting are derived from the assembled response. AI Cost Firewall requests upstream usage data for internal accounting; a downstream usage chunk is replayed when the client requests `stream_options.include_usage`.
+- After all controls and accounting complete successfully, AI Cost Firewall encodes the approved canonical response as OpenAI-compatible SSE and terminates it with `[DONE]`.
+- If the provider stream fails, is malformed, is truncated, exceeds the configured cumulative upstream SSE byte limit, becomes idle for too long, or exceeds the absolute generation ceiling before approval, AI Cost Firewall returns a normal HTTP error and does not expose partial provider content to the client.
+
+Controlled streaming is enabled by default and can be configured with:
+
+```text
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
+upstream_timeout_seconds 120;
+```
+
+`streaming_enabled` permits clients to use `"stream": true`; it does not force streaming for ordinary requests. Requests with `stream=false` or no `stream` field continue to use the normal JSON completion path.
+
+`max_stream_upstream_bytes` limits the **cumulative provider SSE bytes accepted for one controlled streaming request**. It is a total-response-size limit, not a measurement of instantaneous parser buffer occupancy.
+
+For controlled provider streams, `upstream_timeout_seconds` also acts as the maximum idle gap between provider SSE body chunks after response headers have been received. In addition, controlled generation has a 15-minute absolute ceiling so a provider cannot hold an upstream concurrency permit indefinitely by continuously drip-feeding data.
+
+Provider SSE support is required only for requests that use `"stream": true`. An OpenAI-compatible provider without streaming support remains usable for ordinary non-streaming chat-completion requests.
+
+Operational characteristics:
+
+- controlled streaming prioritizes response-control guarantees over token-by-token immediacy; client SSE delivery begins only after upstream generation and response controls complete
+- downstream SSE is generated from the canonical response and is OpenAI-compatible, but it is not guaranteed to be byte-for-byte identical to the provider's original SSE framing
+- fragmented content and tool-call deltas are reconstructed before replay
+- upstream and client time-to-first-byte are measured separately
+- provider SSE chunks and cumulative bytes, generation duration, timeout/failure outcomes, upstream response size, approved client-buffer size, request errors, and terminal stream lifecycle are exposed through Prometheus metrics and structured evidence
 
 ---
 
@@ -317,7 +361,7 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - nginx-style configuration reload (SIGHUP)
 - structured Prometheus metrics
 - semantic cache lifecycle control
-- upstream timeout tracking
+- upstream request timeout tracking plus controlled-stream idle and absolute-generation timeout protection
 - request size protection
 - runtime diagnostics
 - configurable semantic cache fail-open behavior
@@ -334,7 +378,7 @@ AI Cost Firewall includes operational safeguards and observability features desi
 
 VCAL Privacy Guard, VCAL Security Guard, VCAL Usage Guard, VCAL Audit, and VCAL Compliance are separate commercial products. They are not required to deploy or use AI Cost Firewall.
 
-AI Cost Firewall can optionally orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard before forwarding non-streaming chat requests upstream. These modules can be enabled independently or in combination.
+AI Cost Firewall can optionally orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard around chat requests and responses. These modules can be enabled independently or in combination. Controlled streaming uses the same request-side guard processing and complete-response Security/Privacy controls described in the Streaming behavior section.
 
 The recommended full guard flow is:
 
@@ -394,7 +438,7 @@ Example Usage Guard block returned by AI Firewall:
 }
 ```
 
-Streaming requests are rejected regardless of whether guard modules are enabled. Requests with `stream=true` return HTTP 422 before cache, guard, or upstream processing.
+For controlled streaming requests, request-side Security Guard, Privacy Guard, and Usage Guard processing remains active. On cache misses, AI Cost Firewall fully assembles the provider stream before response Security Guard scanning and Privacy Guard restoration. The approved result is then replayed as SSE, so response controls do not need to be skipped and Privacy mappings can be restored before client delivery.
 
 Security Guard, Privacy Guard, and Usage Guard are disabled by default in `configs/ai-firewall.conf.example`.
 
@@ -485,6 +529,8 @@ embedding_api_key sk-your-key;
 
 The upstream provider and embedding provider may use different OpenAI-compatible base URLs.
 
+For normal `stream=false` or omitted-stream requests, the upstream only needs to provide an OpenAI-compatible JSON chat-completion response. When clients request `stream=true`, the configured upstream must additionally provide OpenAI-compatible SSE streaming.
+
 Important limitations:
 
 * AI Cost Firewall does not claim universal compatibility with every OpenAI-like API.
@@ -526,6 +572,19 @@ aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
 aif_usage_blocks_total
+aif_stream_requests_total
+aif_stream_completed_total
+aif_stream_errors_total
+aif_stream_aborted_total
+aif_stream_upstream_errors_total
+aif_stream_upstream_chunks_total
+aif_stream_upstream_bytes_total
+aif_stream_upstream_time_to_first_byte_seconds
+aif_stream_generation_duration_seconds
+aif_stream_client_time_to_first_byte_seconds
+aif_stream_upstream_response_bytes
+aif_stream_client_buffer_bytes
+aif_stream_duration_seconds
 ```
 
 AI Cost Firewall reports:
@@ -564,6 +623,9 @@ upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-key;
 
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
+
 semantic_cache_enabled true;
 ```
 
@@ -577,11 +639,13 @@ Full documentation:
 
 # Benchmarks
 
-AI Cost Firewall has been benchmarked with a local simulated OpenAI-compatible upstream provider to isolate gateway behavior, Redis/Qdrant integration, cache effectiveness, and Prometheus metrics without external API cost or provider rate-limit noise.
+Earlier controlled benchmarks using AI Cost Firewall v0.2.0 measured with a local simulated OpenAI-compatible upstream provider to isolate gateway behavior, Redis/Qdrant integration, cache effectiveness, and Prometheus metrics without external API cost or provider rate-limit noise.
 
 In a 30-minute cache-effectiveness benchmark, AI Cost Firewall sustained 30 RPS with 0% request failures, p95 latency of 9.03 ms, and a 98.86% aggregate cache-hit rate.
 
 In a single-VM high-load benchmark, AI Cost Firewall sustained approximately 500 RPS for 5 minutes with 0% HTTP failures. Higher RPS values caused instability in the single-VM test environment, so this should be treated as a local benchmark observation, not a universal capacity limit.
+
+These historical measurements have not yet been revalidated against v0.7.0.
 
 See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limitations, and detailed results.
 
@@ -704,7 +768,7 @@ AI Cost Firewall includes tests for:
 - OpenAI-compatible metadata preservation
 - evidence lifecycle completion
 - request and response Security Guard block evidence
-- global streaming rejection
+- controlled streaming assembly, cross-mode cache reuse, response controls, Privacy restoration, SSE replay, pre-commit failure isolation, provider idle timeout, absolute generation timeout, and upstream-permit release
 - buffered Audit evidence delivery configuration
 - evidence batching, retry, and delivery failure handling
 

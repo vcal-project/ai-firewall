@@ -29,6 +29,7 @@ deploy/grafana/dashboards/*.json
 *.swp
 
 # SBOM files
+sbom/
 ai-firewall.cdx.json
 ai-firewall-v0.5.0.cdx.json
 

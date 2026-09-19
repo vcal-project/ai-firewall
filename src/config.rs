@@ -202,6 +202,8 @@ pub struct Config {
     pub upstream_provider: ProviderKind,
     pub upstream_base_url: String,
     pub upstream_api_key: String,
+    pub streaming_enabled: bool,
+    pub max_stream_upstream_bytes: usize,
 
     pub embedding_provider: ProviderKind,
     pub embedding_base_url: String,
@@ -384,6 +386,9 @@ impl Config {
         }
         if self.max_inflight_upstream_requests == 0 {
             errors.push("max_inflight_upstream_requests must be > 0".into());
+        }
+        if self.max_stream_upstream_bytes == 0 {
+            errors.push("max_stream_upstream_bytes must be > 0".into());
         }
 
         if self.audit_enabled {
@@ -682,7 +687,7 @@ impl Config {
 
         if self.audit_enabled {
             warnings.push(
-                "VCAL Audit delivery is buffered in memory and best-effort in v0.5.0; process crashes, queue overflow, or retry exhaustion can lose evidence".into(),
+                "VCAL Audit delivery is buffered in memory and best-effort; process crashes, queue overflow, or retry exhaustion can lose evidence".into(),
             );
         }
 
@@ -698,6 +703,12 @@ impl Config {
             format!(
                 "semantic_cache={} fail_open={}",
                 self.semantic_cache_enabled, self.semantic_cache_fail_open
+            ),
+            format!(
+                "streaming_enabled={} delivery=controlled max_upstream_bytes={} idle_timeout={}s max_generation=900s",
+                self.streaming_enabled,
+                self.max_stream_upstream_bytes,
+                self.upstream_timeout_seconds
             ),
             format!(
                 "security_guard={} privacy_guard={} usage_guard={} guard_fail_open={}",
@@ -813,6 +824,11 @@ impl Config {
         out.push_str(&format!(
             "upstream_api_key = {}\n",
             mask_secret_value(&self.upstream_api_key)
+        ));
+        out.push_str(&format!("streaming_enabled = {}\n", self.streaming_enabled));
+        out.push_str(&format!(
+            "max_stream_upstream_bytes = {}\n",
+            self.max_stream_upstream_bytes
         ));
 
         out.push_str(&format!(
@@ -1112,6 +1128,12 @@ impl Config {
             )?,
             upstream_base_url: get_or_default(&map, "upstream_base_url", "https://api.openai.com"),
             upstream_api_key: get_required(&map, "upstream_api_key")?,
+            streaming_enabled: parse_or_default(&map, "streaming_enabled", true)?,
+            max_stream_upstream_bytes: map
+                .get("max_stream_upstream_bytes")
+                .map(|value| Self::parse_bytes(value))
+                .transpose()?
+                .unwrap_or(crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES),
 
             embedding_provider: parse_or_default(
                 &map,
@@ -1384,6 +1406,18 @@ impl Config {
             upstream_api_key: env::var("AIF_UPSTREAM_API_KEY").map_err(|_| {
                 cfg_err("AIF_UPSTREAM_API_KEY is required when no config file is used")
             })?,
+            streaming_enabled: parse_env_or_default("AIF_STREAMING_ENABLED", true)?,
+            max_stream_upstream_bytes: {
+                let raw = env::var("AIF_MAX_STREAM_UPSTREAM_BYTES").unwrap_or_else(|_| {
+                    crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES.to_string()
+                });
+                Self::parse_bytes(&raw).map_err(|_| {
+                    cfg_err(format!(
+                        "invalid AIF_MAX_STREAM_UPSTREAM_BYTES value '{}'. Use formats like 1M, 8M, 16M",
+                        raw
+                    ))
+                })?
+            },
 
             embedding_provider: {
                 let raw = env::var("AIF_EMBEDDING_PROVIDER")
@@ -1801,6 +1835,12 @@ impl Config {
         let mut lines = vec![
             format!("- upstream provider: {}", self.upstream_provider.as_str()),
             format!("- upstream base URL: {}", self.upstream_base_url),
+            format!(
+                "- controlled streaming enabled: {} (max upstream response: {} bytes, idle timeout: {}s, max generation: 900s)",
+                self.streaming_enabled,
+                self.max_stream_upstream_bytes,
+                self.upstream_timeout_seconds
+            ),
             format!("- exact cache enabled: {}", self.exact_cache_enabled),
             format!("- semantic cache: {}", self.semantic_cache_status()),
             format!(
@@ -1881,6 +1921,8 @@ impl fmt::Debug for Config {
             .field("upstream_provider", &self.upstream_provider.as_str())
             .field("upstream_base_url", &self.upstream_base_url)
             .field("upstream_api_key", &mask_secret(&self.upstream_api_key))
+            .field("streaming_enabled", &self.streaming_enabled)
+            .field("max_stream_upstream_bytes", &self.max_stream_upstream_bytes)
             .field("embedding_provider", &self.embedding_provider.as_str())
             .field("embedding_base_url", &self.embedding_base_url)
             .field("embedding_api_key", &mask_secret(&self.embedding_api_key))
@@ -2061,6 +2103,8 @@ fn allowed_directives() -> HashSet<&'static str> {
         "upstream_provider",
         "upstream_base_url",
         "upstream_api_key",
+        "streaming_enabled",
+        "max_stream_upstream_bytes",
         "embedding_provider",
         "embedding_base_url",
         "embedding_api_key",

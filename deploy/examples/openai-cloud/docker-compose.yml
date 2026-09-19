@@ -25,7 +25,7 @@ services:
       retries: 10
 
   firewall:
-    image: ${AIF_IMAGE:-vcalproject/ai-firewall:v0.4.0}
+    image: ${AIF_IMAGE:-vcalproject/ai-firewall:v0.7.0}
     depends_on:
       redis:
         condition: service_healthy

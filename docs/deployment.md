@@ -23,3 +23,5 @@ During shutdown `/readyz` becomes unavailable before in-flight requests are drai
 ## Backpressure
 
 `max_inflight_requests` bounds total application requests and `max_inflight_upstream_requests` bounds simultaneous upstream LLM calls. Exceeding a limit produces a deterministic 503 rather than allowing unbounded work accumulation.
+
+Controlled streaming holds an upstream concurrency slot while provider SSE is consumed and assembled. `max_stream_upstream_bytes` bounds cumulative provider SSE bytes accepted for each controlled request; it is a total-response-size limit, not an instantaneous memory-buffer limit. `upstream_timeout_seconds` also bounds idle time between provider SSE chunks, and a 15-minute absolute generation ceiling prevents indefinite drip-feed occupancy. Controlled streaming begins client delivery only after the complete response has passed response controls.

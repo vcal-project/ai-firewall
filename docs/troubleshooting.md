@@ -805,11 +805,72 @@ curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_pr
 
 ---
 
-# Streaming Requests Rejected
+# Controlled Streaming Problems
 
-A request with `"stream": true` returns HTTP 422 before cache, guard, or upstream processing.
+## `stream=true` returns HTTP 422
 
-Use non-streaming requests in all deployment modes.
+Check whether controlled streaming is disabled:
+
+```conf
+streaming_enabled false;
+```
+
+Enable it and reload/restart with:
+
+```conf
+streaming_enabled true;
+```
+
+A deliberately disabled deployment rejects `stream=true`; ordinary JSON requests remain available.
+
+## `stream=true` returns an upstream/502-style error before SSE begins
+
+Controlled streaming does not expose partial provider output. AI Cost Firewall first consumes and assembles the provider stream. A malformed, truncated, failed, oversized, idle, or over-duration stream therefore returns a normal HTTP error before downstream `text/event-stream` is committed.
+
+Check the stream metrics:
+
+```bash
+curl -s http://localhost:8080/metrics | grep -E \
+  'aif_stream_(errors|upstream_errors|upstream_chunks|upstream_bytes|upstream_response_bytes)'
+```
+
+Also check AIF logs and Audit evidence for `upstream.stream.failed`.
+
+## Provider stream exceeds the cumulative byte limit
+
+Review:
+
+```conf
+max_stream_upstream_bytes 8M;
+```
+
+Increase it only when expected provider responses justify accepting a larger total SSE response. The limit must be greater than zero. It counts cumulative provider SSE bytes received during the request; it is not a peak-memory-buffer limit.
+
+## Controlled stream times out after provider headers
+
+If a provider returns SSE headers and then stops producing body chunks, AI Cost Firewall fails the request after the configured idle interval:
+
+```conf
+upstream_timeout_seconds 120;
+```
+
+The same timeout resets whenever a provider body chunk is received. Check `aif_upstream_timeouts_total`, `aif_stream_upstream_errors_total`, `aif_stream_errors_total`, logs, and `upstream.stream.failed` evidence. No partial generated content is committed to the client.
+
+## Provider keeps sending data but never finishes
+
+Controlled streaming has a separate 15-minute absolute provider-generation ceiling. This closes the drip-feed case where chunks arrive frequently enough to avoid the idle timeout but the stream never terminates. The request fails before downstream SSE commit and releases the upstream concurrency permit.
+
+## Streaming feels less immediate than raw provider SSE
+
+This is expected. Controlled streaming prioritizes response-control guarantees over token-by-token immediacy. The client receives SSE only after upstream generation, canonical assembly, response Security Guard processing, cache-store processing, Privacy restoration, and accounting are complete.
+
+Compare:
+
+```text
+aif_stream_upstream_time_to_first_byte_seconds
+aif_stream_generation_duration_seconds
+aif_stream_client_time_to_first_byte_seconds
+```
 
 ---
 

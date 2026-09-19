@@ -19,8 +19,15 @@ redis_timeout_seconds 2;
 # Chat upstream provider
 # Default: openai_compatible
 # Supports OpenAI-compatible /v1/chat/completions endpoints.
-# Streaming is not currently supported.
-# Requests with stream=true are rejected with HTTP 422 before cache, guard, or upstream processing.
+#
+# Controlled streaming is enabled by default. For requests with stream=true,
+# AI Cost Firewall consumes the upstream SSE response internally, reconstructs
+# a canonical completion, applies response controls and Privacy restoration,
+# records accounting/evidence, and only then commits an SSE response to the
+# client. Streamed and non-streamed requests share the normal cache pipeline.
+streaming_enabled true;
+# Maximum cumulative provider SSE bytes accepted for one controlled streaming request.
+max_stream_upstream_bytes 8M;
 upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key replace-with-upstream-api-key;
@@ -84,6 +91,8 @@ semantic_cache_store_enabled true;
 # Specific timeout values override it.
 request_timeout_seconds 120;
 upstream_timeout_seconds 120;
+# For stream=true, this also bounds the idle gap between provider SSE chunks.
+# Controlled provider generation has an independent 15-minute absolute ceiling.
 embedding_timeout_seconds 30;
 
 # Gateway protection controls.

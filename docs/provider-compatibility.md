@@ -425,16 +425,38 @@ Provider compatibility still matters for OpenAI-compatible chat request/response
 
 The current guard modules inspect text content. Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
 
-AI Cost Firewall accepts non-streaming chat completions only; use non-streaming requests regardless of which guard modules are enabled.
+AI Cost Firewall supports both ordinary JSON chat completions and controlled OpenAI-compatible SSE delivery. Optional guards use the same complete-response control pipeline for both delivery modes.
 
 ---
 # Streaming Compatibility
 
-AI Cost Firewall supports non-streaming chat completions only.
+AI Cost Firewall supports controlled chat-completion streaming for providers that expose an OpenAI-compatible SSE response to `stream=true` requests.
 
-Requests with `stream=true` are rejected with HTTP 422 before cache, guard, or upstream processing.
+The provider stream is not forwarded byte-for-byte. AI Cost Firewall consumes it internally and reconstructs a canonical completion before downstream delivery. Compatibility therefore depends on the provider emitting parseable OpenAI-style stream events for the fields used by the response, including fragmented content and tool/function-call deltas where applicable.
 
-Use non-streaming chat-completion requests in every deployment mode.
+Controlled streaming behavior:
+
+- `stream=true` is permitted when `streaming_enabled true`
+- exact and semantic cache lookup/store remain available when the request is otherwise eligible
+- cache identity is shared across JSON and SSE delivery
+- response Security Guard scanning and Privacy Guard restoration run on the complete response before client delivery
+- approved responses are re-encoded as OpenAI-compatible SSE and terminated with `[DONE]`
+- client-requested `stream_options.include_usage` is honored on replay
+- malformed, truncated, failed, oversized, idle, or excessively long provider streams fail before model content is committed downstream
+
+Configuration:
+
+```conf
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
+upstream_timeout_seconds 120;
+```
+
+`max_stream_upstream_bytes` limits cumulative provider SSE bytes accepted during one controlled request. It is especially relevant for providers that emit very large tool-call arguments, reasoning fields, or long generations. It is not a peak-memory-buffer setting.
+
+For controlled streaming, `upstream_timeout_seconds` is also the maximum idle gap between provider body chunks after headers arrive. A separate 15-minute absolute generation ceiling protects against providers that continue to drip-feed chunks without completing.
+
+Provider-specific SSE framing extensions that are not represented in the canonical OpenAI-compatible response may not be reproduced byte-for-byte in downstream SSE. Compatibility should therefore be validated semantically for each provider/version used in production.
 
 ---
 
@@ -447,7 +469,7 @@ upstream_timeout_seconds 120;
 embedding_timeout_seconds 30;
 ```
 
-where `request_timeout_seconds` is a fallback.
+where `request_timeout_seconds` is a fallback. For controlled streaming, `upstream_timeout_seconds` also defines provider-body idle timeout; it does not replace the separate 15-minute absolute generation ceiling.
 
 Local GPU models and large cloud models may require higher values.
 

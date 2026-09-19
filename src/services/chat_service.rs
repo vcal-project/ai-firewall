@@ -1,4 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
+
+use axum::body::Bytes;
+use futures_util::{stream, StreamExt};
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -21,14 +24,95 @@ use crate::{
         EMBEDDING_OPERATION_LOOKUP, EMBEDDING_OPERATION_STORE,
     },
     semantic::semantic_cache::SemanticCache,
+    streaming::{encode_response_as_sse, stream_include_usage, OpenAiStreamAssembler},
     types::openai::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage},
-    upstream::llm::LlmUpstream,
+    upstream::llm::{LlmUpstream, UpstreamByteStream, UpstreamErrorKind, UpstreamStreamError},
 };
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CacheControl {
     pub bypass_lookup: bool,
     pub bypass_store: bool,
+}
+
+pub struct ChatStreamResponse {
+    pub content_type: String,
+    pub body: UpstreamByteStream,
+}
+
+struct StreamTerminalGuard {
+    evidence_sink: Arc<dyn EvidenceSink>,
+    trace_id: uuid::Uuid,
+    started: Instant,
+    terminal_emitted: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StreamProgress {
+    chunks: u64,
+    bytes: u64,
+}
+
+impl Drop for StreamTerminalGuard {
+    fn drop(&mut self) {
+        if self.terminal_emitted {
+            return;
+        }
+
+        metrics::STREAM_ABORTED_TOTAL.inc();
+        metrics::STREAM_DURATION_SECONDS.observe(self.started.elapsed().as_secs_f64());
+
+        let evidence_sink = self.evidence_sink.clone();
+        let trace_id = self.trace_id;
+        let latency_ms = self.started.elapsed().as_millis() as u64;
+
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+
+        runtime.spawn(async move {
+            let mut aborted = EvidenceEvent::new(
+                trace_id,
+                EvidenceSource::AiFirewall,
+                EventCategory::Request,
+                "request.stream.aborted",
+                EventOutcome::Failed,
+            );
+            aborted.attributes.insert(
+                "reason".into(),
+                serde_json::Value::String("client_disconnected_before_commit".into()),
+            );
+            aborted
+                .attributes
+                .insert("latency_ms".into(), serde_json::Value::from(latency_ms));
+            aborted
+                .attributes
+                .insert("stream".into(), serde_json::Value::Bool(true));
+            let _ = evidence_sink.emit(aborted).await;
+
+            let mut terminal = EvidenceEvent::new(
+                trace_id,
+                EvidenceSource::AiFirewall,
+                EventCategory::Request,
+                "request.failed",
+                EventOutcome::Failed,
+            );
+            terminal.decision = Some(DecisionEvidence {
+                action: "fail_request".into(),
+                reason_code: "STREAM_ABORTED".into(),
+                rule_id: None,
+                severity: None,
+            });
+            terminal.attributes.insert(
+                "error_class".into(),
+                serde_json::Value::String("stream_aborted".into()),
+            );
+            terminal
+                .attributes
+                .insert("stream".into(), serde_json::Value::Bool(true));
+            let _ = evidence_sink.emit(terminal).await;
+        });
+    }
 }
 
 pub struct ChatService {
@@ -267,6 +351,94 @@ impl ChatService {
             .await
     }
 
+    pub async fn handle_stream_with_evidence(
+        &self,
+        req: ChatCompletionRequest,
+        cache_control: CacheControl,
+        trace_id: uuid::Uuid,
+        max_stream_upstream_bytes: usize,
+    ) -> Result<ChatStreamResponse, AppError> {
+        self.validate(&req)?;
+
+        if !req.stream.unwrap_or(false) {
+            return Err(AppError::internal(
+                "controlled streaming execution requires stream=true",
+            ));
+        }
+
+        metrics::STREAM_REQUESTS_TOTAL.inc();
+        let started = Instant::now();
+
+        let mut received = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Request,
+            "request.received",
+            EventOutcome::Started,
+        );
+        received
+            .attributes
+            .insert("stream".into(), serde_json::Value::Bool(true));
+        received.attributes.insert(
+            "delivery_mode".into(),
+            serde_json::Value::String("controlled".into()),
+        );
+        self.emit(received).await;
+
+        let mut lifecycle = StreamTerminalGuard {
+            evidence_sink: self.evidence_sink.clone(),
+            trace_id,
+            started,
+            terminal_emitted: false,
+        };
+
+        let include_usage = stream_include_usage(&req);
+        let result = self
+            .handle_after_request_received(
+                req,
+                cache_control,
+                trace_id,
+                Some(max_stream_upstream_bytes),
+            )
+            .await;
+
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                metrics::STREAM_ERRORS_TOTAL.inc();
+                metrics::STREAM_DURATION_SECONDS.observe(started.elapsed().as_secs_f64());
+
+                let mut failed = self.request_failed_event(trace_id, &error);
+                failed
+                    .attributes
+                    .insert("stream".into(), serde_json::Value::Bool(true));
+                self.emit(failed).await;
+
+                lifecycle.terminal_emitted = true;
+                return Err(error);
+            }
+        };
+
+        let body = encode_response_as_sse(&response, include_usage);
+        metrics::STREAM_BUFFER_BYTES.observe(body.len() as f64);
+        metrics::STREAM_COMPLETED_TOTAL.inc();
+        metrics::STREAM_DURATION_SECONDS.observe(started.elapsed().as_secs_f64());
+
+        lifecycle.terminal_emitted = true;
+
+        let client_started = started;
+        let body = stream::once(async move {
+            metrics::STREAM_CLIENT_TIME_TO_FIRST_BYTE_SECONDS
+                .observe(client_started.elapsed().as_secs_f64());
+            Ok::<Bytes, UpstreamStreamError>(body)
+        });
+
+        Ok(ChatStreamResponse {
+            content_type: "text/event-stream".into(),
+            body: Box::pin(body),
+        })
+    }
+
     pub async fn handle_with_evidence(
         &self,
         req: ChatCompletionRequest,
@@ -284,7 +456,7 @@ impl ChatService {
         .await;
 
         let result = self
-            .handle_after_request_received(req, cache_control, trace_id)
+            .handle_after_request_received(req, cache_control, trace_id, None)
             .await;
 
         if let Err(error) = &result {
@@ -299,14 +471,13 @@ impl ChatService {
         req: ChatCompletionRequest,
         cache_control: CacheControl,
         trace_id: uuid::Uuid,
+        controlled_stream_max_bytes: Option<usize>,
     ) -> Result<ChatCompletionResponse, AppError> {
-        if req.stream.unwrap_or(false) {
-            tracing::warn!(
-                model = %req.normalized_model(),
-                "stream=true rejected because AI Firewall does not support streaming responses"
-            );
-            return Err(AppError::unprocessable(
-                "stream=true is not supported by AI Firewall; set stream=false",
+        let controlled_stream = controlled_stream_max_bytes.is_some();
+
+        if req.stream.unwrap_or(false) != controlled_stream {
+            return Err(AppError::internal(
+                "chat request reached the wrong streaming execution path",
             ));
         }
 
@@ -319,7 +490,7 @@ impl ChatService {
             );
             let response =
                 request_policy_completion(&guarded.request, trace_id, "security", message);
-            self.emit(self.request_completed_event(trace_id, "security_policy"))
+            self.emit(self.request_completed_event(trace_id, "security_policy", controlled_stream))
                 .await;
             return Ok(response);
         }
@@ -330,7 +501,7 @@ impl ChatService {
                 "Usage Guard policy stop returned as synthetic completion"
             );
             let response = request_policy_completion(&guarded.request, trace_id, "policy", message);
-            self.emit(self.request_completed_event(trace_id, "usage_policy"))
+            self.emit(self.request_completed_event(trace_id, "usage_policy", controlled_stream))
                 .await;
             return Ok(response);
         }
@@ -342,9 +513,17 @@ impl ChatService {
             bypass_store: cache_control.bypass_store || guarded.cache_control.bypass_store,
         };
 
-        let normalized = normalize_chat_request(&req)
+        // Cache identity is independent of the client delivery representation.
+        // A canonical completion can be returned either as JSON or replayed as SSE.
+        let mut cache_req = req.clone();
+        cache_req.stream = None;
+        // stream_options affects wire delivery only; it must not split the
+        // canonical completion cache across JSON and SSE representations.
+        cache_req.extra.remove("stream_options");
+
+        let normalized = normalize_chat_request(&cache_req)
             .map_err(|e| AppError::bad_request(format!("normalize failed: {e}")))?;
-        let semantic_text = semantic_text_from_request(&req);
+        let semantic_text = semantic_text_from_request(&cache_req);
         let privacy_placeholder_signature = guard_context.privacy_placeholder_signature.as_deref();
 
         let exact_key_hash = sha256_hex(&normalized);
@@ -391,8 +570,12 @@ impl ChatService {
                         .await?;
 
                     if is_security_policy_completion(&response) {
-                        self.emit(self.request_completed_event(trace_id, "security_policy"))
-                            .await;
+                        self.emit(self.request_completed_event(
+                            trace_id,
+                            "security_policy",
+                            controlled_stream,
+                        ))
+                        .await;
                         return Ok(response);
                     }
 
@@ -400,8 +583,12 @@ impl ChatService {
                         .restore_guarded_response(&guard_context, response, trace_id)
                         .await?;
 
-                    self.emit(self.request_completed_event(trace_id, "exact_cache"))
-                        .await;
+                    self.emit(self.request_completed_event(
+                        trace_id,
+                        "exact_cache",
+                        controlled_stream,
+                    ))
+                    .await;
 
                     return Ok(response);
                 }
@@ -460,7 +647,7 @@ impl ChatService {
 
         if self.semantic_cache_enabled
             && !cache_control.bypass_lookup
-            && self.semantic_eligible(&req)
+            && self.semantic_eligible(&cache_req)
         {
             match self
                 .semantic_cache
@@ -511,8 +698,12 @@ impl ChatService {
                         .await?;
 
                     if is_security_policy_completion(&response) {
-                        self.emit(self.request_completed_event(trace_id, "security_policy"))
-                            .await;
+                        self.emit(self.request_completed_event(
+                            trace_id,
+                            "security_policy",
+                            controlled_stream,
+                        ))
+                        .await;
                         return Ok(response);
                     }
 
@@ -553,8 +744,12 @@ impl ChatService {
                         .restore_guarded_response(&guard_context, response, trace_id)
                         .await?;
 
-                    self.emit(self.request_completed_event(trace_id, "semantic_cache"))
-                        .await;
+                    self.emit(self.request_completed_event(
+                        trace_id,
+                        "semantic_cache",
+                        controlled_stream,
+                    ))
+                    .await;
 
                     return Ok(response);
                 }
@@ -622,89 +817,17 @@ impl ChatService {
 
         tracing::debug!(
             model = %req.normalized_model(),
+            controlled_stream = controlled_stream,
             "cache miss; forwarding request upstream"
         );
 
-        let mut upstream_event = EvidenceEvent::new(
-            trace_id,
-            EvidenceSource::AiFirewall,
-            EventCategory::Upstream,
-            "upstream.request.sent",
-            EventOutcome::Started,
-        );
-        upstream_event.upstream = Some(UpstreamEvidence {
-            provider_type: self.upstream_metadata.provider_type.clone(),
-            provider_name: self.upstream_metadata.provider_name.clone(),
-            model: req.normalized_model().to_string(),
-            endpoint_class: Some("chat_completions".into()),
-            response_status: None,
-            latency_ms: None,
-        });
-        self.emit(upstream_event).await;
-
-        let _upstream_permit = self.upstream_limit.try_acquire().map_err(|_| {
-            metrics::observe_backpressure_rejection("upstream");
-            AppError::backpressure("upstream", "upstream concurrency limit reached")
-        })?;
-        let upstream_started = Instant::now();
-        let response = match self.upstream.chat_completion(&req).await {
-            Ok(response) => {
-                self.dependencies
-                    .upstream_available
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                response
-            }
-            Err(error) => {
-                self.dependencies
-                    .upstream_available
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                let latency_ms = upstream_started.elapsed().as_millis() as u64;
-                let reason_code = error.evidence_reason_code();
-
-                let mut upstream_failed = EvidenceEvent::new(
-                    trace_id,
-                    EvidenceSource::AiFirewall,
-                    EventCategory::Upstream,
-                    "upstream.request.failed",
-                    EventOutcome::Failed,
-                );
-                upstream_failed.upstream = Some(UpstreamEvidence {
-                    provider_type: self.upstream_metadata.provider_type.clone(),
-                    provider_name: self.upstream_metadata.provider_name.clone(),
-                    model: req.normalized_model().to_string(),
-                    endpoint_class: Some("chat_completions".into()),
-                    response_status: None,
-                    latency_ms: Some(latency_ms),
-                });
-                upstream_failed.decision = Some(DecisionEvidence {
-                    action: "fail_request".into(),
-                    reason_code: reason_code.into(),
-                    rule_id: None,
-                    severity: None,
-                });
-                self.emit(upstream_failed).await;
-
-                return Err(error);
-            }
+        let response = if let Some(max_stream_upstream_bytes) = controlled_stream_max_bytes {
+            self.fetch_controlled_stream_response(&req, trace_id, max_stream_upstream_bytes)
+                .await?
+        } else {
+            self.fetch_buffered_upstream_response(&req, trace_id)
+                .await?
         };
-
-        let latency_ms = upstream_started.elapsed().as_millis() as u64;
-        let mut upstream_received = EvidenceEvent::new(
-            trace_id,
-            EvidenceSource::AiFirewall,
-            EventCategory::Upstream,
-            "upstream.response.received",
-            EventOutcome::Completed,
-        );
-        upstream_received.upstream = Some(UpstreamEvidence {
-            provider_type: self.upstream_metadata.provider_type.clone(),
-            provider_name: self.upstream_metadata.provider_name.clone(),
-            model: response.model.clone(),
-            endpoint_class: Some("chat_completions".into()),
-            response_status: Some(200),
-            latency_ms: Some(latency_ms),
-        });
-        self.emit(upstream_received).await;
 
         self.record_upstream_model_cost(&response);
 
@@ -713,7 +836,7 @@ impl ChatService {
             .await?;
 
         if is_security_policy_completion(&response) {
-            self.emit(self.request_completed_event(trace_id, "security_policy"))
+            self.emit(self.request_completed_event(trace_id, "security_policy", controlled_stream))
                 .await;
             return Ok(response);
         }
@@ -749,7 +872,7 @@ impl ChatService {
         if self.semantic_cache_enabled
             && self.semantic_cache_store_enabled
             && !cache_control.bypass_store
-            && self.semantic_eligible(&req)
+            && self.semantic_eligible(&cache_req)
         {
             match self
                 .semantic_cache
@@ -800,9 +923,449 @@ impl ChatService {
             .restore_guarded_response(&guard_context, response, trace_id)
             .await?;
         let delivery_path = completed_delivery_path(&response, "upstream");
-        self.emit(self.request_completed_event(trace_id, delivery_path))
+        self.emit(self.request_completed_event(trace_id, delivery_path, controlled_stream))
             .await;
         Ok(response)
+    }
+
+    async fn fetch_buffered_upstream_response(
+        &self,
+        req: &ChatCompletionRequest,
+        trace_id: uuid::Uuid,
+    ) -> Result<ChatCompletionResponse, AppError> {
+        let mut upstream_event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.request.sent",
+            EventOutcome::Started,
+        );
+        upstream_event.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: req.normalized_model().to_string(),
+            endpoint_class: Some("chat_completions".into()),
+            response_status: None,
+            latency_ms: None,
+        });
+        self.emit(upstream_event).await;
+
+        let _upstream_permit = self.upstream_limit.try_acquire().map_err(|_| {
+            metrics::observe_backpressure_rejection("upstream");
+            AppError::backpressure("upstream", "upstream concurrency limit reached")
+        })?;
+
+        let upstream_started = Instant::now();
+        let response = match self.upstream.chat_completion(req).await {
+            Ok(response) => {
+                self.dependencies
+                    .upstream_available
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                response
+            }
+            Err(error) => {
+                self.dependencies
+                    .upstream_available
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+
+                let mut upstream_failed = EvidenceEvent::new(
+                    trace_id,
+                    EvidenceSource::AiFirewall,
+                    EventCategory::Upstream,
+                    "upstream.request.failed",
+                    EventOutcome::Failed,
+                );
+                upstream_failed.upstream = Some(UpstreamEvidence {
+                    provider_type: self.upstream_metadata.provider_type.clone(),
+                    provider_name: self.upstream_metadata.provider_name.clone(),
+                    model: req.normalized_model().to_string(),
+                    endpoint_class: Some("chat_completions".into()),
+                    response_status: None,
+                    latency_ms: Some(upstream_started.elapsed().as_millis() as u64),
+                });
+                upstream_failed.decision = Some(DecisionEvidence {
+                    action: "fail_request".into(),
+                    reason_code: error.evidence_reason_code().into(),
+                    rule_id: None,
+                    severity: None,
+                });
+                self.emit(upstream_failed).await;
+                return Err(error);
+            }
+        };
+
+        let mut upstream_received = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.response.received",
+            EventOutcome::Completed,
+        );
+        upstream_received.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: response.model.clone(),
+            endpoint_class: Some("chat_completions".into()),
+            response_status: Some(200),
+            latency_ms: Some(upstream_started.elapsed().as_millis() as u64),
+        });
+        self.emit(upstream_received).await;
+
+        Ok(response)
+    }
+
+    async fn fetch_controlled_stream_response(
+        &self,
+        req: &ChatCompletionRequest,
+        trace_id: uuid::Uuid,
+        max_stream_upstream_bytes: usize,
+    ) -> Result<ChatCompletionResponse, AppError> {
+        let mut upstream_event = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.request.sent",
+            EventOutcome::Started,
+        );
+        upstream_event.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: req.normalized_model().to_string(),
+            endpoint_class: Some("chat_completions_stream".into()),
+            response_status: None,
+            latency_ms: None,
+        });
+        upstream_event
+            .attributes
+            .insert("stream".into(), serde_json::Value::Bool(true));
+        upstream_event.attributes.insert(
+            "delivery_mode".into(),
+            serde_json::Value::String("controlled".into()),
+        );
+        self.emit(upstream_event).await;
+
+        let _upstream_permit = self
+            .upstream_limit
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                metrics::observe_backpressure_rejection("upstream");
+                AppError::backpressure("upstream", "upstream concurrency limit reached")
+            })?;
+
+        // Usage is needed internally for AIF accounting even when the client
+        // does not request the optional downstream usage SSE event.
+        let mut upstream_req = req.clone();
+        upstream_req.stream = Some(true);
+        let stream_options = upstream_req
+            .extra
+            .entry("stream_options".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !stream_options.is_object() {
+            *stream_options = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(options) = stream_options.as_object_mut() {
+            options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
+        }
+
+        let upstream_started = Instant::now();
+        let upstream = match self.upstream.chat_completion_stream(&upstream_req).await {
+            Ok(response) => response,
+            Err(error) => {
+                self.dependencies
+                    .upstream_available
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                metrics::STREAM_UPSTREAM_ERRORS_TOTAL.inc();
+
+                let mut failed = EvidenceEvent::new(
+                    trace_id,
+                    EvidenceSource::AiFirewall,
+                    EventCategory::Upstream,
+                    "upstream.request.failed",
+                    EventOutcome::Failed,
+                );
+                failed.upstream = Some(UpstreamEvidence {
+                    provider_type: self.upstream_metadata.provider_type.clone(),
+                    provider_name: self.upstream_metadata.provider_name.clone(),
+                    model: req.normalized_model().to_string(),
+                    endpoint_class: Some("chat_completions_stream".into()),
+                    response_status: None,
+                    latency_ms: Some(upstream_started.elapsed().as_millis() as u64),
+                });
+                failed.decision = Some(DecisionEvidence {
+                    action: "fail_request".into(),
+                    reason_code: error.evidence_reason_code().into(),
+                    rule_id: None,
+                    severity: None,
+                });
+                self.emit(failed).await;
+                return Err(error);
+            }
+        };
+
+        let response_status = upstream.status.as_u16();
+        let mut headers_received = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.response.received",
+            EventOutcome::Started,
+        );
+        headers_received.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: req.normalized_model().to_string(),
+            endpoint_class: Some("chat_completions_stream".into()),
+            response_status: Some(response_status),
+            latency_ms: Some(upstream_started.elapsed().as_millis() as u64),
+        });
+        headers_received
+            .attributes
+            .insert("phase".into(), serde_json::Value::String("headers".into()));
+        headers_received
+            .attributes
+            .insert("stream".into(), serde_json::Value::Bool(true));
+        self.emit(headers_received).await;
+
+        let mut assembler =
+            OpenAiStreamAssembler::new(req.normalized_model(), max_stream_upstream_bytes);
+        let mut upstream_body = upstream.body;
+        let mut first_byte_seen = false;
+        let mut chunks = 0_u64;
+        let mut bytes_total = 0_u64;
+        let stream_idle_timeout = self.upstream.stream_idle_timeout();
+        let stream_generation_timeout = self.upstream.max_stream_generation_duration();
+        let generation_deadline = tokio::time::Instant::now() + stream_generation_timeout;
+
+        loop {
+            let now = tokio::time::Instant::now();
+            let idle_deadline = now + stream_idle_timeout;
+            let (next_deadline, timeout_class, timeout_message) = if generation_deadline
+                <= idle_deadline
+            {
+                (
+                        generation_deadline,
+                        "stream_generation_timeout",
+                        format!(
+                            "upstream controlled stream exceeded the maximum generation duration of {} seconds before commit",
+                            stream_generation_timeout.as_secs()
+                        ),
+                    )
+            } else {
+                (
+                        idle_deadline,
+                        "stream_idle_timeout",
+                        format!(
+                            "upstream controlled stream produced no body chunk for {} seconds before commit",
+                            stream_idle_timeout.as_secs()
+                        ),
+                    )
+            };
+
+            let next_item = match tokio::time::timeout_at(next_deadline, upstream_body.next()).await
+            {
+                Ok(item) => item,
+                Err(_) => {
+                    if timeout_class == "stream_idle_timeout" {
+                        self.dependencies
+                            .upstream_available
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    metrics::UPSTREAM_TIMEOUTS_TOTAL.inc();
+                    metrics::STREAM_UPSTREAM_ERRORS_TOTAL.inc();
+
+                    self.emit_stream_failure(
+                        trace_id,
+                        req,
+                        upstream.status.as_u16(),
+                        upstream_started,
+                        StreamProgress {
+                            chunks,
+                            bytes: bytes_total,
+                        },
+                        timeout_class,
+                    )
+                    .await;
+
+                    return Err(AppError::upstream_kind(
+                        UpstreamErrorKind::Timeout,
+                        timeout_message,
+                    ));
+                }
+            };
+
+            let Some(item) = next_item else {
+                break;
+            };
+
+            let bytes = match item {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.dependencies
+                        .upstream_available
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    metrics::STREAM_UPSTREAM_ERRORS_TOTAL.inc();
+
+                    let app_error = AppError::upstream_kind(
+                        UpstreamErrorKind::Other,
+                        format!("upstream stream body failed before commit: {error}"),
+                    );
+                    self.emit_stream_failure(
+                        trace_id,
+                        req,
+                        upstream.status.as_u16(),
+                        upstream_started,
+                        StreamProgress {
+                            chunks,
+                            bytes: bytes_total,
+                        },
+                        "upstream_stream_error",
+                    )
+                    .await;
+                    return Err(app_error);
+                }
+            };
+
+            if !first_byte_seen {
+                metrics::STREAM_UPSTREAM_TIME_TO_FIRST_BYTE_SECONDS
+                    .observe(upstream_started.elapsed().as_secs_f64());
+                first_byte_seen = true;
+            }
+
+            chunks = chunks.saturating_add(1);
+            bytes_total = bytes_total.saturating_add(bytes.len() as u64);
+            metrics::STREAM_UPSTREAM_CHUNKS_TOTAL.inc();
+            metrics::STREAM_UPSTREAM_BYTES_TOTAL.inc_by(bytes.len() as u64);
+
+            if let Err(error) = assembler.push_bytes(&bytes) {
+                self.dependencies
+                    .upstream_available
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                metrics::STREAM_UPSTREAM_ERRORS_TOTAL.inc();
+
+                self.emit_stream_failure(
+                    trace_id,
+                    req,
+                    upstream.status.as_u16(),
+                    upstream_started,
+                    StreamProgress {
+                        chunks,
+                        bytes: bytes_total,
+                    },
+                    "upstream_stream_error",
+                )
+                .await;
+
+                return Err(AppError::upstream_kind(
+                    UpstreamErrorKind::Other,
+                    format!("invalid upstream streaming response: {error}"),
+                ));
+            }
+        }
+
+        let upstream_response_bytes = assembler.received_bytes();
+        let response = match assembler.finish() {
+            Ok(response) => response,
+            Err(error) => {
+                self.dependencies
+                    .upstream_available
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                metrics::STREAM_UPSTREAM_ERRORS_TOTAL.inc();
+                self.emit_stream_failure(
+                    trace_id,
+                    req,
+                    upstream.status.as_u16(),
+                    upstream_started,
+                    StreamProgress {
+                        chunks,
+                        bytes: bytes_total,
+                    },
+                    "upstream_stream_error",
+                )
+                .await;
+
+                return Err(AppError::upstream_kind(
+                    UpstreamErrorKind::Other,
+                    format!("invalid upstream streaming response: {error}"),
+                ));
+            }
+        };
+
+        self.dependencies
+            .upstream_available
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        metrics::STREAM_GENERATION_DURATION_SECONDS
+            .observe(upstream_started.elapsed().as_secs_f64());
+        metrics::STREAM_UPSTREAM_RESPONSE_BYTES.observe(upstream_response_bytes as f64);
+
+        let mut completed = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.stream.completed",
+            EventOutcome::Completed,
+        );
+        completed.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: response.model.clone(),
+            endpoint_class: Some("chat_completions_stream".into()),
+            response_status: Some(response_status),
+            latency_ms: Some(upstream_started.elapsed().as_millis() as u64),
+        });
+        completed
+            .attributes
+            .insert("chunks".into(), serde_json::Value::from(chunks));
+        completed
+            .attributes
+            .insert("bytes".into(), serde_json::Value::from(bytes_total));
+        completed.attributes.insert(
+            "delivery_mode".into(),
+            serde_json::Value::String("controlled".into()),
+        );
+        self.emit(completed).await;
+
+        Ok(response)
+    }
+
+    async fn emit_stream_failure(
+        &self,
+        trace_id: uuid::Uuid,
+        req: &ChatCompletionRequest,
+        response_status: u16,
+        started: Instant,
+        progress: StreamProgress,
+        error_class: &'static str,
+    ) {
+        let mut failed = EvidenceEvent::new(
+            trace_id,
+            EvidenceSource::AiFirewall,
+            EventCategory::Upstream,
+            "upstream.stream.failed",
+            EventOutcome::Failed,
+        );
+        failed.upstream = Some(UpstreamEvidence {
+            provider_type: self.upstream_metadata.provider_type.clone(),
+            provider_name: self.upstream_metadata.provider_name.clone(),
+            model: req.normalized_model().to_string(),
+            endpoint_class: Some("chat_completions_stream".into()),
+            response_status: Some(response_status),
+            latency_ms: Some(started.elapsed().as_millis() as u64),
+        });
+        failed
+            .attributes
+            .insert("chunks".into(), serde_json::Value::from(progress.chunks));
+        failed
+            .attributes
+            .insert("bytes".into(), serde_json::Value::from(progress.bytes));
+        failed.attributes.insert(
+            "error_class".into(),
+            serde_json::Value::String(error_class.into()),
+        );
+        failed
+            .attributes
+            .insert("committed_to_client".into(), serde_json::Value::Bool(false));
+        self.emit(failed).await;
     }
 
     async fn security_scan_response(
@@ -856,6 +1419,7 @@ impl ChatService {
         &self,
         trace_id: uuid::Uuid,
         delivery_path: &'static str,
+        controlled_stream: bool,
     ) -> EvidenceEvent {
         let mut event = EvidenceEvent::new(
             trace_id,
@@ -868,6 +1432,15 @@ impl ChatService {
             "delivery_path".to_string(),
             serde_json::Value::String(delivery_path.to_string()),
         );
+        if controlled_stream {
+            event
+                .attributes
+                .insert("stream".into(), serde_json::Value::Bool(true));
+            event.attributes.insert(
+                "delivery_mode".into(),
+                serde_json::Value::String("controlled".into()),
+            );
+        }
         event
     }
 
@@ -900,10 +1473,6 @@ impl ChatService {
     }
 
     fn semantic_eligible(&self, req: &ChatCompletionRequest) -> bool {
-        if req.stream.unwrap_or(false) {
-            return false;
-        }
-
         if req.extra.contains_key("tools") {
             return false;
         }
@@ -1091,13 +1660,14 @@ mod tests {
         types::openai::{
             ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage,
         },
-        upstream::llm::LlmUpstream,
+        upstream::llm::{LlmUpstream, UpstreamStreamError, UpstreamStreamResponse},
     };
     use async_trait::async_trait;
     use serde_json::{json, Map, Value};
     use std::{
         collections::HashMap,
         sync::{Arc, Mutex},
+        time::Duration,
     };
 
     #[derive(Default)]
@@ -1287,6 +1857,159 @@ mod tests {
             state.call_count += 1;
             state.last_request = Some(req.clone());
             Ok(self.response.clone())
+        }
+
+        async fn chat_completion_stream(
+            &self,
+            req: &ChatCompletionRequest,
+        ) -> Result<UpstreamStreamResponse, AppError> {
+            {
+                let mut state = self.state.lock().unwrap();
+                state.call_count += 1;
+                state.last_request = Some(req.clone());
+            }
+
+            let content = self
+                .response
+                .choices
+                .first()
+                .and_then(|choice| choice.message.content.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let mut payload = format!(
+                "data: {}\n\n",
+                serde_json::json!({
+                    "id": self.response.id.clone(),
+                    "object": "chat.completion.chunk",
+                    "created": self.response.created,
+                    "model": self.response.model.clone(),
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": content},
+                        "finish_reason": "stop"
+                    }]
+                })
+            );
+            if let Some(usage) = &self.response.usage {
+                payload.push_str(&format!(
+                    "data: {}\n\n",
+                    serde_json::json!({
+                        "id": self.response.id.clone(),
+                        "object": "chat.completion.chunk",
+                        "created": self.response.created,
+                        "model": self.response.model.clone(),
+                        "choices": [],
+                        "usage": usage
+                    })
+                ));
+            }
+            payload.push_str("data: [DONE]\n\n");
+            let body =
+                stream::once(async move { Ok::<Bytes, UpstreamStreamError>(Bytes::from(payload)) });
+
+            Ok(UpstreamStreamResponse {
+                status: reqwest::StatusCode::OK,
+                body: Box::pin(body),
+            })
+        }
+    }
+
+    struct FailingStreamUpstream;
+
+    #[async_trait]
+    impl LlmUpstream for FailingStreamUpstream {
+        async fn chat_completion(
+            &self,
+            _req: &ChatCompletionRequest,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(response_with_content("unused"))
+        }
+
+        async fn chat_completion_stream(
+            &self,
+            _req: &ChatCompletionRequest,
+        ) -> Result<UpstreamStreamResponse, AppError> {
+            let partial = Bytes::from(
+                r#"data: {"id":"partial","created":123,"model":"gpt-4o-mini-2024-07-18","choices":[{"index":0,"delta":{"role":"assistant","content":"must never reach client"},"finish_reason":null}]}
+
+"#,
+            );
+            let error: UpstreamStreamError =
+                Box::new(std::io::Error::other("intentional mid-stream failure"));
+            let body = stream::iter(vec![Ok(partial), Err(error)]);
+
+            Ok(UpstreamStreamResponse {
+                status: reqwest::StatusCode::OK,
+                body: Box::pin(body),
+            })
+        }
+    }
+
+    struct StallingStreamUpstream;
+
+    #[async_trait]
+    impl LlmUpstream for StallingStreamUpstream {
+        fn stream_idle_timeout(&self) -> Duration {
+            Duration::from_millis(20)
+        }
+
+        fn max_stream_generation_duration(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+
+        async fn chat_completion(
+            &self,
+            _req: &ChatCompletionRequest,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(response_with_content("unused"))
+        }
+
+        async fn chat_completion_stream(
+            &self,
+            _req: &ChatCompletionRequest,
+        ) -> Result<UpstreamStreamResponse, AppError> {
+            let body = stream::pending::<Result<Bytes, UpstreamStreamError>>();
+            Ok(UpstreamStreamResponse {
+                status: reqwest::StatusCode::OK,
+                body: Box::pin(body),
+            })
+        }
+    }
+
+    struct DripFeedStreamUpstream;
+
+    #[async_trait]
+    impl LlmUpstream for DripFeedStreamUpstream {
+        fn stream_idle_timeout(&self) -> Duration {
+            Duration::from_millis(50)
+        }
+
+        fn max_stream_generation_duration(&self) -> Duration {
+            Duration::from_millis(35)
+        }
+
+        async fn chat_completion(
+            &self,
+            _req: &ChatCompletionRequest,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(response_with_content("unused"))
+        }
+
+        async fn chat_completion_stream(
+            &self,
+            _req: &ChatCompletionRequest,
+        ) -> Result<UpstreamStreamResponse, AppError> {
+            let body = stream::unfold((), |_| async {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                Some((
+                    Ok::<Bytes, UpstreamStreamError>(Bytes::from_static(b": keepalive\n\n")),
+                    (),
+                ))
+            });
+            Ok(UpstreamStreamResponse {
+                status: reqwest::StatusCode::OK,
+                body: Box::pin(body),
+            })
         }
     }
 
@@ -2334,9 +3057,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_requests_are_rejected_in_core_only_mode() {
+    async fn controlled_streaming_uses_caches_and_replays_canonical_response() {
         let mut req = request();
         req.stream = Some(true);
+        req.extra
+            .insert("stream_options".to_string(), json!({"include_usage": true}));
 
         let exact_cache = FakeExactCache::new();
         let exact_state = exact_cache.state();
@@ -2354,33 +3079,246 @@ mod tests {
             true,
         );
 
-        let err = service.handle(req).await.unwrap_err();
+        for _ in 0..2 {
+            let streamed = service
+                .handle_stream_with_evidence(
+                    req.clone(),
+                    CacheControl::default(),
+                    uuid::Uuid::new_v4(),
+                    crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES,
+                )
+                .await
+                .unwrap();
+            assert_eq!(streamed.content_type, "text/event-stream");
 
-        assert_eq!(
-            err.status_code(),
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY
-        );
-        assert_eq!(err.metrics_class(), "validation");
-        assert_eq!(
-            err.message(),
-            "stream=true is not supported by AI Firewall; set stream=false"
-        );
+            let mut body = streamed.body;
+            let mut received = Vec::new();
+            while let Some(item) = body.next().await {
+                received.extend_from_slice(&item.unwrap());
+            }
+            let received = String::from_utf8(received).unwrap();
+            assert!(received.contains("data: "));
+            assert!(received.contains("Use the reset link on the login page."));
+            assert!(received.contains("data: [DONE]"));
+        }
 
+        {
+            let state = upstream_state.lock().unwrap();
+            assert_eq!(
+                state.call_count, 1,
+                "second controlled stream should be served from exact cache"
+            );
+            assert_eq!(
+                state
+                    .last_request
+                    .as_ref()
+                    .and_then(|request| request.extra.get("stream_options"))
+                    .and_then(Value::as_object)
+                    .and_then(|options| options.get("include_usage"))
+                    .and_then(Value::as_bool),
+                Some(true),
+                "controlled streaming should request usage internally for accounting"
+            );
+        }
+
+        let mut buffered_req = req.clone();
+        buffered_req.stream = Some(false);
+        buffered_req.extra.remove("stream_options");
+        let buffered = service
+            .handle_with_evidence(buffered_req, CacheControl::default(), uuid::Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(
+            buffered.choices[0].message.content,
+            json!("Use the reset link on the login page.")
+        );
         assert_eq!(
             upstream_state.lock().unwrap().call_count,
-            0,
-            "streaming request should be rejected before upstream"
+            1,
+            "streaming and non-streaming delivery should share the exact cache"
         );
+
+        assert_eq!(exact_state.lock().unwrap().get_calls, 3);
+        assert_eq!(exact_state.lock().unwrap().set_calls, 1);
+        assert_eq!(semantic_state.lock().unwrap().lookup_calls, 1);
+        assert_eq!(semantic_state.lock().unwrap().store_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn controlled_streaming_restores_privacy_mapping_before_commit() {
+        let mut req = request();
+        req.stream = Some(true);
+        req.messages[0].content = json!("Email alice@example.com");
+
+        let upstream = FakeUpstream::new(response_with_content("Response for [EMAIL_1]"));
+        let upstream_state = upstream.state();
+        let service = ChatService::new_with_guards(
+            Arc::new(FakeExactCache::new()),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(upstream),
+            Arc::new(UserMappingGuard),
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let streamed = service
+            .handle_stream_with_evidence(
+                req,
+                CacheControl::default(),
+                uuid::Uuid::new_v4(),
+                crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES,
+            )
+            .await
+            .unwrap();
+
+        let mut body = streamed.body;
+        let mut received = Vec::new();
+        while let Some(item) = body.next().await {
+            received.extend_from_slice(&item.unwrap());
+        }
+        let received = String::from_utf8(received).unwrap();
+
+        assert!(received.contains("alice@example.com"));
+        assert!(!received.contains("[EMAIL_1]"));
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+    }
+
+    #[tokio::test]
+    async fn controlled_streaming_upstream_failure_exposes_no_partial_response() {
+        let mut req = request();
+        req.stream = Some(true);
+
+        let sink = RecordingEvidenceSink::default();
+        let events = Arc::clone(&sink.events);
+        let service = ChatService::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache: Arc::new(FakeExactCache::new()),
+                semantic_cache: Arc::new(FakeSemanticCache::new()),
+                upstream: Arc::new(FailingStreamUpstream),
+                guard_orchestrator: Arc::new(crate::guards::NoopGuardOrchestrator),
+                evidence_sink: Arc::new(sink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".into(),
+                    provider_name: "test".into(),
+                },
+                dependencies: DependencyState::new(true, true, true),
+            },
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: false,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: false,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let trace_id = uuid::Uuid::new_v4();
+        let error = match service
+            .handle_stream_with_evidence(
+                req,
+                CacheControl::default(),
+                trace_id,
+                crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES,
+            )
+            .await
+        {
+            Ok(_) => panic!("partial upstream stream must not be committed to the client"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.metrics_class(), "upstream_error");
+
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event.trace_id == trace_id && event.event_type == "upstream.stream.failed"
+        }));
         assert_eq!(
-            exact_state.lock().unwrap().get_calls,
-            0,
-            "streaming request should be rejected before exact cache lookup"
+            events
+                .iter()
+                .filter(|event| {
+                    event.trace_id == trace_id && event.event_type == "request.failed"
+                })
+                .count(),
+            1
         );
-        assert_eq!(
-            semantic_state.lock().unwrap().lookup_calls,
-            0,
-            "streaming request should be rejected before semantic cache lookup"
+        assert!(!events.iter().any(|event| {
+            event.trace_id == trace_id && event.event_type == "request.completed"
+        }));
+    }
+
+    #[tokio::test]
+    async fn controlled_streaming_idle_timeout_releases_upstream_permit() {
+        let mut req = request();
+        req.stream = Some(true);
+
+        let service = build_service(
+            Arc::new(FakeExactCache::new()),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(StallingStreamUpstream),
+            false,
         );
+
+        let error = match service
+            .handle_stream_with_evidence(
+                req,
+                CacheControl::default(),
+                uuid::Uuid::new_v4(),
+                crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES,
+            )
+            .await
+        {
+            Ok(_) => panic!("idle provider stream must time out before commit"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.metrics_class(), "upstream_timeout");
+        assert!(error.message().contains("no body chunk"));
+        assert_eq!(service.upstream_limit.available_permits(), 500);
+    }
+
+    #[tokio::test]
+    async fn controlled_streaming_generation_timeout_stops_drip_feed() {
+        let mut req = request();
+        req.stream = Some(true);
+
+        let service = build_service(
+            Arc::new(FakeExactCache::new()),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(DripFeedStreamUpstream),
+            false,
+        );
+
+        let error = match service
+            .handle_stream_with_evidence(
+                req,
+                CacheControl::default(),
+                uuid::Uuid::new_v4(),
+                crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES,
+            )
+            .await
+        {
+            Ok(_) => panic!("drip-feed provider stream must hit the absolute generation ceiling"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.metrics_class(), "upstream_timeout");
+        assert!(error.message().contains("maximum generation duration"));
+        assert_eq!(service.upstream_limit.available_permits(), 500);
     }
 
     #[tokio::test]

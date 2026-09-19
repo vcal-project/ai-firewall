@@ -32,6 +32,8 @@ fn minimal_valid_config() -> Config {
         upstream_provider: ProviderKind::OpenAiCompatible,
         upstream_base_url: "https://api.openai.com".to_string(),
         upstream_api_key: "test-upstream-key".to_string(),
+        streaming_enabled: true,
+        max_stream_upstream_bytes: 8 * 1024 * 1024,
 
         embedding_provider: ProviderKind::OpenAiCompatible,
         embedding_base_url: "https://api.openai.com".to_string(),
@@ -116,6 +118,38 @@ fn minimal_valid_config() -> Config {
         model_prices: prices,
         allow_unknown_models_pass_through: false,
     }
+}
+
+#[test]
+fn controlled_streaming_defaults_enabled_and_parses_upstream_limit() {
+    let path = temp_config_path("aif_config_controlled_streaming");
+
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+embedding_api_key test-embedding-key;
+qdrant_vector_size 1536;
+semantic_cache_enabled false;
+
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    assert!(cfg.streaming_enabled);
+    assert_eq!(cfg.max_stream_upstream_bytes, 8 * 1024 * 1024);
+
+    let text = format!(
+        "{}\nstreaming_enabled false;\nmax_stream_upstream_bytes 2M;\n",
+        text.trim()
+    );
+    fs::write(&path, text).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert!(!cfg.streaming_enabled);
+    assert_eq!(cfg.max_stream_upstream_bytes, 2 * 1024 * 1024);
 }
 
 #[test]

@@ -3,11 +3,13 @@ use crate::{
     error::AppError,
     metrics,
     services::chat_service::CacheControl,
-    types::openai::{ChatCompletionRequest, ChatCompletionResponse},
+    types::openai::ChatCompletionRequest,
 };
 use axum::{
+    body::Body,
     extract::{rejection::JsonRejection, Extension, State},
-    http::HeaderMap,
+    http::{header, HeaderMap, HeaderName, HeaderValue},
+    response::{IntoResponse, Response},
     Json,
 };
 use std::sync::Arc;
@@ -17,7 +19,7 @@ pub async fn chat_completions(
     headers: HeaderMap,
     Extension(trace_id): Extension<RequestTraceId>,
     payload: Result<Json<ChatCompletionRequest>, JsonRejection>,
-) -> Result<Json<ChatCompletionResponse>, AppError> {
+) -> Result<Response, AppError> {
     metrics::REQUESTS_TOTAL
         .with_label_values(&["/v1/chat/completions"])
         .inc();
@@ -26,39 +28,80 @@ pub async fn chat_completions(
         Ok(json) => json,
         Err(rejection) => {
             let err = map_json_rejection(rejection);
-            metrics::ERRORS_TOTAL
-                .with_label_values(&[err.metrics_class()])
-                .inc();
+            record_request_error(&err);
             return Err(err);
         }
     };
 
     if let Err(err) = validate_chat_request(&state, &req).await {
-        metrics::ERRORS_TOTAL
-            .with_label_values(&[err.metrics_class()])
-            .inc();
+        record_request_error(&err);
         return Err(err);
     }
 
     let cache_control = cache_control_from_headers(&state, &headers).await;
     let service = state.chat_service().await;
 
-    match service
-        .handle_with_evidence(req, cache_control, trace_id.0)
-        .await
-    {
-        Ok(response) => Ok(Json(response)),
-        Err(err) => {
-            metrics::ERRORS_TOTAL
-                .with_label_values(&[err.metrics_class()])
-                .inc();
-            if let Some((dependency, class)) = err.dependency_labels() {
-                metrics::DEPENDENCY_FAILURES_TOTAL
-                    .with_label_values(&[dependency, class])
-                    .inc();
-            }
-            Err(err)
+    if req.stream.unwrap_or(false) {
+        let (streaming_enabled, max_stream_upstream_bytes) = {
+            let cfg = state.config.read().await;
+            (cfg.streaming_enabled, cfg.max_stream_upstream_bytes)
+        };
+        if !streaming_enabled {
+            let err = AppError::unprocessable(
+                "stream=true is disabled by the streaming_enabled configuration directive",
+            );
+            record_request_error(&err);
+            return Err(err);
         }
+
+        match service
+            .handle_stream_with_evidence(req, cache_control, trace_id.0, max_stream_upstream_bytes)
+            .await
+        {
+            Ok(streamed) => {
+                let mut response = Body::from_stream(streamed.body).into_response();
+                let content_type = HeaderValue::from_str(&streamed.content_type)
+                    .unwrap_or_else(|_| HeaderValue::from_static("text/event-stream"));
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_TYPE, content_type);
+                response.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-cache, no-transform"),
+                );
+                response.headers_mut().insert(
+                    HeaderName::from_static("x-accel-buffering"),
+                    HeaderValue::from_static("no"),
+                );
+                Ok(response)
+            }
+            Err(err) => {
+                record_request_error(&err);
+                Err(err)
+            }
+        }
+    } else {
+        match service
+            .handle_with_evidence(req, cache_control, trace_id.0)
+            .await
+        {
+            Ok(response) => Ok(Json(response).into_response()),
+            Err(err) => {
+                record_request_error(&err);
+                Err(err)
+            }
+        }
+    }
+}
+
+fn record_request_error(err: &AppError) {
+    metrics::ERRORS_TOTAL
+        .with_label_values(&[err.metrics_class()])
+        .inc();
+    if let Some((dependency, class)) = err.dependency_labels() {
+        metrics::DEPENDENCY_FAILURES_TOTAL
+            .with_label_values(&[dependency, class])
+            .inc();
     }
 }
 

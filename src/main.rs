@@ -12,6 +12,7 @@ mod embeddings;
 mod evidence;
 mod semantic;
 mod services;
+mod streaming;
 mod types;
 mod upstream;
 

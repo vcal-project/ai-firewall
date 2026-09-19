@@ -36,6 +36,9 @@ pub struct ChatCompletionRequest {
     pub extra: serde_json::Map<String, Value>,
 }
 
+/// Canonical normalized chat completion used by both buffered and controlled
+/// streaming execution paths. Upstream SSE is assembled into this type before
+/// response guards, Privacy restoration, accounting, caching, and client delivery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionResponse {
     pub id: String,

@@ -365,7 +365,26 @@ Expected behavior when Security Guard is enabled in enforce mode:
 HTTP/1.1 403 Forbidden
 ```
 
-AI Cost Firewall rejects all `stream=true` requests with HTTP 422 before cache, guard, or upstream processing. Use non-streaming requests.
+AI Cost Firewall also supports controlled `stream=true` requests. Provider SSE is assembled and approved before any generated response content is committed to the client, so response Security Guard scanning and Privacy restoration remain available for streaming requests.
+
+Example:
+
+```bash
+curl -N -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini-2024-07-18",
+    "messages": [{"role": "user", "content": "Reply briefly."}],
+    "stream": true,
+    "stream_options": {"include_usage": true}
+  }'
+```
+
+A successful response uses `text/event-stream` and ends with:
+
+```text
+data: [DONE]
+```
 
 ---
 ---
@@ -553,6 +572,9 @@ upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-key;
 
+streaming_enabled true;
+max_stream_upstream_bytes 8M;
+
 embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
 embedding_api_key sk-your-key;
@@ -617,6 +639,10 @@ readiness_requires_upstream false;
 model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 embedding_price 0.020;
 ```
+
+`streaming_enabled true` permits clients to request controlled SSE delivery; it does not force ordinary requests to stream. `max_stream_upstream_bytes` limits cumulative provider SSE bytes accepted for one controlled request. `upstream_timeout_seconds` also bounds the idle gap between provider SSE chunks after headers arrive, and controlled generation has a separate 15-minute absolute ceiling.
+
+Provider SSE support is required only for individual requests that use `stream=true`; providers without streaming support remain usable for normal JSON chat-completion requests.
 
 ---
 
@@ -877,6 +903,24 @@ aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses_total
 aif_upstream_calls_total
 aif_cache_bypass_requests_total
+```
+
+Controlled streaming metrics:
+
+```text
+aif_stream_requests_total
+aif_stream_completed_total
+aif_stream_errors_total
+aif_stream_aborted_total
+aif_stream_upstream_errors_total
+aif_stream_upstream_chunks_total
+aif_stream_upstream_bytes_total
+aif_stream_upstream_time_to_first_byte_seconds
+aif_stream_generation_duration_seconds
+aif_stream_client_time_to_first_byte_seconds
+aif_stream_upstream_response_bytes
+aif_stream_client_buffer_bytes
+aif_stream_duration_seconds
 ```
 
 Guard metrics, when guard modules are enabled:
