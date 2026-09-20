@@ -4,8 +4,8 @@
 ![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![License](https://img.shields.io/github/license/vcal-project/ai-firewall)
 ![GitHub Release](https://img.shields.io/github/v/release/vcal-project/ai-firewall)
-![Docker](https://img.shields.io/badge/docker-ready-blue)
-![Status](https://img.shields.io/badge/status-pilot--ready-blue)
+![Docker Pulls](https://img.shields.io/docker/pulls/vcalproject/ai-firewall)
+![Status](https://img.shields.io/badge/status-production--ready-brightgreen)
 
 ## OpenAI-compatible control layer for AI cost, with optional privacy, security, usage-policy, audit, and compliance integrations
 
