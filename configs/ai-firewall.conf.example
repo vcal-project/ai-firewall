@@ -11,6 +11,14 @@ redis_url redis://redis:6379;
 # fail-open request processing indefinitely.
 redis_timeout_seconds 2;
 
+# AIF execution behavior.
+# enforce = normal production cache behavior; cache hits may satisfy requests.
+# observe = Evaluation Mode; uses isolated shadow cache state, always calls the
+#           upstream provider, and never lets Redis/Qdrant evaluation failures
+#           interrupt application traffic.
+# Default: enforce
+aif_enforcement_mode enforce;
+
 # Production reminder:
 # Protect Redis with authentication and private networking.
 # Example with password:
@@ -51,6 +59,8 @@ qdrant_url http://qdrant:6334;
 # qdrant_api_key your-qdrant-api-key;
 
 qdrant_collection aif_semantic_cache;
+# In observe mode the effective collection is automatically suffixed with _eval
+# (for example: aif_semantic_cache_eval).
 
 # Must match the dimension of the configured embedding_model.
 qdrant_vector_size 1536;
@@ -63,6 +73,7 @@ cache_ttl_seconds 2592000;
 # semantic_cache_retention_seconds 604800;
 
 # Exact cache controls.
+# In observe mode exact-cache keys use the isolated prefix chatcmpl:eval:v1:.
 # exact_cache_enabled=false disables Redis lookups and writes.
 # exact_cache_fail_open=true skips exact cache if Redis is unavailable.
 exact_cache_enabled true;
@@ -252,8 +263,8 @@ guard_fail_open false;
 # Disabled by default. When enabled, AI Firewall sends structured
 # vcal.evidence.event schema v1.1 batches to VCAL Audit. Delivery is asynchronous:
 # LLM requests are not failed when Audit is temporarily unavailable.
-# v0.5.0 delivery remains in-memory/best-effort: a process crash, full queue,
-# or retry exhaustion can lose evidence. Durable local spooling is a later mode.
+# Audit delivery is currently in-memory/best-effort. A process crash, full queue,
+# or retry exhaustion can result in evidence loss. Durable local spooling is a not currently enabled.
 #
 # audit_api_key must match VCAL_AUDIT_API_KEY in the Audit service.
 audit_enabled false;

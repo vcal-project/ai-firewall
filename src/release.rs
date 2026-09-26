@@ -2,7 +2,7 @@ pub const PRODUCT_NAME: &str = "AI Cost Firewall";
 
 pub const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const RELEASE_TITLE: &str = "Controlled Streaming";
+pub const RELEASE_TITLE: &str = "Evaluation Mode";
 
 pub const SUPPORTED_API_STYLE: &str = "openai_compatible";
 
@@ -10,7 +10,7 @@ pub const COMPATIBILITY_MODEL: &str =
     "OpenAI-compatible chat and embedding APIs through a simple flat configuration model";
 
 pub const SCOPE_NOTE: &str =
-    "v0.7.0 adds controlled OpenAI-compatible streaming: upstream SSE is assembled into a canonical completion, processed through response controls, privacy restoration, accounting, cache storage, and evidence before any model-generated content is committed to the client.";
+    "v0.8.0 adds AIF Evaluation Mode: observe-mode requests use isolated exact and semantic shadow cache state, record hypothetical cache actions and savings, and always return the live upstream response without allowing evaluation cache failures to interrupt application traffic.";
 
 pub const API_COMPATIBILITY_VERSION: &str = "v1";
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;

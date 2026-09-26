@@ -28,6 +28,7 @@ fn minimal_valid_config() -> Config {
         listen_addr: "127.0.0.1:8080".to_string(),
         redis_url: "redis://127.0.0.1:6379".to_string(),
         redis_timeout_seconds: 2,
+        aif_enforcement_mode: AifEnforcementMode::Enforce,
 
         upstream_provider: ProviderKind::OpenAiCompatible,
         upstream_base_url: "https://api.openai.com".to_string(),
@@ -118,6 +119,78 @@ fn minimal_valid_config() -> Config {
         model_prices: prices,
         allow_unknown_models_pass_through: false,
     }
+}
+
+#[test]
+fn enforcement_mode_defaults_to_enforce_and_observe_uses_isolated_cache_names() {
+    let path = temp_config_path("aif_config_enforcement_mode");
+    let base = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+embedding_api_key test-embedding-key;
+qdrant_collection pilot_semantic;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, base).unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    assert_eq!(cfg.aif_enforcement_mode, AifEnforcementMode::Enforce);
+    assert_eq!(cfg.effective_exact_cache_prefix(), "chatcmpl:v1");
+    assert_eq!(cfg.effective_qdrant_collection(), "pilot_semantic");
+
+    fs::write(
+        &path,
+        format!("{}\naif_enforcement_mode observe;\n", base.trim()),
+    )
+    .unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(&path).ok();
+
+    assert_eq!(cfg.aif_enforcement_mode, AifEnforcementMode::Observe);
+    assert_eq!(cfg.effective_exact_cache_prefix(), "chatcmpl:eval:v1");
+    assert_eq!(cfg.effective_qdrant_collection(), "pilot_semantic_eval");
+}
+
+#[test]
+fn invalid_enforcement_mode_in_file_is_rejected() {
+    let path = temp_config_path("aif_config_invalid_enforcement_mode");
+    let text = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+aif_enforcement_mode maybe;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+
+    fs::write(&path, text).unwrap();
+    let err = Config::from_file(&path).unwrap_err().to_string();
+    fs::remove_file(&path).ok();
+
+    assert!(err.contains("aif_enforcement_mode"));
+    assert!(err.contains("Supported modes: enforce, observe"));
+}
+
+#[test]
+#[serial]
+fn enforcement_mode_parses_from_env() {
+    unsafe {
+        std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
+        std::env::set_var("AIF_UPSTREAM_API_KEY", "test-upstream-key");
+        std::env::set_var("AIF_ENFORCEMENT_MODE", "observe");
+    }
+
+    let cfg = Config::from_env().unwrap();
+
+    unsafe {
+        std::env::remove_var("AIF_REDIS_URL");
+        std::env::remove_var("AIF_UPSTREAM_API_KEY");
+        std::env::remove_var("AIF_ENFORCEMENT_MODE");
+    }
+
+    assert_eq!(cfg.aif_enforcement_mode, AifEnforcementMode::Observe);
 }
 
 #[test]
@@ -888,6 +961,18 @@ fn enabled_guard_fail_open_is_reported_as_hardening_warning() {
 
     let warnings = cfg.hardening_warnings();
     assert!(warnings.iter().any(|w| w.contains("guard_fail_open=true")));
+}
+
+#[test]
+fn observe_mode_with_enabled_guards_warns_that_guard_behavior_is_unchanged() {
+    let mut cfg = minimal_valid_config();
+    cfg.aif_enforcement_mode = AifEnforcementMode::Observe;
+    cfg.security_guard_enabled = true;
+
+    let warnings = cfg.hardening_warnings();
+    assert!(warnings
+        .iter()
+        .any(|w| w.contains("applies only to AIF cache evaluation")));
 }
 
 #[test]

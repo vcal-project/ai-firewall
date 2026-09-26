@@ -968,7 +968,7 @@ pub fn privacy_mode_as_str(mode: PrivacyGuardMode) -> &'static str {
 mod tests {
     use super::*;
     use crate::config::{
-        Config, EmbeddingPrice, ModelPrice, PrivacyGuardMode, ProviderKind,
+        AifEnforcementMode, Config, EmbeddingPrice, ModelPrice, PrivacyGuardMode, ProviderKind,
         SecurityGuardBlockResponse, UsageGuardBlockResponse, UsageGuardMode,
         DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE, DEFAULT_USAGE_GUARD_BLOCK_MESSAGE,
     };
@@ -989,6 +989,7 @@ mod tests {
             listen_addr: "127.0.0.1:8080".to_string(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
             redis_timeout_seconds: 2,
+            aif_enforcement_mode: AifEnforcementMode::Enforce,
 
             upstream_provider: ProviderKind::OpenAiCompatible,
             upstream_base_url: "http://127.0.0.1:9000".to_string(),

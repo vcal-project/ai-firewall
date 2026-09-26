@@ -3,7 +3,7 @@
 use once_cell::sync::Lazy;
 use prometheus::{
     core::Collector, Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec,
-    IntGauge, Registry, TextEncoder,
+    IntGauge, IntGaugeVec, Registry, TextEncoder,
 };
 use std::sync::Once;
 
@@ -202,6 +202,125 @@ pub static INFLIGHT_REQUESTS: Lazy<IntGauge> = Lazy::new(|| {
     IntGauge::new("aif_inflight_requests", "In-flight requests")
         .expect("metric aif_inflight_requests must be valid")
 });
+
+// -----------------------------
+// Evaluation / observe-mode metrics
+// -----------------------------
+
+pub static ENFORCEMENT_MODE_INFO: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        prometheus::Opts::new(
+            "aif_enforcement_mode_info",
+            "Current AI Firewall enforcement mode; active mode has value 1",
+        ),
+        &["mode"],
+    )
+    .expect("metric aif_enforcement_mode_info must be valid")
+});
+
+pub static EVALUATION_REQUESTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "aif_evaluation_requests_total",
+        "Requests processed through AIF cache evaluation while enforcement_mode=observe",
+    )
+    .expect("metric aif_evaluation_requests_total must be valid")
+});
+
+pub static EVALUATION_CACHE_OUTCOMES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_cache_outcomes_total",
+            "Shadow cache lookup outcomes while enforcement_mode=observe",
+        ),
+        &["cache_type", "result"],
+    )
+    .expect("metric aif_evaluation_cache_outcomes_total must be valid")
+});
+
+pub static EVALUATION_UPSTREAM_CALLS_AVOIDED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_upstream_calls_avoided_total",
+            "Upstream calls that would have been avoided by a shadow cache hit",
+        ),
+        &["cache_type"],
+    )
+    .expect("metric aif_evaluation_upstream_calls_avoided_total must be valid")
+});
+
+pub static EVALUATION_TOKENS_AVOIDED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_tokens_avoided_total",
+            "Tokens that would have been avoided by shadow cache hits",
+        ),
+        &["model", "cache_type"],
+    )
+    .expect("metric aif_evaluation_tokens_avoided_total must be valid")
+});
+
+pub static EVALUATION_GROSS_SAVED_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_gross_saved_micro_usd_total",
+            "Estimated gross upstream chat cost that would have been avoided in observe mode",
+        ),
+        &["model", "cache_type"],
+    )
+    .expect("metric aif_evaluation_gross_saved_micro_usd_total must be valid")
+});
+
+pub static EVALUATION_NET_SAVED_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_net_saved_micro_usd_total",
+            "Estimated net cost that would have been avoided in observe mode after cache overhead",
+        ),
+        &["model", "cache_type"],
+    )
+    .expect("metric aif_evaluation_net_saved_micro_usd_total must be valid")
+});
+
+pub static EVALUATION_EMBEDDING_OVERHEAD_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_embedding_overhead_micro_usd_total",
+            "Estimated embedding overhead associated with observe-mode semantic cache hits",
+        ),
+        &["model", "operation"],
+    )
+    .expect("metric aif_evaluation_embedding_overhead_micro_usd_total must be valid")
+});
+
+pub static EVALUATION_SHADOW_STORE_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_shadow_store_total",
+            "Shadow cache store attempts by cache type and result",
+        ),
+        &["cache_type", "result"],
+    )
+    .expect("metric aif_evaluation_shadow_store_total must be valid")
+});
+
+pub static EVALUATION_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_evaluation_errors_total",
+            "Non-blocking evaluation errors by component and operation",
+        ),
+        &["component", "operation"],
+    )
+    .expect("metric aif_evaluation_errors_total must be valid")
+});
+
+pub fn set_enforcement_mode(mode: &str) {
+    for candidate in ["enforce", "observe"] {
+        ENFORCEMENT_MODE_INFO
+            .with_label_values(&[candidate])
+            .set(if candidate == mode { 1 } else { 0 });
+    }
+}
 
 // -----------------------------
 // Operational hardening metrics
@@ -772,6 +891,16 @@ pub fn evidence_delivery_snapshot() -> (i64, u64, u64, u64) {
 }
 
 pub fn init() {
+    Lazy::force(&ENFORCEMENT_MODE_INFO);
+    Lazy::force(&EVALUATION_REQUESTS_TOTAL);
+    Lazy::force(&EVALUATION_CACHE_OUTCOMES_TOTAL);
+    Lazy::force(&EVALUATION_UPSTREAM_CALLS_AVOIDED_TOTAL);
+    Lazy::force(&EVALUATION_TOKENS_AVOIDED_TOTAL);
+    Lazy::force(&EVALUATION_GROSS_SAVED_MICRO_USD_TOTAL);
+    Lazy::force(&EVALUATION_NET_SAVED_MICRO_USD_TOTAL);
+    Lazy::force(&EVALUATION_EMBEDDING_OVERHEAD_MICRO_USD_TOTAL);
+    Lazy::force(&EVALUATION_SHADOW_STORE_TOTAL);
+    Lazy::force(&EVALUATION_ERRORS_TOTAL);
     Lazy::force(&SEMANTIC_STORE_TOTAL);
     Lazy::force(&SEMANTIC_STORE_ERRORS_TOTAL);
     Lazy::force(&SEMANTIC_LOOKUP_ERRORS_TOTAL);
@@ -831,6 +960,16 @@ pub fn init() {
     INIT.call_once(|| {
         let collectors: Vec<Box<dyn Collector>> = vec![
             Box::new(REQUESTS_TOTAL.clone()),
+            Box::new(ENFORCEMENT_MODE_INFO.clone()),
+            Box::new(EVALUATION_REQUESTS_TOTAL.clone()),
+            Box::new(EVALUATION_CACHE_OUTCOMES_TOTAL.clone()),
+            Box::new(EVALUATION_UPSTREAM_CALLS_AVOIDED_TOTAL.clone()),
+            Box::new(EVALUATION_TOKENS_AVOIDED_TOTAL.clone()),
+            Box::new(EVALUATION_GROSS_SAVED_MICRO_USD_TOTAL.clone()),
+            Box::new(EVALUATION_NET_SAVED_MICRO_USD_TOTAL.clone()),
+            Box::new(EVALUATION_EMBEDDING_OVERHEAD_MICRO_USD_TOTAL.clone()),
+            Box::new(EVALUATION_SHADOW_STORE_TOTAL.clone()),
+            Box::new(EVALUATION_ERRORS_TOTAL.clone()),
             Box::new(CACHE_EXACT_HITS.clone()),
             Box::new(CACHE_SEMANTIC_HITS.clone()),
             Box::new(SEMANTIC_STORE_TOTAL.clone()),
@@ -921,4 +1060,56 @@ pub fn render() -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     String::from_utf8(buffer).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evaluation_metrics_are_registered() {
+        init();
+        set_enforcement_mode("observe");
+        EVALUATION_REQUESTS_TOTAL.inc();
+        EVALUATION_CACHE_OUTCOMES_TOTAL
+            .with_label_values(&[CACHE_TYPE_EXACT, "hit"])
+            .inc();
+        EVALUATION_UPSTREAM_CALLS_AVOIDED_TOTAL
+            .with_label_values(&[CACHE_TYPE_EXACT])
+            .inc();
+        EVALUATION_TOKENS_AVOIDED_TOTAL
+            .with_label_values(&["test-model", CACHE_TYPE_EXACT])
+            .inc_by(10);
+        EVALUATION_GROSS_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&["test-model", CACHE_TYPE_EXACT])
+            .inc_by(10);
+        EVALUATION_NET_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&["test-model", CACHE_TYPE_EXACT])
+            .inc_by(10);
+        EVALUATION_EMBEDDING_OVERHEAD_MICRO_USD_TOTAL
+            .with_label_values(&["test-model", EMBEDDING_OPERATION_LOOKUP])
+            .inc_by(1);
+        EVALUATION_SHADOW_STORE_TOTAL
+            .with_label_values(&[CACHE_TYPE_EXACT, "stored"])
+            .inc();
+        EVALUATION_ERRORS_TOTAL
+            .with_label_values(&["redis", "lookup"])
+            .inc();
+
+        let rendered = render().expect("metrics should render");
+        for metric in [
+            "aif_enforcement_mode_info",
+            "aif_evaluation_requests_total",
+            "aif_evaluation_cache_outcomes_total",
+            "aif_evaluation_upstream_calls_avoided_total",
+            "aif_evaluation_tokens_avoided_total",
+            "aif_evaluation_gross_saved_micro_usd_total",
+            "aif_evaluation_net_saved_micro_usd_total",
+            "aif_evaluation_embedding_overhead_micro_usd_total",
+            "aif_evaluation_shadow_store_total",
+            "aif_evaluation_errors_total",
+        ] {
+            assert!(rendered.contains(metric), "missing metric {metric}");
+        }
+    }
 }

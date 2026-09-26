@@ -72,6 +72,8 @@ AI Cost Firewall includes:
 - semantic Qdrant caching
 - OpenAI-compatible request routing
 - OpenAI-compatible streaming chat completions (SSE)
+- AIF enforcement modes: `enforce` and non-disruptive `observe`
+- isolated shadow exact/semantic cache state for Evaluation Mode
 - configurable cache fail-open/fail-closed behavior
 - structured lifecycle evidence
 - Prometheus metrics and Grafana dashboards
@@ -91,7 +93,7 @@ See the latest GitHub release for release-specific changes.
 
 # Included Dashboards
 
-AI Cost Firewall includes Grafana dashboards for cost visibility, cache effectiveness, runtime diagnostics, and high-level guard orchestration health.
+AI Cost Firewall includes Grafana dashboards for production cost visibility, cache effectiveness, runtime diagnostics, and high-level guard orchestration health. Evaluation-specific Prometheus metrics introduced in v0.8.0 are exposed for pilot analysis without being merged into normal production savings counters.
 
 The dashboards are included in the Docker deployment files and are automatically provisioned by Grafana when using the provided Docker Compose setup.
 
@@ -208,15 +210,16 @@ The firewall:
 4. optionally calls VCAL Usage Guard to evaluate organizational usage policy
 5. checks exact cache
 6. checks semantic cache
-7. on a cache miss, calls the upstream provider using normal JSON for `stream=false`/omitted or consumes provider SSE internally for `stream=true`
-8. normalizes cache hits and upstream results into the same canonical chat-completion response
-9. optionally scans the complete assistant response with VCAL Security Guard
-10. stores eligible cache-miss responses using the existing pre-Privacy-restore cache semantics
-11. optionally restores Privacy Guard placeholders
-12. records usage, cost, metrics, and structured evidence
-13. returns JSON for non-streaming requests or replays an approved OpenAI-compatible SSE response for controlled streaming requests
-14. optionally delivers evidence batches to VCAL Audit
-15. exposes operational diagnostics
+7. in `enforce` mode, serves eligible cache hits normally; in `observe` mode, records what the cache would have done but continues to the live upstream provider
+8. on a cache miss, calls the upstream provider using normal JSON for `stream=false`/omitted or consumes provider SSE internally for `stream=true`
+9. normalizes cache hits and upstream results into the same canonical chat-completion response
+10. optionally scans the complete assistant response with VCAL Security Guard
+11. stores eligible cache-miss responses using production cache state in `enforce` or isolated shadow cache state in `observe`
+12. optionally restores Privacy Guard placeholders
+13. records usage, cost, metrics, and structured evidence
+14. returns JSON for non-streaming requests or replays an approved OpenAI-compatible SSE response for controlled streaming requests
+15. optionally delivers evidence batches to VCAL Audit
+16. exposes operational diagnostics
 
 Full architecture documentation:
 
@@ -299,7 +302,89 @@ OK
 ready
 ```
 
-The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
+The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, and effective cache scope.
+
+---
+
+## Evaluation / Observe Mode
+
+AI Cost Firewall v0.8.0 adds an AIF-level Evaluation Mode for low-risk production pilots.
+
+Configure the runtime mode with:
+
+```text
+aif_enforcement_mode enforce;
+```
+
+or:
+
+```text
+aif_enforcement_mode observe;
+```
+
+`enforce` is the default and preserves the normal production cache behavior.
+
+In `observe` mode, AI Cost Firewall remains in the live application request/response path but does not serve cached responses to the client. Instead, it evaluates what exact and semantic caching would have done while continuing to call the configured upstream provider.
+
+The core observe-mode guarantees are:
+
+- the live application still receives the upstream response;
+- exact-cache evaluation uses an isolated Redis key namespace;
+- semantic-cache evaluation uses an isolated Qdrant collection;
+- shadow hits record what would have been served without suppressing the real upstream request;
+- shadow misses populate only evaluation cache state;
+- production cache state is not populated or reused by observe mode;
+- cache-bypass requests skip both evaluation lookup and evaluation store;
+- Redis, Qdrant, or embedding failures used only for evaluation do not interrupt live application traffic;
+- AIF remains ready when optional evaluation dependencies are temporarily unavailable;
+- Redis and Qdrant evaluation paths recover after dependency restart;
+- controlled streaming and non-streaming requests retain the same transport-independent cache identity.
+
+Evaluation Mode is currently an **AI Cost Firewall cache/optimization feature**. It does not change the configured enforcement behavior of VCAL Security Guard, Privacy Guard, or Usage Guard. Guard-specific `off / observe / enforce` modes are not part of this release.
+
+### Evaluation evidence
+
+Evaluation-aware evidence records the effective mode and separates the hypothetical action from what actually happened to the live request.
+
+Typical cache-hit evidence includes:
+
+```json
+{
+  "enforcement_mode": "observe",
+  "decision": "exact_hit",
+  "would_action": "serve_exact_cache",
+  "applied_action": "call_upstream"
+}
+```
+
+A cache bypass remains explicit:
+
+```json
+{
+  "enforcement_mode": "observe",
+  "decision": "cache_bypassed",
+  "would_action": "call_upstream",
+  "applied_action": "call_upstream"
+}
+```
+
+This keeps VCAL Audit traces suitable for later pilot assessment without representing hypothetical actions as production actions.
+
+### Evaluation accounting
+
+Observe-mode cache opportunities do **not** increment the normal production cache-hit or savings counters.
+
+Dedicated evaluation metrics are used for:
+
+- requests evaluated;
+- would-have exact and semantic hits;
+- potentially avoidable upstream calls;
+- potentially avoidable tokens;
+- estimated gross and net cost avoidance;
+- shadow-store outcomes;
+- evaluation errors.
+
+This separation prevents hypothetical pilot savings from being mixed with actual production savings.
 
 ---
 
@@ -361,6 +446,9 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - nginx-style configuration reload (SIGHUP)
 - structured Prometheus metrics
 - semantic cache lifecycle control
+- AIF `enforce` / `observe` runtime mode
+- isolated Evaluation Mode exact/semantic cache state
+- non-blocking evaluation dependency failure handling with post-outage recovery
 - upstream request timeout tracking plus controlled-stream idle and absolute-generation timeout protection
 - request size protection
 - runtime diagnostics
@@ -475,7 +563,9 @@ configuration OK
 
 When `semantic_cache_fail_open` is enabled, runtime semantic cache lookup or embedding failures skip semantic cache and continue to the upstream LLM endpoint.
 
-This setting applies to runtime semantic cache behavior. It does not bypass startup dependency validation when semantic cache is enabled. If semantic cache is enabled, Qdrant must be reachable during startup and the configured vector size must match the collection.
+This setting applies to normal `enforce` runtime semantic cache behavior.
+
+In `observe` mode, Redis/Qdrant/embedding failures used only for evaluation are treated as non-blocking evaluation failures: the live request continues to the upstream provider and AIF remains available. Evaluation-specific error telemetry records the failure, and the evaluation cache path resumes after the dependency recovers.
 
 ---
 
@@ -585,6 +675,15 @@ aif_stream_client_time_to_first_byte_seconds
 aif_stream_upstream_response_bytes
 aif_stream_client_buffer_bytes
 aif_stream_duration_seconds
+aif_enforcement_mode_info
+aif_evaluation_requests_total
+aif_evaluation_cache_outcomes_total
+aif_evaluation_upstream_calls_avoided_total
+aif_evaluation_tokens_avoided_total
+aif_evaluation_gross_saved_micro_usd_total
+aif_evaluation_net_saved_micro_usd_total
+aif_evaluation_shadow_store_total
+aif_evaluation_errors_total
 ```
 
 AI Cost Firewall reports:
@@ -599,6 +698,10 @@ AI Cost Firewall reports:
 - Security Guard block counts by stage and rule ID
 - Privacy Guard restore-skip counters when response Security blocks occur
 - Usage Guard block counts by policy category and rule ID
+- current AIF enforcement mode
+- observe-mode exact and semantic cache opportunities
+- potentially avoidable upstream calls, tokens, and estimated cost
+- shadow-cache store outcomes and evaluation failures
 
 Evidence events are emitted through structured application logs and can optionally be delivered to VCAL Audit. Enable evidence logging with:
 
@@ -616,6 +719,8 @@ Minimal example:
 
 ```text
 listen_addr 0.0.0.0:8080;
+
+aif_enforcement_mode enforce;
 
 redis_url redis://redis:6379;
 
@@ -645,7 +750,7 @@ In a 30-minute cache-effectiveness benchmark, AI Cost Firewall sustained 30 RPS 
 
 In a single-VM high-load benchmark, AI Cost Firewall sustained approximately 500 RPS for 5 minutes with 0% HTTP failures. Higher RPS values caused instability in the single-VM test environment, so this should be treated as a local benchmark observation, not a universal capacity limit.
 
-These historical measurements have not yet been revalidated against v0.7.0.
+These historical measurements have not yet been revalidated against v0.8.0.
 
 See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limitations, and detailed results.
 
@@ -677,6 +782,8 @@ request.failed
 AI Cost Firewall also emits structured evidence for VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard activity.
 
 Guard evidence contains operational metadata only. Prompt and response content is not included.
+
+For AIF Evaluation Mode, cache evidence also records `enforcement_mode`, `decision`, `would_action`, and `applied_action` attributes so hypothetical cache behavior remains distinguishable from actions actually applied to live traffic.
 
 Evidence can be emitted through structured application logs and optionally delivered asynchronously to VCAL Audit.
 
@@ -769,6 +876,12 @@ AI Cost Firewall includes tests for:
 - evidence lifecycle completion
 - request and response Security Guard block evidence
 - controlled streaming assembly, cross-mode cache reuse, response controls, Privacy restoration, SSE replay, pre-commit failure isolation, provider idle timeout, absolute generation timeout, and upstream-permit release
+- AIF `observe` / `enforce` configuration and behavior
+- isolated shadow exact/semantic cache behavior
+- observe-mode cache bypass semantics
+- observe-mode production-metric isolation
+- Redis/Qdrant evaluation dependency failure handling and post-outage recovery
+- evaluation evidence and metric accounting
 - buffered Audit evidence delivery configuration
 - evidence batching, retry, and delivery failure handling
 

@@ -51,6 +51,41 @@ impl std::str::FromStr for ProviderKind {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AifEnforcementMode {
+    #[default]
+    Enforce,
+    Observe,
+}
+
+impl AifEnforcementMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Observe => "observe",
+        }
+    }
+
+    pub fn is_observe(self) -> bool {
+        matches!(self, Self::Observe)
+    }
+}
+
+impl std::str::FromStr for AifEnforcementMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "enforce" => Ok(Self::Enforce),
+            "observe" | "observation" | "evaluation" => Ok(Self::Observe),
+            other => Err(format!(
+                "unsupported aif_enforcement_mode '{}'. Supported modes: enforce, observe",
+                other
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PrivacyGuardMode {
     #[default]
     DetectOnly,
@@ -198,6 +233,7 @@ pub struct Config {
     pub listen_addr: String,
     pub redis_url: String,
     pub redis_timeout_seconds: u64,
+    pub aif_enforcement_mode: AifEnforcementMode,
 
     pub upstream_provider: ProviderKind,
     pub upstream_base_url: String,
@@ -663,6 +699,16 @@ impl Config {
             );
         }
 
+        if self.aif_enforcement_mode.is_observe()
+            && (self.security_guard_enabled
+                || self.privacy_guard_enabled
+                || self.usage_guard_enabled)
+        {
+            warnings.push(
+                "aif_enforcement_mode=observe applies only to AIF cache evaluation; enabled Security, Privacy, and Usage Guard modules retain their configured behavior".into(),
+            );
+        }
+
         if self.privacy_guard_enabled
             && self.privacy_guard_restore_enabled
             && self.privacy_guard_mode == PrivacyGuardMode::DetectOnly
@@ -696,6 +742,7 @@ impl Config {
 
     pub fn effective_runtime_summary(&self) -> Vec<String> {
         vec![
+            format!("aif_enforcement_mode={}", self.aif_enforcement_mode.as_str()),
             format!(
                 "exact_cache={} fail_open={}",
                 self.exact_cache_enabled, self.exact_cache_fail_open
@@ -738,10 +785,12 @@ impl Config {
                 self.max_inflight_requests, self.max_inflight_upstream_requests
             ),
             format!(
-                "readiness redis={} qdrant={} upstream={}",
+                "readiness redis={} qdrant={} upstream={} (configured redis={} qdrant={})",
+                self.readiness_requires_redis && !self.aif_enforcement_mode.is_observe(),
+                self.readiness_requires_qdrant && !self.aif_enforcement_mode.is_observe(),
+                self.readiness_requires_upstream,
                 self.readiness_requires_redis,
-                self.readiness_requires_qdrant,
-                self.readiness_requires_upstream
+                self.readiness_requires_qdrant
             ),
         ]
     }
@@ -814,6 +863,10 @@ impl Config {
         out.push_str(&format!(
             "redis_timeout_seconds = {}\n",
             self.redis_timeout_seconds
+        ));
+        out.push_str(&format!(
+            "aif_enforcement_mode = {}\n",
+            self.aif_enforcement_mode.as_str()
         ));
 
         out.push_str(&format!(
@@ -1120,6 +1173,11 @@ impl Config {
             listen_addr: get_or_default(&map, "listen_addr", "0.0.0.0:8080"),
             redis_url: get_required(&map, "redis_url")?,
             redis_timeout_seconds: parse_or_default(&map, "redis_timeout_seconds", 2u64)?,
+            aif_enforcement_mode: parse_or_default(
+                &map,
+                "aif_enforcement_mode",
+                AifEnforcementMode::Enforce,
+            )?,
 
             upstream_provider: parse_or_default(
                 &map,
@@ -1389,6 +1447,10 @@ impl Config {
             redis_url: env::var("AIF_REDIS_URL")
                 .map_err(|_| cfg_err("AIF_REDIS_URL is required when no config file is used"))?,
             redis_timeout_seconds: parse_env_or_default("AIF_REDIS_TIMEOUT_SECONDS", 2u64)?,
+            aif_enforcement_mode: parse_env_or_default(
+                "AIF_ENFORCEMENT_MODE",
+                AifEnforcementMode::Enforce,
+            )?,
 
             upstream_provider: {
                 let raw = env::var("AIF_UPSTREAM_PROVIDER")
@@ -1823,6 +1885,22 @@ impl Config {
         Self::from_env()
     }
 
+    pub fn effective_qdrant_collection(&self) -> String {
+        if self.aif_enforcement_mode.is_observe() {
+            format!("{}_eval", self.qdrant_collection)
+        } else {
+            self.qdrant_collection.clone()
+        }
+    }
+
+    pub fn effective_exact_cache_prefix(&self) -> &'static str {
+        if self.aif_enforcement_mode.is_observe() {
+            "chatcmpl:eval:v1"
+        } else {
+            "chatcmpl:v1"
+        }
+    }
+
     pub fn semantic_cache_status(&self) -> &'static str {
         if self.semantic_cache_enabled {
             "enabled"
@@ -1833,6 +1911,7 @@ impl Config {
 
     pub fn startup_summary_lines(&self) -> Vec<String> {
         let mut lines = vec![
+            format!("- AIF enforcement mode: {}", self.aif_enforcement_mode.as_str()),
             format!("- upstream provider: {}", self.upstream_provider.as_str()),
             format!("- upstream base URL: {}", self.upstream_base_url),
             format!(
@@ -1891,7 +1970,10 @@ impl Config {
             lines.push(format!("- embedding base URL: {}", self.embedding_base_url));
             lines.push(format!("- embedding model: {}", self.embedding_model));
             lines.push(format!("- qdrant URL: {}", self.qdrant_url));
-            lines.push(format!("- qdrant collection: {}", self.qdrant_collection));
+            lines.push(format!(
+                "- qdrant collection: {}",
+                self.effective_qdrant_collection()
+            ));
             lines.push(format!("- qdrant vector size: {}", self.qdrant_vector_size));
             lines.push(format!(
                 "- semantic similarity threshold: {}",
@@ -1918,6 +2000,7 @@ impl fmt::Debug for Config {
             .field("listen_addr", &self.listen_addr)
             .field("redis_url", &mask_url_credentials(&self.redis_url))
             .field("redis_timeout_seconds", &self.redis_timeout_seconds)
+            .field("aif_enforcement_mode", &self.aif_enforcement_mode.as_str())
             .field("upstream_provider", &self.upstream_provider.as_str())
             .field("upstream_base_url", &self.upstream_base_url)
             .field("upstream_api_key", &mask_secret(&self.upstream_api_key))
@@ -2100,6 +2183,7 @@ fn allowed_directives() -> HashSet<&'static str> {
         "listen_addr",
         "redis_url",
         "redis_timeout_seconds",
+        "aif_enforcement_mode",
         "upstream_provider",
         "upstream_base_url",
         "upstream_api_key",

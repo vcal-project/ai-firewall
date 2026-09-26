@@ -193,8 +193,9 @@ impl AppState {
         }
 
         let cfg = self.config.read().await;
-        let requires_redis = cfg.readiness_requires_redis;
-        let requires_qdrant = cfg.readiness_requires_qdrant;
+        let observe_mode = cfg.aif_enforcement_mode.is_observe();
+        let requires_redis = cfg.readiness_requires_redis && !observe_mode;
+        let requires_qdrant = cfg.readiness_requires_qdrant && !observe_mode;
         let requires_upstream = cfg.readiness_requires_upstream;
         drop(cfg);
 
@@ -351,6 +352,7 @@ pub struct RuntimeBuild {
 pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     log_startup_summary(cfg);
 
+    let effective_qdrant_collection = cfg.effective_qdrant_collection();
     let mut redis_available = false;
     let mut qdrant_available = false;
 
@@ -365,7 +367,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
             )
         })?;
 
-        match ConnectionManager::new(redis_client).await {
+        match ConnectionManager::new(redis_client.clone()).await {
             Ok(conn) => {
                 redis_available = true;
                 tracing::info!(
@@ -373,16 +375,18 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
                     "[OK] Redis connected"
                 );
                 Arc::new(RedisExactCache::new(
+                    redis_client,
                     conn,
                     cfg.exact_cache_ttl_seconds,
                     Duration::from_secs(cfg.redis_timeout_seconds),
                 ))
             }
-            Err(e) if cfg.exact_cache_fail_open => {
+            Err(e) if cfg.exact_cache_fail_open || cfg.aif_enforcement_mode.is_observe() => {
                 tracing::warn!(
                     redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
                     error = %e,
-                    "Redis exact cache unavailable; exact_cache_fail_open=true so startup continues without exact cache"
+                    enforcement_mode = cfg.aif_enforcement_mode.as_str(),
+                    "Redis exact cache unavailable; startup continues without exact cache because fail-open or observe mode is active"
                 );
                 Arc::new(NoopExactCache)
             }
@@ -449,7 +453,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
 
         tracing::info!(
             qdrant_url = %cfg.qdrant_url,
-            qdrant_collection = %cfg.qdrant_collection,
+            qdrant_collection = %effective_qdrant_collection,
             qdrant_vector_size = cfg.qdrant_vector_size,
             "checking Qdrant semantic cache"
         );
@@ -457,7 +461,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         match QdrantSemanticCache::new(
             cfg.qdrant_url.clone(),
             cfg.qdrant_api_key.clone(),
-            cfg.qdrant_collection.clone(),
+            effective_qdrant_collection.clone(),
             cfg.qdrant_vector_size,
             cfg.semantic_similarity_threshold,
             cfg.semantic_cache_retention_seconds,
@@ -469,7 +473,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
                 qdrant_available = true;
                 tracing::info!(
                     qdrant_url = %cfg.qdrant_url,
-                    qdrant_collection = %cfg.qdrant_collection,
+                    qdrant_collection = %effective_qdrant_collection,
                     qdrant_vector_size = cfg.qdrant_vector_size,
                     "[OK] Qdrant connected and collection validated"
                 );
@@ -479,22 +483,23 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
             Err(e) => {
                 tracing::error!(
                     qdrant_url = %cfg.qdrant_url,
-                    qdrant_collection = %cfg.qdrant_collection,
+                    qdrant_collection = %effective_qdrant_collection,
                     qdrant_vector_size = cfg.qdrant_vector_size,
                     error = ?e,
                     "failed to initialize Qdrant semantic cache"
                 );
 
-                if cfg.semantic_cache_fail_open {
+                if cfg.semantic_cache_fail_open || cfg.aif_enforcement_mode.is_observe() {
                     tracing::warn!(
-                        "semantic_cache_fail_open=true; startup continues without semantic cache"
+                        enforcement_mode = cfg.aif_enforcement_mode.as_str(),
+                        "startup continues without semantic cache because fail-open or observe mode is active"
                     );
                     Arc::new(NoopSemanticCache)
                 } else {
                     return Err(e).with_context(|| {
                         format!(
                             "failed to initialize Qdrant semantic cache using qdrant_url '{}' and collection '{}'",
-                            cfg.qdrant_url, cfg.qdrant_collection
+                            cfg.qdrant_url, effective_qdrant_collection
                         )
                     });
                 }
@@ -562,6 +567,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
             guard_orchestrator,
             evidence_sink,
             dependencies: dependencies.clone(),
+            enforcement_mode: cfg.aif_enforcement_mode,
             upstream_metadata: UpstreamMetadata {
                 provider_type: cfg.upstream_provider.as_str().to_string(),
                 provider_name: infer_upstream_provider_name(
@@ -575,6 +581,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         cfg.embedding_price.clone(),
     ));
 
+    metrics::set_enforcement_mode(cfg.aif_enforcement_mode.as_str());
     tracing::info!("[OK] Runtime initialized");
 
     Ok(RuntimeBuild {
@@ -630,7 +637,8 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
     Ok(BuiltApp { router, state })
 }
 
-async fn version() -> impl IntoResponse {
+async fn version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let cfg = state.config.read().await;
     let body = json!({
         "product": release::PRODUCT_NAME,
         "version": release::PRODUCT_VERSION,
@@ -642,6 +650,11 @@ async fn version() -> impl IntoResponse {
         "compatibility_model": release::COMPATIBILITY_MODEL,
         "provider_specific_config_blocks": false,
         "native_provider_integrations": false,
+        "aif_enforcement_mode": cfg.aif_enforcement_mode.as_str(),
+        "effective_cache_scope": if cfg.aif_enforcement_mode.is_observe() { "evaluation" } else { "production" },
+        "effective_exact_cache_prefix": cfg.effective_exact_cache_prefix(),
+        "configured_qdrant_collection": cfg.qdrant_collection.as_str(),
+        "effective_qdrant_collection": cfg.effective_qdrant_collection(),
         "scope_note": release::SCOPE_NOTE
     });
 

@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 use crate::{
     app::DependencyState,
     cache::{exact::ExactCache, redis_exact::RedisOperationTimeout},
-    config::{EmbeddingPrice, ModelPrice},
+    config::{AifEnforcementMode, EmbeddingPrice, ModelPrice},
     core::{
         hashing::sha256_hex,
         normalize::{normalize_chat_request, semantic_text_from_request},
@@ -45,6 +45,7 @@ struct StreamTerminalGuard {
     trace_id: uuid::Uuid,
     started: Instant,
     terminal_emitted: bool,
+    enforcement_mode: AifEnforcementMode,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +65,7 @@ impl Drop for StreamTerminalGuard {
 
         let evidence_sink = self.evidence_sink.clone();
         let trace_id = self.trace_id;
+        let enforcement_mode = self.enforcement_mode;
         let latency_ms = self.started.elapsed().as_millis() as u64;
 
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -88,6 +90,10 @@ impl Drop for StreamTerminalGuard {
             aborted
                 .attributes
                 .insert("stream".into(), serde_json::Value::Bool(true));
+            aborted.attributes.insert(
+                "enforcement_mode".into(),
+                serde_json::Value::String(enforcement_mode.as_str().into()),
+            );
             let _ = evidence_sink.emit(aborted).await;
 
             let mut terminal = EvidenceEvent::new(
@@ -110,6 +116,10 @@ impl Drop for StreamTerminalGuard {
             terminal
                 .attributes
                 .insert("stream".into(), serde_json::Value::Bool(true));
+            terminal.attributes.insert(
+                "enforcement_mode".into(),
+                serde_json::Value::String(enforcement_mode.as_str().into()),
+            );
             let _ = evidence_sink.emit(terminal).await;
         });
     }
@@ -135,6 +145,7 @@ pub struct ChatService {
     dependencies: DependencyState,
     track_redis_runtime: bool,
     track_qdrant_runtime: bool,
+    enforcement_mode: AifEnforcementMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +162,7 @@ pub struct ChatServiceDeps {
     pub evidence_sink: Arc<dyn EvidenceSink>,
     pub upstream_metadata: UpstreamMetadata,
     pub dependencies: DependencyState,
+    pub enforcement_mode: AifEnforcementMode,
 }
 
 #[derive(Clone, Debug)]
@@ -279,6 +291,7 @@ impl ChatService {
                     provider_name: "test".to_string(),
                 },
                 dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Enforce,
             },
             settings,
             model_prices,
@@ -322,6 +335,7 @@ impl ChatService {
             dependencies,
             track_redis_runtime,
             track_qdrant_runtime,
+            enforcement_mode: deps.enforcement_mode,
             upstream_limit: Arc::new(Semaphore::new(settings.max_inflight_upstream_requests)),
         }
     }
@@ -390,6 +404,7 @@ impl ChatService {
             trace_id,
             started,
             terminal_emitted: false,
+            enforcement_mode: self.enforcement_mode,
         };
 
         let include_usage = stream_include_usage(&req);
@@ -474,6 +489,7 @@ impl ChatService {
         controlled_stream_max_bytes: Option<usize>,
     ) -> Result<ChatCompletionResponse, AppError> {
         let controlled_stream = controlled_stream_max_bytes.is_some();
+        let observe_mode = self.enforcement_mode.is_observe();
 
         if req.stream.unwrap_or(false) != controlled_stream {
             return Err(AppError::internal(
@@ -513,6 +529,10 @@ impl ChatService {
             bypass_store: cache_control.bypass_store || guarded.cache_control.bypass_store,
         };
 
+        if observe_mode {
+            metrics::EVALUATION_REQUESTS_TOTAL.inc();
+        }
+
         // Cache identity is independent of the client delivery representation.
         // A canonical completion can be returned either as JSON or replayed as SSE.
         let mut cache_req = req.clone();
@@ -527,107 +547,208 @@ impl ChatService {
         let privacy_placeholder_signature = guard_context.privacy_placeholder_signature.as_deref();
 
         let exact_key_hash = sha256_hex(&normalized);
-        let exact_key = format!("chatcmpl:v1:{exact_key_hash}");
+        let exact_key = format!("{}:{exact_key_hash}", self.effective_exact_cache_prefix());
+        let mut evaluation_hit: Option<&'static str> = None;
+        let mut evaluation_semantic_lookup_tokens = 0u32;
+        let mut evaluation_incomplete = false;
 
         if self.exact_cache_enabled && !cache_control.bypass_lookup {
-            match self.exact_cache.get(&exact_key).await {
-                Ok(Some(raw)) => {
-                    self.set_redis_available(true);
-                    let hit: ChatCompletionResponse = serde_json::from_str(&raw).map_err(|e| {
-                        AppError::internal(format!("cached response decode failed: {e}"))
-                    })?;
+            if observe_mode && !self.track_redis_runtime {
+                evaluation_incomplete = true;
+                self.record_evaluation_error("redis", "lookup");
+                let mut event = EvidenceEvent::new(
+                    trace_id,
+                    EvidenceSource::AiFirewall,
+                    EventCategory::Cache,
+                    "cache.exact.lookup",
+                    EventOutcome::Failed,
+                );
+                event.cache = Some(CacheEvidence {
+                    cache_type: "exact".into(),
+                    operation: "lookup".into(),
+                    outcome: EventOutcome::Failed,
+                    cache_key_hash: Some(exact_key_hash.clone()),
+                    record_id: None,
+                    similarity_score: None,
+                    threshold: None,
+                    upstream_called: true,
+                });
+                self.annotate_cache_decision(
+                    &mut event,
+                    "evaluation_unavailable",
+                    "unknown",
+                    "call_upstream",
+                );
+                event.attributes.insert(
+                    "evaluation_error".into(),
+                    serde_json::Value::String("redis_unavailable_at_startup".into()),
+                );
+                self.emit(event).await;
+            } else {
+                match self.exact_cache.get(&exact_key).await {
+                    Ok(Some(raw)) => {
+                        self.set_redis_available(true);
+                        let hit: ChatCompletionResponse =
+                            serde_json::from_str(&raw).map_err(|e| {
+                                AppError::internal(format!("cached response decode failed: {e}"))
+                            })?;
 
-                    metrics::CACHE_EXACT_HITS.inc();
-                    self.record_exact_hit_savings(&hit);
+                        tracing::debug!(
+                            model = %req.normalized_model(),
+                            cache_key = %exact_key,
+                            enforcement_mode = self.enforcement_mode.as_str(),
+                            "exact cache hit"
+                        );
 
-                    tracing::debug!(
-                        model = %req.normalized_model(),
-                        cache_key = %exact_key,
-                        "exact cache hit"
-                    );
-
-                    let mut event = EvidenceEvent::new(
-                        trace_id,
-                        EvidenceSource::AiFirewall,
-                        EventCategory::Cache,
-                        "cache.exact.lookup",
-                        EventOutcome::Hit,
-                    );
-                    event.cache = Some(CacheEvidence {
-                        cache_type: "exact".into(),
-                        operation: "lookup".into(),
-                        outcome: EventOutcome::Hit,
-                        cache_key_hash: Some(exact_key_hash.clone()),
-                        record_id: None,
-                        similarity_score: None,
-                        threshold: None,
-                        upstream_called: false,
-                    });
-                    self.emit(event).await;
-
-                    let response = self
-                        .security_scan_response(&guard_context, hit, trace_id)
-                        .await?;
-
-                    if is_security_policy_completion(&response) {
-                        self.emit(self.request_completed_event(
+                        let mut event = EvidenceEvent::new(
                             trace_id,
-                            "security_policy",
-                            controlled_stream,
-                        ))
-                        .await;
-                        return Ok(response);
+                            EvidenceSource::AiFirewall,
+                            EventCategory::Cache,
+                            "cache.exact.lookup",
+                            EventOutcome::Hit,
+                        );
+                        event.cache = Some(CacheEvidence {
+                            cache_type: "exact".into(),
+                            operation: "lookup".into(),
+                            outcome: EventOutcome::Hit,
+                            cache_key_hash: Some(exact_key_hash.clone()),
+                            record_id: None,
+                            similarity_score: None,
+                            threshold: None,
+                            upstream_called: observe_mode,
+                        });
+
+                        if observe_mode {
+                            self.record_evaluation_cache_outcome(CACHE_TYPE_EXACT, "hit");
+                            self.record_evaluation_upstream_call_avoided(CACHE_TYPE_EXACT);
+                            self.annotate_cache_decision(
+                                &mut event,
+                                "exact_hit",
+                                "serve_exact_cache",
+                                "call_upstream",
+                            );
+                            self.emit(event).await;
+                            evaluation_hit = Some(CACHE_TYPE_EXACT);
+                        } else {
+                            metrics::CACHE_EXACT_HITS.inc();
+                            self.record_exact_hit_savings(&hit);
+                            self.annotate_cache_decision(
+                                &mut event,
+                                "exact_hit",
+                                "serve_exact_cache",
+                                "serve_exact_cache",
+                            );
+                            self.emit(event).await;
+
+                            let response = self
+                                .security_scan_response(&guard_context, hit, trace_id)
+                                .await?;
+
+                            if is_security_policy_completion(&response) {
+                                self.emit(self.request_completed_event(
+                                    trace_id,
+                                    "security_policy",
+                                    controlled_stream,
+                                ))
+                                .await;
+                                return Ok(response);
+                            }
+
+                            let response = self
+                                .restore_guarded_response(&guard_context, response, trace_id)
+                                .await?;
+
+                            self.emit(self.request_completed_event(
+                                trace_id,
+                                "exact_cache",
+                                controlled_stream,
+                            ))
+                            .await;
+
+                            return Ok(response);
+                        }
                     }
-
-                    let response = self
-                        .restore_guarded_response(&guard_context, response, trace_id)
-                        .await?;
-
-                    self.emit(self.request_completed_event(
-                        trace_id,
-                        "exact_cache",
-                        controlled_stream,
-                    ))
-                    .await;
-
-                    return Ok(response);
-                }
-                Ok(None) => {
-                    self.set_redis_available(true);
-                    let mut event = EvidenceEvent::new(
-                        trace_id,
-                        EvidenceSource::AiFirewall,
-                        EventCategory::Cache,
-                        "cache.exact.lookup",
-                        EventOutcome::Miss,
-                    );
-                    event.cache = Some(CacheEvidence {
-                        cache_type: "exact".into(),
-                        operation: "lookup".into(),
-                        outcome: EventOutcome::Miss,
-                        cache_key_hash: Some(exact_key_hash.clone()),
-                        record_id: None,
-                        similarity_score: None,
-                        threshold: None,
-                        upstream_called: false,
-                    });
-                    self.emit(event).await;
-                }
-                Err(e) if self.exact_cache_fail_open => {
-                    self.set_redis_available(false);
-                    tracing::warn!(
-                        model = %req.normalized_model(),
-                        error = %e,
-                        "exact cache lookup failed; exact_cache_fail_open=true so request continues"
-                    );
-                }
-                Err(e) => {
-                    self.set_redis_available(false);
-                    return Err(AppError::dependency_failure(
-                        DependencyKind::Redis,
-                        redis_failure_class(&e),
-                        format!("exact cache get failed: {e}"),
-                    ));
+                    Ok(None) => {
+                        self.set_redis_available(true);
+                        if observe_mode {
+                            self.record_evaluation_cache_outcome(CACHE_TYPE_EXACT, "miss");
+                        }
+                        let mut event = EvidenceEvent::new(
+                            trace_id,
+                            EvidenceSource::AiFirewall,
+                            EventCategory::Cache,
+                            "cache.exact.lookup",
+                            EventOutcome::Miss,
+                        );
+                        event.cache = Some(CacheEvidence {
+                            cache_type: "exact".into(),
+                            operation: "lookup".into(),
+                            outcome: EventOutcome::Miss,
+                            cache_key_hash: Some(exact_key_hash.clone()),
+                            record_id: None,
+                            similarity_score: None,
+                            threshold: None,
+                            upstream_called: false,
+                        });
+                        self.annotate_cache_decision(
+                            &mut event,
+                            "exact_miss",
+                            "continue_cache_pipeline",
+                            "continue_cache_pipeline",
+                        );
+                        self.emit(event).await;
+                    }
+                    Err(e) if self.exact_cache_fail_open || observe_mode => {
+                        self.set_redis_available(false);
+                        if observe_mode {
+                            evaluation_incomplete = true;
+                            self.record_evaluation_error("redis", "lookup");
+                        }
+                        tracing::warn!(
+                            model = %req.normalized_model(),
+                            error = %e,
+                            enforcement_mode = self.enforcement_mode.as_str(),
+                            "exact cache lookup failed; request continues"
+                        );
+                        if observe_mode {
+                            let mut event = EvidenceEvent::new(
+                                trace_id,
+                                EvidenceSource::AiFirewall,
+                                EventCategory::Cache,
+                                "cache.exact.lookup",
+                                EventOutcome::Failed,
+                            );
+                            event.cache = Some(CacheEvidence {
+                                cache_type: "exact".into(),
+                                operation: "lookup".into(),
+                                outcome: EventOutcome::Failed,
+                                cache_key_hash: Some(exact_key_hash.clone()),
+                                record_id: None,
+                                similarity_score: None,
+                                threshold: None,
+                                upstream_called: true,
+                            });
+                            self.annotate_cache_decision(
+                                &mut event,
+                                "evaluation_error",
+                                "unknown",
+                                "call_upstream",
+                            );
+                            event.attributes.insert(
+                                "evaluation_error".into(),
+                                serde_json::Value::String(e.to_string()),
+                            );
+                            self.emit(event).await;
+                        }
+                    }
+                    Err(e) => {
+                        self.set_redis_available(false);
+                        return Err(AppError::dependency_failure(
+                            DependencyKind::Redis,
+                            redis_failure_class(&e),
+                            format!("exact cache get failed: {e}"),
+                        ));
+                    }
                 }
             }
         } else if cache_control.bypass_lookup {
@@ -635,168 +756,333 @@ impl ChatService {
                 model = %req.normalized_model(),
                 "cache lookup bypass requested"
             );
-            self.emit(EvidenceEvent::new(
+            let mut event = EvidenceEvent::new(
                 trace_id,
                 EvidenceSource::AiFirewall,
                 EventCategory::Cache,
                 "cache.lookup.bypassed",
                 EventOutcome::Bypassed,
-            ))
-            .await;
+            );
+            self.annotate_cache_decision(
+                &mut event,
+                "cache_bypassed",
+                "call_upstream",
+                "call_upstream",
+            );
+            self.emit(event).await;
         }
 
         if self.semantic_cache_enabled
             && !cache_control.bypass_lookup
+            && evaluation_hit.is_none()
             && self.semantic_eligible(&cache_req)
         {
-            match self
-                .semantic_cache
-                .lookup(
-                    req.normalized_model(),
-                    &semantic_text,
-                    privacy_placeholder_signature,
-                )
-                .await
-            {
-                Ok(Some(hit)) => {
-                    self.set_qdrant_available(true);
-                    metrics::CACHE_SEMANTIC_HITS.inc();
+            if observe_mode && !self.track_qdrant_runtime {
+                evaluation_incomplete = true;
+                self.record_evaluation_error("qdrant", "lookup");
+                let mut event = EvidenceEvent::new(
+                    trace_id,
+                    EvidenceSource::AiFirewall,
+                    EventCategory::Cache,
+                    "cache.semantic.lookup",
+                    EventOutcome::Failed,
+                );
+                event.cache = Some(CacheEvidence {
+                    cache_type: "semantic".into(),
+                    operation: "lookup".into(),
+                    outcome: EventOutcome::Failed,
+                    cache_key_hash: None,
+                    record_id: None,
+                    similarity_score: None,
+                    threshold: None,
+                    upstream_called: true,
+                });
+                self.annotate_cache_decision(
+                    &mut event,
+                    "evaluation_unavailable",
+                    "unknown",
+                    "call_upstream",
+                );
+                event.attributes.insert(
+                    "evaluation_error".into(),
+                    serde_json::Value::String("qdrant_unavailable_at_startup".into()),
+                );
+                self.emit(event).await;
+            } else {
+                match self
+                    .semantic_cache
+                    .lookup(
+                        req.normalized_model(),
+                        &semantic_text,
+                        privacy_placeholder_signature,
+                    )
+                    .await
+                {
+                    Ok(Some(hit)) => {
+                        self.set_qdrant_available(true);
 
-                    self.record_semantic_hit_savings(
-                        &hit.response,
-                        hit.embedding_usage
-                            .as_ref()
-                            .map(|u| u.prompt_tokens)
-                            .unwrap_or(0),
-                    );
-
-                    tracing::debug!(
-                        model = %req.normalized_model(),
-                        "semantic cache hit"
-                    );
-                    let mut event = EvidenceEvent::new(
-                        trace_id,
-                        EvidenceSource::AiFirewall,
-                        EventCategory::Cache,
-                        "cache.semantic.lookup",
-                        EventOutcome::Hit,
-                    );
-                    event.cache = Some(CacheEvidence {
-                        cache_type: "semantic".into(),
-                        operation: "lookup".into(),
-                        outcome: EventOutcome::Hit,
-                        cache_key_hash: None,
-                        record_id: None,
-                        similarity_score: None,
-                        threshold: None,
-                        upstream_called: false,
-                    });
-                    self.emit(event).await;
-
-                    let response = self
-                        .security_scan_response(&guard_context, hit.response, trace_id)
-                        .await?;
-
-                    if is_security_policy_completion(&response) {
-                        self.emit(self.request_completed_event(
+                        tracing::debug!(
+                            model = %req.normalized_model(),
+                            enforcement_mode = self.enforcement_mode.as_str(),
+                            "semantic cache hit"
+                        );
+                        let mut event = EvidenceEvent::new(
                             trace_id,
-                            "security_policy",
-                            controlled_stream,
-                        ))
-                        .await;
-                        return Ok(response);
-                    }
+                            EvidenceSource::AiFirewall,
+                            EventCategory::Cache,
+                            "cache.semantic.lookup",
+                            EventOutcome::Hit,
+                        );
+                        event.cache = Some(CacheEvidence {
+                            cache_type: "semantic".into(),
+                            operation: "lookup".into(),
+                            outcome: EventOutcome::Hit,
+                            cache_key_hash: None,
+                            record_id: None,
+                            similarity_score: None,
+                            threshold: None,
+                            upstream_called: observe_mode,
+                        });
 
-                    if self.exact_cache_enabled
-                        && self.exact_cache_store_enabled
-                        && !cache_control.bypass_store
-                    {
-                        if let Ok(raw) = serde_json::to_string(&response) {
-                            match self.exact_cache.set(&exact_key, raw).await {
-                                Ok(()) => {
-                                    self.set_redis_available(true);
-                                }
-                                Err(e) if self.exact_cache_fail_open => {
-                                    self.set_redis_available(false);
-                                    tracing::debug!(
-                                        "failed to warm exact cache from semantic hit: {e}"
-                                    );
-                                }
-                                Err(e) => {
-                                    self.set_redis_available(false);
-                                    return Err(AppError::dependency_failure(
-                                        DependencyKind::Redis,
-                                        redis_failure_class(&e),
-                                        format!(
-                                            "exact cache set failed while warming semantic hit: {e}"
-                                        ),
-                                    ));
+                        let embedding_prompt_tokens = hit
+                            .embedding_usage
+                            .as_ref()
+                            .map(|usage| usage.prompt_tokens)
+                            .unwrap_or(0);
+
+                        if observe_mode {
+                            self.record_evaluation_cache_outcome(CACHE_TYPE_SEMANTIC, "hit");
+                            self.record_evaluation_upstream_call_avoided(CACHE_TYPE_SEMANTIC);
+                            evaluation_semantic_lookup_tokens = embedding_prompt_tokens;
+                            if embedding_prompt_tokens > 0 {
+                                self.record_evaluation_semantic_lookup_overhead(
+                                    req.normalized_model(),
+                                    embedding_prompt_tokens,
+                                );
+                                self.record_embedding_overhead(
+                                    req.normalized_model(),
+                                    EMBEDDING_OPERATION_LOOKUP,
+                                    embedding_prompt_tokens,
+                                );
+                            }
+                            self.annotate_cache_decision(
+                                &mut event,
+                                "semantic_hit",
+                                "serve_semantic_cache",
+                                "call_upstream",
+                            );
+                            self.emit(event).await;
+
+                            if self.exact_cache_enabled
+                                && self.exact_cache_store_enabled
+                                && !cache_control.bypass_store
+                            {
+                                if !self.track_redis_runtime {
+                                    evaluation_incomplete = true;
+                                    self.record_evaluation_error("redis", "warm_exact");
+                                    self.record_evaluation_shadow_store(CACHE_TYPE_EXACT, "error");
+                                } else if let Ok(raw) = serde_json::to_string(&hit.response) {
+                                    match self.exact_cache.set(&exact_key, raw).await {
+                                        Ok(()) => {
+                                            self.set_redis_available(true);
+                                            self.record_evaluation_shadow_store(
+                                                CACHE_TYPE_EXACT,
+                                                "stored",
+                                            );
+                                        }
+                                        Err(e) => {
+                                            self.set_redis_available(false);
+                                            evaluation_incomplete = true;
+                                            self.record_evaluation_error("redis", "warm_exact");
+                                            self.record_evaluation_shadow_store(
+                                                CACHE_TYPE_EXACT,
+                                                "error",
+                                            );
+                                            tracing::warn!(
+                                                error = %e,
+                                                "failed to warm shadow exact cache from semantic hit"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    evaluation_incomplete = true;
+                                    self.record_evaluation_error("exact_cache", "serialize_warm");
+                                    self.record_evaluation_shadow_store(CACHE_TYPE_EXACT, "error");
                                 }
                             }
+
+                            evaluation_hit = Some(CACHE_TYPE_SEMANTIC);
                         } else {
-                            tracing::debug!(
-                                "failed to serialize semantic-hit response for exact cache warming"
+                            metrics::CACHE_SEMANTIC_HITS.inc();
+                            self.record_semantic_hit_savings(
+                                &hit.response,
+                                embedding_prompt_tokens,
                             );
+                            self.annotate_cache_decision(
+                                &mut event,
+                                "semantic_hit",
+                                "serve_semantic_cache",
+                                "serve_semantic_cache",
+                            );
+                            self.emit(event).await;
+
+                            let response = self
+                                .security_scan_response(&guard_context, hit.response, trace_id)
+                                .await?;
+
+                            if is_security_policy_completion(&response) {
+                                self.emit(self.request_completed_event(
+                                    trace_id,
+                                    "security_policy",
+                                    controlled_stream,
+                                ))
+                                .await;
+                                return Ok(response);
+                            }
+
+                            if self.exact_cache_enabled
+                                && self.exact_cache_store_enabled
+                                && !cache_control.bypass_store
+                            {
+                                if let Ok(raw) = serde_json::to_string(&response) {
+                                    match self.exact_cache.set(&exact_key, raw).await {
+                                        Ok(()) => {
+                                            self.set_redis_available(true);
+                                        }
+                                        Err(e) if self.exact_cache_fail_open => {
+                                            self.set_redis_available(false);
+                                            tracing::debug!(
+                                                "failed to warm exact cache from semantic hit: {e}"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            self.set_redis_available(false);
+                                            return Err(AppError::dependency_failure(
+                                                DependencyKind::Redis,
+                                                redis_failure_class(&e),
+                                                format!(
+                                                    "exact cache set failed while warming semantic hit: {e}"
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    tracing::debug!(
+                                        "failed to serialize semantic-hit response for exact cache warming"
+                                    );
+                                }
+                            }
+
+                            let response = self
+                                .restore_guarded_response(&guard_context, response, trace_id)
+                                .await?;
+
+                            self.emit(self.request_completed_event(
+                                trace_id,
+                                "semantic_cache",
+                                controlled_stream,
+                            ))
+                            .await;
+
+                            return Ok(response);
                         }
                     }
 
-                    let response = self
-                        .restore_guarded_response(&guard_context, response, trace_id)
-                        .await?;
+                    Ok(None) => {
+                        self.set_qdrant_available(true);
+                        if observe_mode {
+                            self.record_evaluation_cache_outcome(CACHE_TYPE_SEMANTIC, "miss");
+                        }
+                        let mut event = EvidenceEvent::new(
+                            trace_id,
+                            EvidenceSource::AiFirewall,
+                            EventCategory::Cache,
+                            "cache.semantic.lookup",
+                            EventOutcome::Miss,
+                        );
+                        event.cache = Some(CacheEvidence {
+                            cache_type: "semantic".into(),
+                            operation: "lookup".into(),
+                            outcome: EventOutcome::Miss,
+                            cache_key_hash: None,
+                            record_id: None,
+                            similarity_score: None,
+                            threshold: None,
+                            upstream_called: false,
+                        });
+                        self.annotate_cache_decision(
+                            &mut event,
+                            "semantic_miss",
+                            "call_upstream",
+                            "call_upstream",
+                        );
+                        self.emit(event).await;
+                    }
 
-                    self.emit(self.request_completed_event(
-                        trace_id,
-                        "semantic_cache",
-                        controlled_stream,
-                    ))
-                    .await;
+                    Err(e) if self.semantic_cache_fail_open || observe_mode => {
+                        self.set_qdrant_available(false);
+                        self.record_semantic_skip("lookup_error");
+                        if observe_mode {
+                            evaluation_incomplete = true;
+                            self.record_evaluation_error("qdrant", "lookup");
+                        }
 
-                    return Ok(response);
-                }
+                        tracing::warn!(
+                            model = %req.normalized_model(),
+                            error = %e,
+                            enforcement_mode = self.enforcement_mode.as_str(),
+                            "semantic lookup failed; request continues upstream"
+                        );
 
-                Ok(None) => {
-                    self.set_qdrant_available(true);
-                    let mut event = EvidenceEvent::new(
-                        trace_id,
-                        EvidenceSource::AiFirewall,
-                        EventCategory::Cache,
-                        "cache.semantic.lookup",
-                        EventOutcome::Miss,
-                    );
-                    event.cache = Some(CacheEvidence {
-                        cache_type: "semantic".into(),
-                        operation: "lookup".into(),
-                        outcome: EventOutcome::Miss,
-                        cache_key_hash: None,
-                        record_id: None,
-                        similarity_score: None,
-                        threshold: None,
-                        upstream_called: false,
-                    });
-                    self.emit(event).await;
-                }
+                        if observe_mode {
+                            let mut event = EvidenceEvent::new(
+                                trace_id,
+                                EvidenceSource::AiFirewall,
+                                EventCategory::Cache,
+                                "cache.semantic.lookup",
+                                EventOutcome::Failed,
+                            );
+                            event.cache = Some(CacheEvidence {
+                                cache_type: "semantic".into(),
+                                operation: "lookup".into(),
+                                outcome: EventOutcome::Failed,
+                                cache_key_hash: None,
+                                record_id: None,
+                                similarity_score: None,
+                                threshold: None,
+                                upstream_called: true,
+                            });
+                            self.annotate_cache_decision(
+                                &mut event,
+                                "evaluation_error",
+                                "unknown",
+                                "call_upstream",
+                            );
+                            event.attributes.insert(
+                                "evaluation_error".into(),
+                                serde_json::Value::String(e.to_string()),
+                            );
+                            self.emit(event).await;
+                        }
+                    }
 
-                Err(e) if self.semantic_cache_fail_open => {
-                    self.set_qdrant_available(false);
-                    self.record_semantic_skip("lookup_error");
-
-                    tracing::warn!(
-                        model = %req.normalized_model(),
-                        error = %e,
-                        "semantic lookup failed; skipping semantic cache and continuing upstream"
-                    );
-                }
-
-                Err(e) => {
-                    self.set_qdrant_available(false);
-                    return Err(AppError::dependency_failure(
-                        DependencyKind::Qdrant,
-                        FailureClass::Unavailable,
-                        format!("semantic lookup failed and semantic_cache_fail_open=false: {e}"),
-                    ));
+                    Err(e) => {
+                        self.set_qdrant_available(false);
+                        return Err(AppError::dependency_failure(
+                            DependencyKind::Qdrant,
+                            FailureClass::Unavailable,
+                            format!(
+                                "semantic lookup failed and semantic_cache_fail_open=false: {e}"
+                            ),
+                        ));
+                    }
                 }
             }
-        } else if self.semantic_cache_enabled {
+        } else if self.semantic_cache_enabled
+            && !cache_control.bypass_lookup
+            && evaluation_hit.is_none()
+            && !self.semantic_eligible(&cache_req)
+        {
             self.record_semantic_skip("ineligible_request");
 
             tracing::debug!(
@@ -805,20 +1091,54 @@ impl ChatService {
             );
         }
 
-        metrics::CACHE_MISSES.inc();
-        self.emit(EvidenceEvent::new(
-            trace_id,
-            EvidenceSource::AiFirewall,
-            EventCategory::Cache,
-            "cache.lookup.completed",
-            EventOutcome::Miss,
-        ))
-        .await;
+        if observe_mode {
+            let (outcome, decision, would_action) = match evaluation_hit {
+                Some(CACHE_TYPE_EXACT) => (EventOutcome::Hit, "exact_hit", "serve_exact_cache"),
+                Some(CACHE_TYPE_SEMANTIC) => {
+                    (EventOutcome::Hit, "semantic_hit", "serve_semantic_cache")
+                }
+                _ if evaluation_incomplete => {
+                    (EventOutcome::Failed, "evaluation_incomplete", "unknown")
+                }
+                _ => (EventOutcome::Miss, "cache_miss", "call_upstream"),
+            };
+            let mut completed = EvidenceEvent::new(
+                trace_id,
+                EvidenceSource::AiFirewall,
+                EventCategory::Cache,
+                "cache.lookup.completed",
+                outcome,
+            );
+            self.annotate_cache_decision(&mut completed, decision, would_action, "call_upstream");
+            completed.attributes.insert(
+                "evaluation_incomplete".into(),
+                serde_json::Value::Bool(evaluation_incomplete),
+            );
+            self.emit(completed).await;
+        } else {
+            metrics::CACHE_MISSES.inc();
+            let mut completed = EvidenceEvent::new(
+                trace_id,
+                EvidenceSource::AiFirewall,
+                EventCategory::Cache,
+                "cache.lookup.completed",
+                EventOutcome::Miss,
+            );
+            self.annotate_cache_decision(
+                &mut completed,
+                "cache_miss",
+                "call_upstream",
+                "call_upstream",
+            );
+            self.emit(completed).await;
+        }
 
         tracing::debug!(
             model = %req.normalized_model(),
             controlled_stream = controlled_stream,
-            "cache miss; forwarding request upstream"
+            enforcement_mode = self.enforcement_mode.as_str(),
+            evaluation_hit = evaluation_hit.unwrap_or("none"),
+            "forwarding request upstream"
         );
 
         let response = if let Some(max_stream_upstream_bytes) = controlled_stream_max_bytes {
@@ -831,6 +1151,17 @@ impl ChatService {
 
         self.record_upstream_model_cost(&response);
 
+        if observe_mode {
+            match evaluation_hit {
+                Some(CACHE_TYPE_EXACT) => self.record_evaluation_exact_hit_savings(&response),
+                Some(CACHE_TYPE_SEMANTIC) => self.record_evaluation_semantic_hit_savings(
+                    &response,
+                    evaluation_semantic_lookup_tokens,
+                ),
+                _ => {}
+            }
+        }
+
         let response = self
             .security_scan_response(&guard_context, response, trace_id)
             .await?;
@@ -841,82 +1172,126 @@ impl ChatService {
             return Ok(response);
         }
 
-        let raw = serde_json::to_string(&response)
-            .map_err(|e| AppError::internal(format!("response encode failed: {e}")))?;
+        let store_after_upstream = !observe_mode || evaluation_hit.is_none();
 
-        if self.exact_cache_enabled && self.exact_cache_store_enabled && !cache_control.bypass_store
+        if store_after_upstream
+            && self.exact_cache_enabled
+            && self.exact_cache_store_enabled
+            && !cache_control.bypass_store
         {
-            match self.exact_cache.set(&exact_key, raw).await {
-                Ok(()) => {
-                    self.set_redis_available(true);
-                }
-                Err(e) if self.exact_cache_fail_open => {
-                    self.set_redis_available(false);
-                    tracing::warn!(
-                        model = %req.normalized_model(),
-                        error = %e,
-                        "exact cache store failed; exact_cache_fail_open=true so response is returned"
-                    );
-                }
-                Err(e) => {
-                    self.set_redis_available(false);
-                    return Err(AppError::dependency_failure(
-                        DependencyKind::Redis,
-                        redis_failure_class(&e),
-                        format!("exact cache set failed: {e}"),
-                    ));
+            if observe_mode && !self.track_redis_runtime {
+                evaluation_incomplete = true;
+                self.record_evaluation_error("redis", "store");
+                self.record_evaluation_shadow_store(CACHE_TYPE_EXACT, "error");
+            } else {
+                let raw = serde_json::to_string(&response)
+                    .map_err(|e| AppError::internal(format!("response encode failed: {e}")))?;
+                match self.exact_cache.set(&exact_key, raw).await {
+                    Ok(()) => {
+                        self.set_redis_available(true);
+                        if observe_mode {
+                            self.record_evaluation_shadow_store(CACHE_TYPE_EXACT, "stored");
+                        }
+                    }
+                    Err(e) if self.exact_cache_fail_open || observe_mode => {
+                        self.set_redis_available(false);
+                        if observe_mode {
+                            evaluation_incomplete = true;
+                            self.record_evaluation_error("redis", "store");
+                            self.record_evaluation_shadow_store(CACHE_TYPE_EXACT, "error");
+                        }
+                        tracing::warn!(
+                            model = %req.normalized_model(),
+                            error = %e,
+                            enforcement_mode = self.enforcement_mode.as_str(),
+                            "exact cache store failed; response is returned"
+                        );
+                    }
+                    Err(e) => {
+                        self.set_redis_available(false);
+                        return Err(AppError::dependency_failure(
+                            DependencyKind::Redis,
+                            redis_failure_class(&e),
+                            format!("exact cache set failed: {e}"),
+                        ));
+                    }
                 }
             }
         }
 
-        if self.semantic_cache_enabled
+        if store_after_upstream
+            && self.semantic_cache_enabled
             && self.semantic_cache_store_enabled
             && !cache_control.bypass_store
             && self.semantic_eligible(&cache_req)
         {
-            match self
-                .semantic_cache
-                .store(
-                    req.normalized_model(),
-                    &semantic_text,
-                    &response,
-                    privacy_placeholder_signature,
-                )
-                .await
-            {
-                Ok(embedding_usage) => {
-                    self.set_qdrant_available(true);
-                    if let Some(usage) = embedding_usage {
-                        self.record_embedding_overhead(
-                            req.normalized_model(),
-                            EMBEDDING_OPERATION_STORE,
-                            usage.prompt_tokens,
+            if observe_mode && !self.track_qdrant_runtime {
+                evaluation_incomplete = true;
+                self.record_evaluation_error("qdrant", "store");
+                self.record_evaluation_shadow_store(CACHE_TYPE_SEMANTIC, "error");
+            } else {
+                match self
+                    .semantic_cache
+                    .store(
+                        req.normalized_model(),
+                        &semantic_text,
+                        &response,
+                        privacy_placeholder_signature,
+                    )
+                    .await
+                {
+                    Ok(embedding_usage) => {
+                        self.set_qdrant_available(true);
+                        if observe_mode {
+                            self.record_evaluation_shadow_store(CACHE_TYPE_SEMANTIC, "stored");
+                        }
+                        if let Some(usage) = embedding_usage {
+                            self.record_embedding_overhead(
+                                req.normalized_model(),
+                                EMBEDDING_OPERATION_STORE,
+                                usage.prompt_tokens,
+                            );
+                        }
+                    }
+
+                    Err(e) if self.semantic_cache_fail_open || observe_mode => {
+                        self.set_qdrant_available(false);
+                        self.record_semantic_skip("store_error");
+                        if observe_mode {
+                            evaluation_incomplete = true;
+                            self.record_evaluation_error("qdrant", "store");
+                            self.record_evaluation_shadow_store(CACHE_TYPE_SEMANTIC, "error");
+                        }
+
+                        tracing::warn!(
+                            model = %req.normalized_model(),
+                            error = %e,
+                            enforcement_mode = self.enforcement_mode.as_str(),
+                            "semantic store failed; response returned without semantic cache write"
                         );
                     }
-                }
 
-                Err(e) if self.semantic_cache_fail_open => {
-                    self.set_qdrant_available(false);
-                    self.record_semantic_skip("store_error");
+                    Err(e) => {
+                        self.set_qdrant_available(false);
+                        self.record_semantic_skip("store_error");
 
-                    tracing::warn!(
-                        model = %req.normalized_model(),
-                        error = %e,
-                        "semantic store failed; response returned without semantic cache write"
-                    );
-                }
-
-                Err(e) => {
-                    self.set_qdrant_available(false);
-                    self.record_semantic_skip("store_error");
-
-                    return Err(AppError::dependency_failure(
-                        DependencyKind::Qdrant,
-                        FailureClass::Unavailable,
-                        format!("semantic store failed and semantic_cache_fail_open=false: {e}"),
-                    ));
+                        return Err(AppError::dependency_failure(
+                            DependencyKind::Qdrant,
+                            FailureClass::Unavailable,
+                            format!(
+                                "semantic store failed and semantic_cache_fail_open=false: {e}"
+                            ),
+                        ));
+                    }
                 }
             }
+        }
+
+        if observe_mode && evaluation_incomplete {
+            tracing::debug!(
+                trace_id = %trace_id,
+                "evaluation completed with one or more non-blocking cache dependency errors"
+            );
         }
 
         let response = self
@@ -1444,10 +1819,119 @@ impl ChatService {
         event
     }
 
-    async fn emit(&self, event: EvidenceEvent) {
+    async fn emit(&self, mut event: EvidenceEvent) {
+        event.attributes.insert(
+            "enforcement_mode".into(),
+            serde_json::Value::String(self.enforcement_mode.as_str().into()),
+        );
         if let Err(error) = self.evidence_sink.emit(event).await {
             tracing::warn!(error = %error, "failed to emit VCAL evidence event");
         }
+    }
+
+    fn effective_exact_cache_prefix(&self) -> &'static str {
+        if self.enforcement_mode.is_observe() {
+            "chatcmpl:eval:v1"
+        } else {
+            "chatcmpl:v1"
+        }
+    }
+
+    fn annotate_cache_decision(
+        &self,
+        event: &mut EvidenceEvent,
+        decision: &str,
+        would_action: &str,
+        applied_action: &str,
+    ) {
+        event.attributes.insert(
+            "decision".into(),
+            serde_json::Value::String(decision.to_string()),
+        );
+        event.attributes.insert(
+            "would_action".into(),
+            serde_json::Value::String(would_action.to_string()),
+        );
+        event.attributes.insert(
+            "applied_action".into(),
+            serde_json::Value::String(applied_action.to_string()),
+        );
+    }
+
+    fn record_evaluation_cache_outcome(&self, cache_type: &'static str, result: &'static str) {
+        metrics::EVALUATION_CACHE_OUTCOMES_TOTAL
+            .with_label_values(&[cache_type, result])
+            .inc();
+    }
+
+    fn record_evaluation_shadow_store(&self, cache_type: &'static str, result: &'static str) {
+        metrics::EVALUATION_SHADOW_STORE_TOTAL
+            .with_label_values(&[cache_type, result])
+            .inc();
+    }
+
+    fn record_evaluation_error(&self, component: &'static str, operation: &'static str) {
+        metrics::EVALUATION_ERRORS_TOTAL
+            .with_label_values(&[component, operation])
+            .inc();
+    }
+
+    fn record_evaluation_upstream_call_avoided(&self, cache_type: &'static str) {
+        metrics::EVALUATION_UPSTREAM_CALLS_AVOIDED_TOTAL
+            .with_label_values(&[cache_type])
+            .inc();
+    }
+
+    fn record_evaluation_semantic_lookup_overhead(&self, model: &str, prompt_tokens: u32) {
+        let embedding_cost =
+            estimate_embedding_micro_usd(prompt_tokens, self.embedding_price.as_ref());
+        metrics::EVALUATION_EMBEDDING_OVERHEAD_MICRO_USD_TOTAL
+            .with_label_values(&[model, EMBEDDING_OPERATION_LOOKUP])
+            .inc_by(embedding_cost);
+    }
+
+    fn record_evaluation_exact_hit_savings(&self, response: &ChatCompletionResponse) {
+        let Some(usage) = &response.usage else {
+            return;
+        };
+
+        metrics::EVALUATION_TOKENS_AVOIDED_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
+            .inc_by(usage.total_tokens as u64);
+
+        let saved = estimate_micro_usd_saved(&response.model, usage, &self.model_prices);
+        metrics::EVALUATION_GROSS_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
+            .inc_by(saved);
+        metrics::EVALUATION_NET_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_EXACT])
+            .inc_by(saved);
+    }
+
+    fn record_evaluation_semantic_hit_savings(
+        &self,
+        response: &ChatCompletionResponse,
+        embedding_prompt_tokens: u32,
+    ) {
+        let Some(usage) = &response.usage else {
+            return;
+        };
+
+        metrics::EVALUATION_TOKENS_AVOIDED_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
+            .inc_by(usage.total_tokens as u64);
+
+        let gross_saved = estimate_micro_usd_saved(&response.model, usage, &self.model_prices);
+        let embedding_cost =
+            estimate_embedding_micro_usd(embedding_prompt_tokens, self.embedding_price.as_ref());
+        let net_saved = gross_saved.saturating_sub(embedding_cost);
+
+        metrics::EVALUATION_GROSS_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
+            .inc_by(gross_saved);
+        metrics::EVALUATION_NET_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[response.model.as_str(), CACHE_TYPE_SEMANTIC])
+            .inc_by(net_saved);
     }
 
     fn validate(&self, req: &ChatCompletionRequest) -> Result<(), AppError> {
@@ -2144,6 +2628,27 @@ mod tests {
         format!("chatcmpl:v1:{}", sha256_hex(&normalized))
     }
 
+    fn evaluation_exact_key_for(req: &ChatCompletionRequest) -> String {
+        let normalized = normalize_chat_request(req).unwrap();
+        format!("chatcmpl:eval:v1:{}", sha256_hex(&normalized))
+    }
+
+    fn build_observe_service(
+        exact_cache: Arc<dyn ExactCache>,
+        semantic_cache: Arc<dyn SemanticCache>,
+        upstream: Arc<dyn LlmUpstream>,
+        semantic_cache_enabled: bool,
+    ) -> ChatService {
+        let mut service = build_service(
+            exact_cache,
+            semantic_cache,
+            upstream,
+            semantic_cache_enabled,
+        );
+        service.enforcement_mode = AifEnforcementMode::Observe;
+        service
+    }
+
     struct FailingExactCache;
 
     #[async_trait]
@@ -2415,6 +2920,7 @@ mod tests {
                     provider_name: "test".into(),
                 },
                 dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Enforce,
             },
             ChatServiceSettings {
                 semantic_cache_enabled: false,
@@ -2484,6 +2990,7 @@ mod tests {
                     provider_name: "test".into(),
                 },
                 dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Enforce,
             },
             ChatServiceSettings {
                 semantic_cache_enabled: true,
@@ -2707,6 +3214,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observe_mode_never_fails_request_on_redis_error_even_when_fail_open_is_false() {
+        let upstream = FakeUpstream::new(response_with_content("upstream ok"));
+        let upstream_state = upstream.state();
+        let mut service = ChatService::new(
+            Arc::new(FailingExactCache),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(upstream),
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: false,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: false,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+        service.enforcement_mode = AifEnforcementMode::Observe;
+
+        let result = service.handle(request()).await;
+
+        assert!(result.is_ok());
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+    }
+
+    #[tokio::test]
+    async fn observe_mode_never_fails_request_on_semantic_error_even_when_fail_open_is_false() {
+        let upstream = FakeUpstream::new(response_with_content("upstream ok"));
+        let upstream_state = upstream.state();
+        let mut service = ChatService::new(
+            Arc::new(FakeExactCache::new()),
+            Arc::new(FakeSemanticCache::with_lookup_error(
+                "simulated Qdrant outage",
+            )),
+            Arc::new(upstream),
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: false,
+                exact_cache_fail_open: false,
+                exact_cache_store_enabled: false,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: false,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+        service.enforcement_mode = AifEnforcementMode::Observe;
+
+        let result = service.handle(request()).await;
+
+        assert!(result.is_ok());
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+    }
+
+    #[tokio::test]
+    async fn observe_cache_bypass_performs_no_shadow_lookup_or_store() {
+        let req = request();
+        let exact_cache = FakeExactCache::with_entry(
+            evaluation_exact_key_for(&req),
+            serde_json::to_string(&response_with_content("shadow hit")).unwrap(),
+        );
+        let exact_state = exact_cache.state();
+        let semantic_cache = FakeSemanticCache::with_lookup_result(SemanticLookupHit {
+            response: response_with_content("semantic shadow hit"),
+            embedding_usage: None,
+        });
+        let semantic_state = semantic_cache.state();
+        let upstream = FakeUpstream::new(response_with_content("live upstream"));
+        let upstream_state = upstream.state();
+        let service = build_observe_service(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            true,
+        );
+
+        let response = service
+            .handle_with_evidence(
+                req,
+                CacheControl {
+                    bypass_lookup: true,
+                    bypass_store: true,
+                },
+                uuid::Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.id, "upstream-response");
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+        let exact = exact_state.lock().unwrap();
+        assert_eq!(exact.get_calls, 0);
+        assert_eq!(exact.set_calls, 0);
+        drop(exact);
+        let semantic = semantic_state.lock().unwrap();
+        assert_eq!(semantic.lookup_calls, 0);
+        assert_eq!(semantic.store_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn observe_evidence_records_would_action_and_applied_action() {
+        let req = request();
+        let cached = response_with_usage("shadow-exact-hit", 1000, 500);
+        let sink = RecordingEvidenceSink::default();
+        let events = sink.events.clone();
+        let service = ChatService::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache: Arc::new(FakeExactCache::with_entry(
+                    evaluation_exact_key_for(&req),
+                    serde_json::to_string(&cached).unwrap(),
+                )),
+                semantic_cache: Arc::new(FakeSemanticCache::new()),
+                upstream: Arc::new(FakeUpstream::new(response_with_content("live upstream"))),
+                guard_orchestrator: Arc::new(crate::guards::NoopGuardOrchestrator),
+                evidence_sink: Arc::new(sink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".into(),
+                    provider_name: "test".into(),
+                },
+                dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Observe,
+            },
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: false,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: false,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let response = service.handle(req).await.unwrap();
+        assert_eq!(response.id, "upstream-response");
+
+        let events = events.lock().unwrap();
+        assert!(events
+            .iter()
+            .all(|event| { event.attributes.get("enforcement_mode") == Some(&json!("observe")) }));
+        let exact_hit = events
+            .iter()
+            .find(|event| event.event_type == "cache.exact.lookup")
+            .expect("exact lookup evidence must be present");
+        assert_eq!(exact_hit.outcome, EventOutcome::Hit);
+        assert_eq!(
+            exact_hit.attributes.get("decision"),
+            Some(&json!("exact_hit"))
+        );
+        assert_eq!(
+            exact_hit.attributes.get("would_action"),
+            Some(&json!("serve_exact_cache"))
+        );
+        assert_eq!(
+            exact_hit.attributes.get("applied_action"),
+            Some(&json!("call_upstream"))
+        );
+        assert_eq!(
+            exact_hit.cache.as_ref().map(|cache| cache.upstream_called),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
     async fn successful_request_emits_exactly_one_completed_terminal_event() {
         let sink = RecordingEvidenceSink::default();
         let events = Arc::clone(&sink.events);
@@ -2722,6 +3401,7 @@ mod tests {
                     provider_name: "test".into(),
                 },
                 dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Enforce,
             },
             ChatServiceSettings {
                 semantic_cache_enabled: false,
@@ -2788,6 +3468,7 @@ mod tests {
                     provider_name: "test".into(),
                 },
                 dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Enforce,
             },
             ChatServiceSettings {
                 semantic_cache_enabled: false,
@@ -2923,6 +3604,176 @@ mod tests {
         let exact = exact_state.lock().unwrap();
         assert_eq!(exact.get_calls, 1);
         assert_eq!(exact.set_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn observe_exact_hit_returns_live_upstream_response_and_skips_semantic_evaluation() {
+        let req = request();
+        let cached = response_with_usage("shadow-exact-hit", 1000, 500);
+        let upstream_response = response_with_usage("live-upstream", 20, 10);
+
+        let exact_cache = FakeExactCache::with_entry(
+            evaluation_exact_key_for(&req),
+            serde_json::to_string(&cached).unwrap(),
+        );
+        let exact_state = exact_cache.state();
+        let semantic_cache = FakeSemanticCache::new();
+        let semantic_state = semantic_cache.state();
+        let upstream = FakeUpstream::new(upstream_response);
+        let upstream_state = upstream.state();
+
+        let service = build_observe_service(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            true,
+        );
+
+        let result = service.handle(req).await.unwrap();
+
+        assert_eq!(result.id, "live-upstream");
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+        assert_eq!(semantic_state.lock().unwrap().lookup_calls, 0);
+        assert_eq!(semantic_state.lock().unwrap().store_calls, 0);
+        let exact = exact_state.lock().unwrap();
+        assert_eq!(exact.get_calls, 1);
+        assert_eq!(exact.set_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn observe_exact_hit_estimates_savings_from_the_live_upstream_call() {
+        const MODEL: &str = "eval-accounting-test-model-v08";
+
+        let req = request();
+        let cached = response_with_usage("shadow-exact-hit", 10_000, 5_000);
+        let mut live = response_with_usage("live-upstream", 20, 10);
+        live.model = MODEL.to_string();
+
+        let mut prices = HashMap::new();
+        prices.insert(
+            MODEL.to_string(),
+            ModelPrice {
+                input_usd_per_1m_tokens: 1.0,
+                output_usd_per_1m_tokens: 2.0,
+            },
+        );
+
+        let gross = metrics::EVALUATION_GROSS_SAVED_MICRO_USD_TOTAL
+            .with_label_values(&[MODEL, CACHE_TYPE_EXACT]);
+        let tokens =
+            metrics::EVALUATION_TOKENS_AVOIDED_TOTAL.with_label_values(&[MODEL, CACHE_TYPE_EXACT]);
+        let gross_before = gross.get();
+        let tokens_before = tokens.get();
+
+        let service = ChatService::new_with_guards_and_evidence(
+            ChatServiceDeps {
+                exact_cache: Arc::new(FakeExactCache::with_entry(
+                    evaluation_exact_key_for(&req),
+                    serde_json::to_string(&cached).unwrap(),
+                )),
+                semantic_cache: Arc::new(FakeSemanticCache::new()),
+                upstream: Arc::new(FakeUpstream::new(live)),
+                guard_orchestrator: Arc::new(crate::guards::NoopGuardOrchestrator),
+                evidence_sink: Arc::new(NoopEvidenceSink),
+                upstream_metadata: UpstreamMetadata {
+                    provider_type: "test".into(),
+                    provider_name: "test".into(),
+                },
+                dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Observe,
+            },
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: false,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: false,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            prices,
+            None,
+        );
+
+        let response = service.handle(req).await.unwrap();
+
+        assert_eq!(response.id, "live-upstream");
+        assert_eq!(gross.get() - gross_before, 40);
+        assert_eq!(tokens.get() - tokens_before, 30);
+    }
+
+    #[tokio::test]
+    async fn observe_semantic_hit_returns_live_upstream_and_warms_only_shadow_exact_cache() {
+        let req = request();
+        let semantic_response = response_with_usage("shadow-semantic-hit", 1000, 500);
+        let semantic_cache = FakeSemanticCache::with_lookup_result(SemanticLookupHit {
+            response: semantic_response,
+            embedding_usage: Some(EmbeddingUsage {
+                prompt_tokens: 1000,
+                total_tokens: 1000,
+            }),
+        });
+        let semantic_state = semantic_cache.state();
+        let exact_cache = FakeExactCache::new();
+        let exact_state = exact_cache.state();
+        let upstream = FakeUpstream::new(response_with_usage("live-upstream", 20, 10));
+        let upstream_state = upstream.state();
+
+        let service = build_observe_service(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            true,
+        );
+
+        let result = service.handle(req.clone()).await.unwrap();
+
+        assert_eq!(result.id, "live-upstream");
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+        let semantic = semantic_state.lock().unwrap();
+        assert_eq!(semantic.lookup_calls, 1);
+        assert_eq!(semantic.store_calls, 0);
+        drop(semantic);
+        let exact = exact_state.lock().unwrap();
+        assert_eq!(exact.get_calls, 1);
+        assert_eq!(exact.set_calls, 1);
+        assert!(exact.entries.contains_key(&evaluation_exact_key_for(&req)));
+    }
+
+    #[tokio::test]
+    async fn observe_miss_returns_live_upstream_and_populates_shadow_exact_and_semantic_state() {
+        let req = request();
+        let exact_cache = FakeExactCache::new();
+        let exact_state = exact_cache.state();
+        let semantic_cache = FakeSemanticCache::new();
+        let semantic_state = semantic_cache.state();
+        let upstream = FakeUpstream::new(response_with_usage("live-upstream", 20, 10));
+        let upstream_state = upstream.state();
+
+        let service = build_observe_service(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            true,
+        );
+
+        let result = service.handle(req.clone()).await.unwrap();
+
+        assert_eq!(result.id, "live-upstream");
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+        let exact = exact_state.lock().unwrap();
+        assert_eq!(exact.get_calls, 1);
+        assert_eq!(exact.set_calls, 1);
+        assert!(exact.entries.contains_key(&evaluation_exact_key_for(&req)));
+        drop(exact);
+        let semantic = semantic_state.lock().unwrap();
+        assert_eq!(semantic.lookup_calls, 1);
+        assert_eq!(semantic.store_calls, 1);
+        assert_eq!(
+            semantic.last_store_response.as_ref().unwrap().id,
+            "live-upstream"
+        );
     }
 
     #[tokio::test]
@@ -3212,6 +4063,7 @@ mod tests {
                     provider_name: "test".into(),
                 },
                 dependencies: DependencyState::new(true, true, true),
+                enforcement_mode: AifEnforcementMode::Enforce,
             },
             ChatServiceSettings {
                 semantic_cache_enabled: false,

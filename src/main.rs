@@ -380,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
         semantic::qdrant::prune_expired_semantic_cache_entries(
             cfg.qdrant_url.clone(),
             cfg.qdrant_api_key.clone(),
-            cfg.qdrant_collection.clone(),
+            cfg.effective_qdrant_collection(),
         )
         .await?;
 
