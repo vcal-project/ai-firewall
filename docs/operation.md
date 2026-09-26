@@ -12,6 +12,7 @@ AI Cost Firewall is designed to behave predictably in production environments an
 AI Cost Firewall provides:
 
 - configurable exact cache and semantic cache orchestration
+- AIF `enforce` / `observe` execution mode with isolated evaluation cache state
 - explicit readiness, liveness, and dependency-aware readiness behavior
 - graceful shutdown with request draining
 - nginx-style hot reload using `SIGHUP`
@@ -48,6 +49,32 @@ AI Cost Firewall
         ▼
 OpenAI-compatible provider
 ```
+
+---
+
+# AIF Enforcement Mode
+
+The runtime mode is selected with:
+
+```conf
+aif_enforcement_mode enforce;
+```
+
+or:
+
+```conf
+aif_enforcement_mode observe;
+```
+
+`enforce` is the default production behavior. `observe` keeps AIF in the live path but never substitutes a cached response for the upstream response. Exact and semantic decisions are evaluated using isolated shadow state.
+
+Operationally, observe mode has three important properties:
+
+1. every eligible live request still reaches the upstream provider;
+2. evaluation cache failures are non-blocking and recorded through evaluation telemetry;
+3. production cache-hit and savings metrics are not incremented by shadow hits.
+
+Guard modules are outside this mode switch and continue to follow their existing configuration.
 
 ---
 
@@ -105,7 +132,7 @@ During startup, AI Cost Firewall validates:
 - request body and prompt-size configuration
 - model validation settings
 
-Startup fails fast on invalid configuration to avoid silent runtime errors. Dependency behavior may also be affected by fail-open and readiness settings.
+Startup fails fast on invalid configuration to avoid silent runtime errors. In `enforce`, dependency behavior may also be affected by fail-open and readiness settings. In `observe`, Redis/Qdrant/embedding failures used only for evaluation do not prevent the live gateway from starting or serving requests, although static configuration validity is still enforced.
 
 ---
 
@@ -172,8 +199,11 @@ It does not bypass invalid configuration validation. Dependency startup behavior
 
 # Startup Behavior Summary
 
+Unless a row explicitly mentions `observe`, the cache dependency rows below describe normal `enforce` behavior.
+
 | Condition | Behavior |
 |---|---|
+| `aif_enforcement_mode observe` + evaluation Redis/Qdrant unavailable | AIF can continue serving live traffic; evaluation error telemetry records the failure |
 | Redis unavailable + exact cache enabled + fail-open disabled | startup fails |
 | Redis unavailable + exact cache enabled + fail-open enabled | startup may continue; readiness depends on `readiness_requires_redis` |
 | Exact cache disabled | Redis exact-cache path skipped |
@@ -291,7 +321,7 @@ readiness_requires_qdrant false;
 readiness_requires_upstream false;
 ```
 
-This allows deployments to choose whether readiness should fail when Redis, Qdrant, or the upstream provider is unavailable.
+This allows deployments to choose whether readiness should fail when Redis, Qdrant, or the upstream provider is unavailable. In `observe`, Redis and Qdrant are evaluation-only dependencies and do not make `/readyz` fail solely because they are unavailable.
 
 ---
 
@@ -304,6 +334,7 @@ This allows deployments to choose whether readiness should fail when Redis, Qdra
 | Required Redis unavailable | 200 | 503 |
 | Required Qdrant unavailable | 200 | 503 |
 | Required upstream unavailable | 200 | 503 |
+| Observe mode + evaluation Redis/Qdrant unavailable | 200 | 200 |
 | Process stopped | unavailable | unavailable |
 
 ---
@@ -678,6 +709,23 @@ embedding_api_key dummy;
 
 ---
 
+# Observe-mode Cache Runtime Flow
+
+Observe mode mirrors the state transitions that enforcement would have made while keeping the live response path unchanged:
+
+| Evaluation result | Live behavior | Evaluation state |
+|---|---|---|
+| exact hit | upstream still called | semantic lookup/store skipped for the simulated decision |
+| exact miss + semantic hit | upstream still called | shadow exact cache may be warmed from the semantic result |
+| exact + semantic miss | upstream called | eligible live upstream response stored in shadow exact and semantic state |
+| cache bypass | upstream called | no shadow lookup/store |
+
+Evaluation Redis/Qdrant/embedding failures increment `aif_evaluation_errors_total` and do not fail the live request. After Redis or Qdrant recovers, AIF resumes using the evaluation cache path; the Redis exact-cache connection manager is rebuilt after failed or timed-out operations so a forced Redis restart does not permanently disable shadow exact caching.
+
+Potential avoided-call/token/cost accounting for a shadow hit uses the actual live upstream response observed on that request.
+
+---
+
 # Semantic Cache Runtime Flow
 
 Semantic cache lookup flow:
@@ -881,6 +929,24 @@ aif_stream_duration_seconds
 ```
 
 Use upstream TTFB and generation duration to understand provider behavior. Use client TTFB to measure the user-visible delay introduced by the controlled-generation/approval barrier. `aif_stream_upstream_response_bytes` records total upstream SSE size per controlled request, while `aif_stream_client_buffer_bytes` records the approved downstream SSE payload size.
+
+---
+
+# Evaluation Metrics
+
+```text
+aif_enforcement_mode_info{mode="observe"}
+aif_evaluation_requests_total
+aif_evaluation_cache_outcomes_total{cache_type,result}
+aif_evaluation_upstream_calls_avoided_total{cache_type}
+aif_evaluation_tokens_avoided_total{model,cache_type}
+aif_evaluation_gross_saved_micro_usd_total{model,cache_type}
+aif_evaluation_net_saved_micro_usd_total{model,cache_type}
+aif_evaluation_shadow_store_total{cache_type,result}
+aif_evaluation_errors_total{component,operation}
+```
+
+These counters describe hypothetical enforcement outcomes. They are intentionally separate from production `aif_cache_*`, saved-token, and savings counters.
 
 ---
 
@@ -1198,7 +1264,9 @@ The current guard modules inspect text content only. Non-text content such as im
 - Redis is required only when exact cache is enabled and the deployment treats Redis as required
 - Qdrant is required only when semantic cache is enabled and the deployment treats Qdrant as required
 - `exact_cache_fail_open` affects runtime Redis/exact-cache failure behavior
-- `semantic_cache_fail_open` affects runtime semantic lookup behavior
+- `semantic_cache_fail_open` affects normal `enforce` runtime semantic lookup behavior
+- `observe` makes evaluation Redis/Qdrant/embedding failures non-blocking regardless of production cache fail-open settings
+- evaluation cache state is isolated from production cache state and is not automatically promoted on mode change
 - `request_timeout_seconds` is a backward-compatible fallback
 - `upstream_timeout_seconds` controls chat-completion upstream calls
 - `embedding_timeout_seconds` controls embedding provider calls

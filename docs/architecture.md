@@ -17,7 +17,7 @@ The default open-source deployment uses a two-layer caching strategy:
 1. exact cache (Redis / Valkey)
 2. semantic cache (Qdrant)
 
-Only requests that miss all enabled cache layers are forwarded upstream.
+In the default `enforce` mode, only requests that miss all enabled cache layers are forwarded upstream. In v0.8.0 `observe` mode, AIF evaluates isolated shadow cache state but still forwards eligible live requests upstream.
 
 ---
 
@@ -158,7 +158,7 @@ Applications typically require no SDK changes.
 
 # Request Lifecycle
 
-Every request follows a staged pipeline.
+Every request follows a staged pipeline. v0.8.0 adds an AIF-level `enforce` / `observe` decision that changes whether cache decisions are applied to live traffic while leaving the guard pipeline unchanged.
 
 ```text
 receive request
@@ -169,14 +169,15 @@ receive request
 → Usage Guard policy evaluation, if enabled
 → check per-request cache bypass
 → exact cache lookup, if enabled
-→ semantic cache lookup, if enabled
-→ upstream request on miss or bypass
+→ semantic cache lookup, if enabled and not short-circuited by an exact decision
+→ in enforce: upstream request on miss or bypass
+→ in observe: live upstream request even when a shadow exact/semantic hit is found
 → for stream=true cache misses, consume and assemble provider SSE internally
 → normalize cache hits and upstream results into a canonical chat-completion response
 → Security Guard response scan, if enabled
-→ cache storage, if enabled and allowed by the guard path
+→ production cache storage in enforce, or isolated shadow-state updates in observe, if enabled and allowed by the guard path
 → Privacy Guard restore, if enabled and mapping exists
-→ usage/cost/evidence accounting
+→ actual usage/cost plus production or evaluation evidence/metrics accounting
 → JSON response or approved controlled-SSE replay
 ```
 
@@ -185,6 +186,8 @@ A request can skip cache lookup and cache storage when the configured cache-bypa
 ---
 
 # Request Flow
+
+The diagram below depicts the normal `enforce` path. In `observe`, a cache hit becomes a would-have decision and the live request continues to the upstream provider instead of returning the cached response.
 
 ```mermaid
 flowchart TD
@@ -721,6 +724,42 @@ When placeholders are used, Authorization headers are not forwarded upstream.
 
 ---
 
+# AIF Enforcement and Evaluation Modes
+
+AI Cost Firewall v0.8.0 supports:
+
+```conf
+aif_enforcement_mode enforce;
+```
+
+and:
+
+```conf
+aif_enforcement_mode observe;
+```
+
+`enforce` is the default production mode. Eligible cache hits can satisfy the request without a chat-completion upstream call.
+
+`observe` is designed for non-disruptive production evaluation. AIF computes the would-have cache decision using isolated shadow state, but the application response still comes from the live upstream provider.
+
+Isolation rules:
+
+- exact evaluation keys use a separate Redis namespace from production keys;
+- semantic evaluation uses a separate Qdrant collection (for example `aif_semantic_cache_eval` when the production collection is `aif_semantic_cache`);
+- shadow state is not automatically promoted when switching to `enforce`;
+- bypassed requests do not participate in shadow lookup or store.
+
+Failure rules:
+
+- evaluation Redis/Qdrant/embedding failures never interrupt live traffic;
+- evaluation-only Redis/Qdrant loss does not by itself fail readiness in `observe`;
+- evaluation errors are recorded separately;
+- exact and semantic evaluation resume after dependency recovery.
+
+This mode controls AIF caching only. It does not change Security Guard, Privacy Guard, or Usage Guard enforcement.
+
+---
+
 # Two-Layer Cache Strategy
 
 AI Cost Firewall uses a staged cache pipeline.
@@ -736,7 +775,7 @@ hash(normalized request)
 → cached response
 ```
 
-Fastest possible path.
+Fastest possible path in `enforce`. In `observe`, an exact shadow hit becomes the would-have decision but AIF still calls upstream and does not continue into semantic lookup for that simulated request.
 
 Can be disabled with:
 
@@ -755,7 +794,7 @@ similar_prompt
 → cached response
 ```
 
-Used when exact matching fails.
+Used when exact matching fails. In `observe`, a semantic shadow hit is recorded as a would-have hit while the live request still reaches upstream; shadow exact state may be warmed to mirror the state transition enforcement would have made.
 
 Can be disabled with:
 
@@ -998,7 +1037,7 @@ readiness_requires_qdrant false;
 readiness_requires_upstream false;
 ```
 
-This lets deployments decide whether Redis, Qdrant, or upstream-provider availability should affect readiness.
+This lets deployments decide whether Redis, Qdrant, or upstream-provider availability should affect readiness. In `observe`, Redis and Qdrant are evaluation-only dependencies and do not make the service unready solely because the evaluation cache is unavailable. Upstream remains part of the live request path.
 
 ---
 
@@ -1035,6 +1074,26 @@ aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
 aif_cache_bypass_requests_total
 ```
+
+---
+
+# Evaluation Metrics
+
+Evaluation metrics are deliberately separate from production cache-hit and savings counters:
+
+```text
+aif_enforcement_mode_info
+aif_evaluation_requests_total
+aif_evaluation_cache_outcomes_total
+aif_evaluation_upstream_calls_avoided_total
+aif_evaluation_tokens_avoided_total
+aif_evaluation_gross_saved_micro_usd_total
+aif_evaluation_net_saved_micro_usd_total
+aif_evaluation_shadow_store_total
+aif_evaluation_errors_total
+```
+
+Evidence for evaluation decisions carries `enforcement_mode`, `decision`, `would_action`, and `applied_action` attributes so a would-have cache action cannot be confused with what was actually applied to the live request.
 
 ---
 

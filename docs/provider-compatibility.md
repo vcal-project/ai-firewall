@@ -428,6 +428,22 @@ The current guard modules inspect text content. Non-text content such as images,
 AI Cost Firewall supports both ordinary JSON chat completions and controlled OpenAI-compatible SSE delivery. Optional guards use the same complete-response control pipeline for both delivery modes.
 
 ---
+# Evaluation Mode and Provider Capacity
+
+Provider compatibility requirements do not change in AIF v0.8.0 Evaluation Mode, but provider traffic behavior does.
+
+With:
+
+```conf
+aif_enforcement_mode observe;
+```
+
+would-have cache hits still generate a real upstream chat-completion request. Plan provider rate limits, concurrency, and budget for the full observed workload during the pilot. Evaluation metrics estimate what enforcement could avoid later; they do not represent traffic already avoided.
+
+For `stream=true`, the upstream must still provide compatible SSE in observe mode because the live upstream stream is consumed and approved even when shadow cache evaluation reports a would-have hit.
+
+---
+
 # Streaming Compatibility
 
 AI Cost Firewall supports controlled chat-completion streaming for providers that expose an OpenAI-compatible SSE response to `stream=true` requests.
@@ -568,6 +584,8 @@ Each example includes:
 # Operational Recommendations
 
 ## Best First Evaluation Path
+
+For a production traffic assessment with minimal cache-related behavioral change, use `aif_enforcement_mode observe;`. Keep in mind that guard modules still enforce according to their own configuration, and the upstream provider continues to receive the full live request volume.
 
 Recommended:
 

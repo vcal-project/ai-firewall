@@ -1,5 +1,34 @@
 # Upgrading AI Cost Firewall
 
+## v0.7.0 to v0.8.0
+
+v0.8.0 introduces AI Cost Firewall Evaluation Mode. The default remains `enforce`, so existing v0.7.0 deployments retain normal production cache behavior unless `aif_enforcement_mode observe;` is explicitly configured.
+
+1. Back up the current configuration, deployment manifests, and Grafana/Prometheus provisioning files.
+2. Add or review the new directive:
+
+   ```conf
+   aif_enforcement_mode enforce;
+   ```
+
+3. For a non-disruptive pilot, change it to:
+
+   ```conf
+   aif_enforcement_mode observe;
+   ```
+
+4. In `observe`, provision Redis and Qdrant for evaluation state, but do not expect cache hits to reduce real upstream traffic. Every eligible live request still reaches the upstream provider.
+5. Confirm `/version` reports the intended `aif_enforcement_mode` and `effective_cache_scope`. In observe mode, confirm the effective semantic collection is the isolated evaluation collection.
+6. Update monitoring to include `aif_enforcement_mode_info` and the `aif_evaluation_*` metrics. Do not combine these hypothetical savings with normal production `aif_cache_*` or savings counters.
+7. Verify cache bypass: a bypassed observe request must perform no shadow exact/semantic lookup and no shadow store.
+8. Verify JSON-to-SSE and SSE-to-JSON requests share the same shadow exact-cache identity while still calling the live upstream provider.
+9. Test Redis and Qdrant loss in `observe`; requests and `/readyz` should remain healthy, evaluation errors should increment, and evaluation should recover automatically after the dependency returns.
+10. If VCAL Audit is enabled, verify evidence carries `enforcement_mode`, `decision`, `would_action`, and `applied_action` so hypothetical decisions remain distinguishable from actions applied to live traffic.
+
+Evaluation cache state is intentionally isolated from production state and is not promoted automatically when switching from `observe` to `enforce`. No Redis, Qdrant, or Audit data migration is required solely for this release.
+
+`aif_enforcement_mode` controls AIF caching/cost optimization only. It does not add `observe` modes to Security Guard, Privacy Guard, or Usage Guard; those modules continue to follow their existing configuration.
+
 ## v0.6.x to v0.7.0
 
 v0.7.0 introduces controlled OpenAI-compatible streaming. `stream=true` no longer has to be rejected: AI Cost Firewall can consume provider SSE internally, reconstruct the complete response, run response controls and Privacy restoration, and only then replay approved SSE to the client.
@@ -58,4 +87,4 @@ No Redis, Qdrant, or Audit data migration is introduced by these v0.5.0 Firewall
 
 ## Rollback
 
-The v0.5.0 configuration additions are backward-compatible when removed. Restore the previous image and previous configuration, then verify health/readiness and a known request. If a rollback follows a failed config reload, note that v0.5.0 keeps the previous valid runtime active when replacement runtime construction fails.
+The configuration additions described above are backward-compatible when removed when rolling back to the corresponding older release. Restore the previous image and previous configuration, then verify health/readiness and a known request. If a rollback follows a failed config reload, note that v0.5.0 keeps the previous valid runtime active when replacement runtime construction fails.

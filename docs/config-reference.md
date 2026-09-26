@@ -47,6 +47,7 @@ The configuration is logically divided into:
 | Section | Purpose |
 |---|---|
 | Core Settings | Runtime and server behavior |
+| Evaluation Mode | AIF cache enforcement versus non-disruptive observation |
 | Upstream Provider | Chat-completion provider |
 | Controlled Streaming | Buffered provider SSE assembly and approved SSE replay |
 | Embedding Provider | Embedding generation |
@@ -69,6 +70,8 @@ The configuration is logically divided into:
 
 ```conf
 listen_addr 0.0.0.0:8080;
+
+aif_enforcement_mode enforce;
 
 redis_url redis://redis:6379;
 
@@ -282,6 +285,41 @@ Typical values:
 0.0.0.0:8080
 127.0.0.1:8080
 ```
+
+---
+
+## aif_enforcement_mode
+
+Controls whether AI Cost Firewall applies cache decisions to live traffic or evaluates them without substituting cached responses.
+
+Example:
+
+```conf
+aif_enforcement_mode enforce;
+```
+
+Supported values:
+
+```text
+enforce
+observe
+```
+
+Default:
+
+```text
+enforce
+```
+
+Behavior:
+
+- `enforce` uses the normal production exact/semantic cache path and may serve eligible cache hits.
+- `observe` evaluates the same cache opportunities using isolated shadow cache state but always continues to the live upstream provider for the application response.
+- `observe` does not promote shadow cache state into production cache state.
+- cache-bypass requests perform no shadow lookup or shadow store.
+- Redis, Qdrant, and embedding failures used only for evaluation are non-blocking in `observe`.
+
+This setting controls **AI Cost Firewall caching and cost optimization only**. It does not change Security Guard, Privacy Guard, or Usage Guard enforcement behavior.
 
 ---
 
@@ -707,7 +745,7 @@ When disabled:
 
 - Redis lookup or store failures can return an error
 
-This setting controls runtime request behavior. Startup and readiness behavior are controlled separately.
+This setting controls normal `enforce` runtime request behavior. In `observe`, exact-cache evaluation failures are always non-blocking so evaluation infrastructure cannot interrupt live application traffic. Startup and readiness behavior are also relaxed for evaluation-only dependencies in `observe`.
 
 ---
 
@@ -773,7 +811,7 @@ When enabled:
 - semantic lookup failures behave like cache misses
 - requests continue upstream
 
-Does not bypass startup validation.
+In normal `enforce` mode this does not bypass startup validation. In `observe`, semantic-cache and embedding failures used only for evaluation are non-blocking; static configuration validation still applies.
 
 ---
 
@@ -1386,13 +1424,11 @@ embedding_api_key = sk-y...-key
 
 # Runtime Dependency Validation
 
-During startup and reload, AI Cost Firewall validates:
+During startup and reload, AI Cost Firewall validates static configuration and constructs the configured runtime dependencies.
 
-- Redis connectivity
-- Qdrant connectivity
-- vector-size compatibility
-- semantic cache configuration
-- runtime dependency initialization
+In `enforce`, Redis/Qdrant availability follows the normal cache fail-open and readiness policy.
+
+In `observe`, Redis, Qdrant, and embedding infrastructure used only for evaluation are optional to live request serving: initialization or runtime failure is recorded as evaluation telemetry and requests continue to the upstream provider. Static configuration errors, such as invalid syntax or incompatible configured vector dimensions, are still rejected.
 
 ---
 
@@ -1440,6 +1476,8 @@ readiness_requires_upstream false;
 
 This is often left disabled because upstream providers may be external services with temporary availability changes.
 
+In `observe`, Redis and Qdrant are evaluation-only dependencies and do not make `/readyz` fail solely because they are unavailable. Upstream availability remains part of the live request path.
+
 ---
 
 # Environment Variables
@@ -1449,6 +1487,7 @@ AI Cost Firewall supports environment-based configuration.
 Example:
 
 ```text
+AIF_ENFORCEMENT_MODE=observe
 AIF_REDIS_URL=redis://127.0.0.1:6379
 AIF_UPSTREAM_API_KEY=sk-xxxx
 AIF_STREAMING_ENABLED=true
@@ -1547,6 +1586,22 @@ aif_cache_hits_total{cache_type="semantic"}
 aif_cache_misses
 aif_upstream_calls_total
 ```
+
+Evaluation mode:
+
+```text
+aif_enforcement_mode_info{mode="observe"}
+aif_evaluation_requests_total
+aif_evaluation_cache_outcomes_total{cache_type,result}
+aif_evaluation_upstream_calls_avoided_total{cache_type}
+aif_evaluation_tokens_avoided_total{model,cache_type}
+aif_evaluation_gross_saved_micro_usd_total{model,cache_type}
+aif_evaluation_net_saved_micro_usd_total{model,cache_type}
+aif_evaluation_shadow_store_total{cache_type,result}
+aif_evaluation_errors_total{component,operation}
+```
+
+Observe-mode would-have hits and savings are intentionally not added to the normal production cache-hit or savings counters.
 
 Controlled streaming:
 

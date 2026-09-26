@@ -9,7 +9,7 @@ It reduces LLM API cost and latency using two cache layers:
 - exact cache using Redis or Valkey
 - semantic cache using Qdrant
 
-Only cache misses are forwarded to the upstream LLM endpoint unless a request explicitly bypasses cache.
+In the default `enforce` mode, only cache misses are forwarded to the upstream LLM endpoint unless a request explicitly bypasses cache. In v0.8.0 `observe` mode, AIF still evaluates cache opportunities but forwards eligible live requests upstream so application behavior is not changed by cache substitution.
 
 AI Cost Firewall can also orchestrate optional VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard modules for enterprise security, privacy, and organizational usage-policy flows. These modules are not required for the default caching-only quick start.
 
@@ -220,7 +220,7 @@ Check release metadata:
 curl http://localhost:8080/version
 ```
 
-The `/version` endpoint returns the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
+The `/version` endpoint returns the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, and effective cache scope.
 
 Check logs:
 
@@ -247,11 +247,13 @@ curl http://localhost:8080/v1/chat/completions \
 
 Run the same request twice.
 
-Expected behavior:
+Expected behavior in the default `enforce` mode:
 
 - first request: upstream provider
 - second request: exact cache hit
 - similar requests: possible semantic cache hits
+
+For a non-disruptive evaluation pilot, set `aif_enforcement_mode observe;`. In observe mode repeated/similar requests still reach the live upstream provider, while separate `aif_evaluation_*` metrics record what the cache would have done.
 
 ---
 
@@ -300,6 +302,7 @@ When bypass is enabled for a request:
 - semantic cache lookup is skipped
 - exact cache storage is skipped
 - semantic cache storage is skipped
+- in `observe`, shadow lookup and shadow storage are also skipped
 
 Bypass activity is exported through:
 
@@ -566,6 +569,8 @@ Example:
 ```conf
 listen_addr 0.0.0.0:8080;
 
+aif_enforcement_mode enforce;
+
 redis_url redis://redis:6379;
 
 upstream_provider openai_compatible;
@@ -643,6 +648,14 @@ embedding_price 0.020;
 `streaming_enabled true` permits clients to request controlled SSE delivery; it does not force ordinary requests to stream. `max_stream_upstream_bytes` limits cumulative provider SSE bytes accepted for one controlled request. `upstream_timeout_seconds` also bounds the idle gap between provider SSE chunks after headers arrive, and controlled generation has a separate 15-minute absolute ceiling.
 
 Provider SSE support is required only for individual requests that use `stream=true`; providers without streaming support remain usable for normal JSON chat-completion requests.
+
+For Evaluation Mode, change only:
+
+```conf
+aif_enforcement_mode observe;
+```
+
+The application will continue receiving live upstream responses while AIF builds isolated shadow exact/semantic state and records would-have cache outcomes. Existing guard behavior is unchanged.
 
 ---
 
@@ -722,12 +735,14 @@ Useful for:
 
 Runtime dependencies are initialized during normal startup.
 
-Default requirements:
+Default `enforce` requirements:
 
-- Redis is required when exact cache is enabled
-- Qdrant is required when semantic cache is enabled
+- Redis is required according to exact-cache fail-open/readiness policy when exact cache is enabled
+- Qdrant is required according to semantic-cache fail-open/readiness policy when semantic cache is enabled
 - embedding configuration is required when semantic cache is enabled
 - vector size must match the embedding model dimension
+
+In `observe`, Redis/Qdrant/embedding availability used only for evaluation is non-blocking for live traffic; static configuration validity still applies.
 
 Readiness behavior can be tuned separately:
 
@@ -780,7 +795,7 @@ When `semantic_cache_fail_open` is enabled, runtime semantic cache lookup, embed
 semantic_cache_fail_open true;
 ```
 
-Fail-open behavior applies to runtime cache operations. It does not bypass startup configuration validation.
+Fail-open behavior applies to normal production cache operations. It does not bypass startup configuration validation. In `observe`, evaluation Redis/Qdrant/embedding failures are non-blocking regardless of the production cache fail-open policy, and evaluation-only cache failures do not by themselves make AIF unready.
 
 ---
 
@@ -904,6 +919,22 @@ aif_cache_misses_total
 aif_upstream_calls_total
 aif_cache_bypass_requests_total
 ```
+
+Evaluation metrics:
+
+```text
+aif_enforcement_mode_info
+aif_evaluation_requests_total
+aif_evaluation_cache_outcomes_total
+aif_evaluation_upstream_calls_avoided_total
+aif_evaluation_tokens_avoided_total
+aif_evaluation_gross_saved_micro_usd_total
+aif_evaluation_net_saved_micro_usd_total
+aif_evaluation_shadow_store_total
+aif_evaluation_errors_total
+```
+
+Observe-mode outcomes are intentionally separate from the production cache-hit and savings counters.
 
 Controlled streaming metrics:
 

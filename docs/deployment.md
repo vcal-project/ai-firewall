@@ -1,6 +1,6 @@
 # Production deployment notes
 
-AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules.
+AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules. v0.8.0 can run either in normal `enforce` mode or in non-disruptive `observe` mode for production evaluations.
 
 ## Security baseline
 
@@ -9,6 +9,18 @@ AI Cost Firewall is designed to run as a single stateless application process wi
 - Protect `/metrics` or expose it only on a trusted monitoring network.
 - Supply credentials through deployment secrets; never commit real secrets to the config file.
 - Run the Firewall as non-root, read-only where possible, with Linux capabilities dropped and `no-new-privileges`.
+
+## Evaluation deployments
+
+For a low-risk caching/cost pilot, configure:
+
+```conf
+aif_enforcement_mode observe;
+```
+
+In `observe`, live responses still come from the upstream provider. Redis and Qdrant are used as isolated evaluation state, and their temporary failure must not interrupt application traffic or make AIF unready solely because the evaluation cache is unavailable. Keep enough upstream capacity for the full live workload: observe-mode cache hits are hypothetical and do not reduce actual provider traffic.
+
+Evaluation Mode controls AIF caching only. Existing Security Guard, Privacy Guard, and Usage Guard settings continue to enforce exactly as configured.
 
 ## Graceful shutdown
 

@@ -170,7 +170,39 @@ Client
 → OpenAI-compatible upstream
 ```
 
-Only cache misses reach the upstream provider.
+In the default `enforce` mode, only cache misses reach the upstream provider. In v0.8.0 `observe` mode, AIF evaluates the same cache opportunities but still sends the live request upstream even when a shadow cache hit is found.
+
+---
+
+### What is Evaluation / Observe Mode?
+
+Evaluation Mode is an AIF-level caching/cost assessment mode introduced in v0.8.0.
+
+```conf
+aif_enforcement_mode observe;
+```
+
+AIF remains in the live application path, uses isolated exact and semantic shadow cache state, records what it **would have done** under enforcement, and returns the real upstream response.
+
+Use it when you want to measure potential hit rate, avoidable provider calls/tokens, and estimated cost reduction without allowing cached responses to alter application behavior.
+
+The default remains:
+
+```conf
+aif_enforcement_mode enforce;
+```
+
+---
+
+### Does observe mode reduce my real provider traffic or bill?
+
+No. Observe mode deliberately calls the live upstream provider even on would-have cache hits. The evaluation metrics estimate calls, tokens, and cost that could have been avoided under enforcement, but those savings are hypothetical during the observe period.
+
+---
+
+### Does AIF observe mode put Security, Privacy, or Usage Guard into observe mode?
+
+No. `aif_enforcement_mode` controls AIF caching and cost optimization only. Security Guard, Privacy Guard, and Usage Guard continue to behave according to their existing enabled/mode/fail-open settings. Guard-specific `off / observe / enforce` modes are not part of AIF v0.8.0.
 
 ---
 
@@ -282,7 +314,7 @@ By default:
 X-AIF-Cache-Bypass: true
 ```
 
-This skips exact lookup, semantic lookup, and cache storage for that request.
+This skips exact lookup, semantic lookup, and cache storage for that request. In `observe`, bypass also means no shadow lookup and no shadow store, so explicitly non-cacheable traffic is not counted as an evaluation opportunity.
 
 The bypass header name can be configured:
 
@@ -665,7 +697,7 @@ Use `/healthz` to check whether the process is alive.
 
 Use `/readyz` to check whether required dependencies are ready.
 
-Use `/version` to confirm the running release and compatibility model.
+Use `/version` to confirm the running release, compatibility model, current AIF enforcement mode, and effective cache scope. In v0.8.0 this is also the authoritative way to distinguish production (`enforce`) from evaluation (`observe`) cache scope.
 
 ---
 
@@ -1127,6 +1159,14 @@ Non-text content such as images, audio, video, and binary payloads may be preser
 If the client application extracts OCR text, captions, or metadata from non-text content and sends that extracted text through AI Firewall, that extracted text can be scanned and anonymized normally.
 
 ---
+### What happens if Redis, Qdrant, or embeddings fail during observe mode?
+
+Evaluation-only cache infrastructure is non-blocking in `observe`. The live request continues to the upstream provider, AIF remains ready solely with respect to those optional evaluation dependencies, and `aif_evaluation_errors_total` records the failure. Redis exact-cache and Qdrant semantic evaluation are expected to resume after the dependency recovers.
+
+Static configuration errors are different: invalid configuration is still rejected.
+
+---
+
 ## Troubleshooting
 
 ### Why do I get `upstream_not_found`?

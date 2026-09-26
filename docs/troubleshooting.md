@@ -31,12 +31,9 @@ This performs static validation only and does not contact external services.
 
 `--test-config` validates configuration syntax and internal consistency. It does not verify that Redis, Qdrant, the upstream LLM endpoint, or the embedding endpoint are reachable.
 
-Runtime dependencies are initialized during normal startup:
+Runtime dependencies are initialized during normal startup. In `enforce`, Redis/Qdrant availability follows the configured cache fail-open and readiness policy. In `observe`, evaluation-only Redis/Qdrant/embedding failures do not block live traffic, while static configuration validation still applies.
 
-- Redis is required when exact cache is enabled and startup validation requires Redis
-- Qdrant is required when semantic cache is enabled
-- embedding configuration is required when semantic cache is enabled
-- the configured Qdrant vector size must match the embedding model dimension
+The configured Qdrant vector size must still match the embedding model dimension when semantic caching is configured.
 
 After the service starts, confirm the running release and readiness state:
 
@@ -53,7 +50,7 @@ OK
 ready
 ```
 
-The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, and OpenAI-compatible compatibility model.
+The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, AIF enforcement mode, and effective cache scope.
 
 ---
 
@@ -194,6 +191,38 @@ exact_cache_fail_open true;
 ```
 
 When `exact_cache_fail_open` is enabled, runtime Redis lookup/store failures behave like cache misses and requests continue upstream. This does not mean a broken Redis configuration should be ignored for production; it only controls runtime failure handling.
+
+---
+
+# Evaluation Mode Diagnostics
+
+First confirm the active mode:
+
+```bash
+curl -s http://localhost:8080/version | jq
+```
+
+In `observe`, repeated requests are expected to continue reaching the upstream provider. Check evaluation metrics instead of production cache-hit counters:
+
+```bash
+curl -s http://localhost:8080/metrics | grep 'aif_enforcement_mode_info\|aif_evaluation_'
+```
+
+Important signals:
+
+```text
+aif_evaluation_cache_outcomes_total
+aif_evaluation_upstream_calls_avoided_total
+aif_evaluation_tokens_avoided_total
+aif_evaluation_gross_saved_micro_usd_total
+aif_evaluation_net_saved_micro_usd_total
+aif_evaluation_shadow_store_total
+aif_evaluation_errors_total
+```
+
+If Redis or Qdrant is restarted during observe mode, AIF should continue serving live traffic and remain ready with respect to those evaluation-only dependencies. After the dependency is healthy again, evaluation lookup/store should resume automatically. If it does not, inspect `aif_evaluation_errors_total` and the firewall logs for reconnect/recovery messages.
+
+Do not use production cache-hit or production savings counters as proof of Evaluation Mode success; shadow outcomes are intentionally isolated.
 
 ---
 
@@ -1009,9 +1038,11 @@ aif_embedding_overhead_micro_usd_total
 aif_net_saved_micro_usd_total
 ```
 
+Check the active mode first. In `observe`, normal production savings can remain at zero even when evaluation predicts large savings; use the `aif_evaluation_*` cost counters for the hypothetical result.
+
 Check whether traffic is realistic:
 
-- repeated identical prompts should mostly exercise exact cache
+- repeated identical prompts should mostly exercise exact cache in `enforce`, or would-have exact hits in `observe`
 - similar but non-identical prompts are needed to exercise semantic cache
 - short test runs may not produce representative savings ratios
 - local dummy providers may not reflect real provider pricing behavior
@@ -1035,6 +1066,8 @@ docker compose logs firewall
 ## `/readyz` Fails
 
 Indicates the process is alive but not ready to serve traffic.
+
+In `observe`, Redis/Qdrant used only for evaluation should not make readiness fail by themselves. If `/readyz` fails during an evaluation-cache outage, inspect the active mode from `/version`, upstream readiness policy, and whether another required dependency is unhealthy.
 
 Common causes:
 

@@ -7,7 +7,7 @@ AI Cost Firewall sits between client applications and LLM providers and applies 
 1. exact cache (Redis)
 2. semantic cache (Qdrant)
 
-Cache misses and explicit cache-bypass requests are forwarded upstream.
+In the default `enforce` mode, cache misses and explicit cache-bypass requests are forwarded upstream. In v0.8.0 `observe` mode, AIF also forwards would-have cache hits upstream while recording the hypothetical cache decision separately.
 
 ---
 
@@ -47,19 +47,49 @@ AI Cost Firewall evaluates requests in stages:
 
 1. parse and validate request limits
 2. normalize request and derive transport-independent cache identity
-3. call Security Guard request scan, if enabled
-4. call Privacy Guard scan/anonymize/redact, if enabled
-5. call Usage Guard policy evaluation, if enabled
-6. evaluate per-request cache bypass
-7. exact cache lookup, if enabled
-8. semantic cache lookup, if enabled and not bypassed
-9. on a miss or bypass, call the upstream provider; for `stream=true`, consume provider SSE internally
-10. normalize cache hits and upstream results into the canonical chat-completion response
-11. call Security Guard response scan, if enabled
-12. store eligible cache-miss responses before Privacy restoration, if store controls allow it
-13. call Privacy Guard restore, if enabled and mapping exists
-14. record usage/cost and emit terminal evidence; enqueue Audit delivery, if enabled
-15. return JSON or replay the approved response as OpenAI-compatible SSE
+3. read the effective AIF enforcement mode (`enforce` or `observe`)
+4. call Security Guard request scan, if enabled
+5. call Privacy Guard scan/anonymize/redact, if enabled
+6. call Usage Guard policy evaluation, if enabled
+7. evaluate per-request cache bypass
+8. exact cache lookup, if enabled
+9. semantic cache lookup, if enabled and not bypassed and not short-circuited by an exact decision
+10. call the upstream provider on a miss/bypass, and also on would-have hits when in `observe`; for `stream=true`, consume provider SSE internally
+11. normalize cache hits and upstream results into the canonical chat-completion response
+12. call Security Guard response scan, if enabled
+13. update production cache state in `enforce` or isolated shadow state in `observe`, when store controls allow it
+14. call Privacy Guard restore, if enabled and mapping exists
+15. record actual usage/cost plus production or evaluation metrics/evidence; enqueue Audit delivery, if enabled
+16. return JSON or replay the approved response as OpenAI-compatible SSE
+
+---
+
+# Enforcement and Evaluation Modes
+
+The cache pipeline has two execution modes:
+
+```conf
+aif_enforcement_mode enforce;
+```
+
+`enforce` is the normal production path: eligible exact or semantic hits can be returned without an upstream chat-completion call.
+
+```conf
+aif_enforcement_mode observe;
+```
+
+`observe` is a shadow evaluation path. AIF evaluates the same cache decisions but the live response always comes from the upstream provider. Shadow state is isolated from production state.
+
+Observe-mode state transitions intentionally mirror what enforcement would have done:
+
+| Shadow decision | Live request | Shadow state |
+|---|---|---|
+| exact hit | call upstream | no semantic lookup/store; exact hit is the would-have decision |
+| exact miss + semantic hit | call upstream | semantic hit is recorded and the shadow exact cache may be warmed |
+| exact + semantic miss | call upstream | eligible live upstream result is stored in shadow exact/semantic cache |
+| cache bypass | call upstream | no shadow lookup and no shadow store |
+
+The potential cost/tokens attributed to a would-have hit are calculated from the actual live upstream response for that request. This avoids treating historical cached-response usage as the cost of the call that would have been avoided.
 
 ---
 
@@ -327,9 +357,9 @@ If the response already exists in Redis:
 Redis → HIT
 ```
 
-The firewall immediately returns the cached response.
+In `enforce`, the firewall immediately returns the cached response. In `observe`, the exact result is recorded as a would-have hit, semantic lookup is skipped for that simulated decision, and the live request still goes upstream.
 
-Benefits:
+Benefits under enforcement:
 
 - near-zero latency
 - no upstream API call
@@ -465,9 +495,9 @@ When a valid semantic candidate exists:
 semantic HIT
 ```
 
-the firewall returns the cached response.
+the firewall returns the cached response in `enforce`. In `observe`, AIF records the semantic would-have hit but still calls the live upstream provider; the shadow exact cache can be warmed from the semantic result to mirror enforcement state transitions.
 
-Benefits:
+Benefits under enforcement:
 
 - reduced upstream API cost
 - reduced latency
@@ -531,6 +561,8 @@ When enabled:
 This prevents cache infrastructure failures from blocking chat traffic when fail-open behavior is desired.
 
 Fail-open settings do not bypass static configuration validation.
+
+In `observe`, evaluation dependency failures are always non-blocking regardless of the normal production cache fail-open policy: Redis, Qdrant, or embedding failures increment evaluation-error telemetry and the request continues upstream. Evaluation Redis/Qdrant availability also does not by itself make `/readyz` fail.
 
 ---
 
@@ -877,6 +909,26 @@ These metrics show whether requests were:
 - cache misses
 - explicit cache-bypass requests
 - upstream requests
+
+---
+
+# Evaluation Metrics
+
+AIF v0.8.0 keeps hypothetical evaluation outcomes separate from production cache/savings counters:
+
+```text
+aif_enforcement_mode_info
+aif_evaluation_requests_total
+aif_evaluation_cache_outcomes_total
+aif_evaluation_upstream_calls_avoided_total
+aif_evaluation_tokens_avoided_total
+aif_evaluation_gross_saved_micro_usd_total
+aif_evaluation_net_saved_micro_usd_total
+aif_evaluation_shadow_store_total
+aif_evaluation_errors_total
+```
+
+A shadow hit does not increment the normal production `aif_cache_hits_total` or production saved-token/cost counters.
 
 ---
 
