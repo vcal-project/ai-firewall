@@ -756,6 +756,16 @@ See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limit
 
 ---
 
+### Evaluation Mode validation
+
+AIF v0.8.0 Observe Mode has been validated against Enforce Mode using the same controlled workload profile. The test compares predicted cache, guard, token, and cost outcomes with the outcomes subsequently realized under enforcement.
+
+In the validated pair of 5-minute runs, Observe predicted 720 exact-cache hits and 1 semantic-cache hit; Enforce realized 721 and 1 respectively. Guard outcomes matched, and predicted versus realized token/cost savings differed by less than 0.3%.
+
+See [Evaluation Mode Validation](EVALUATION_VALIDATION.md).
+
+---
+
 # Evidence Events and VCAL Audit
 
 AI Cost Firewall emits structured evidence using:
