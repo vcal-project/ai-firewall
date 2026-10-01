@@ -1,6 +1,6 @@
 [package]
 name = "ai-firewall"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -11,7 +11,8 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2", "charset", "system-proxy"] }
+
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 prometheus = "0.14"
