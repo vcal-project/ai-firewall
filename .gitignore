@@ -13,6 +13,7 @@ configs/*.conf
 deploy/grafana/dashboards/*.json
 !deploy/grafana/dashboards/ai-cost-firewall-diagnostics.json
 !deploy/grafana/dashboards/ai-cost-firewall-overview.json
+!deploy/grafana/dashboards/ai-evaluation.json
 
 # Logs
 *.log
@@ -30,8 +31,6 @@ deploy/grafana/dashboards/*.json
 
 # SBOM files
 sbom/
-ai-firewall.cdx.json
-ai-firewall-v0.5.0.cdx.json
 
 tests/
 scripts/
