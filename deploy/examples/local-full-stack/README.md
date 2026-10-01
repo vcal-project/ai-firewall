@@ -85,13 +85,68 @@ OK
 READY
 ```
 
-The version endpoint should report AI Cost Firewall `v0.7.0`.
+The version endpoint should report AI Cost Firewall `v0.8.0`.
+
+---
+
+## Evaluation Mode
+
+These examples default to normal production behavior:
+
+```text
+aif_enforcement_mode enforce;
+```
+
+AI Cost Firewall v0.8.0 also supports a non-disruptive Evaluation Mode. To evaluate cache opportunities without serving cached responses to the application, change the configuration to:
+
+```text
+aif_enforcement_mode observe;
+```
+
+Then recreate only the firewall container so the active configuration is reloaded:
+
+```bash
+docker compose up -d --no-deps --force-recreate firewall
+```
+
+Verify the active mode:
+
+```bash
+curl -s http://localhost:8080/version
+```
+
+The version response should report `v0.8.0`, `aif_enforcement_mode: observe`, and an evaluation cache scope.
+
+In `observe` mode:
+
+- every eligible live request still reaches the configured upstream provider;
+- exact and semantic cache decisions use isolated evaluation state;
+- a would-have exact or semantic hit is recorded but does not replace the upstream response;
+- shadow misses populate only evaluation cache state;
+- cache-bypass requests perform no evaluation lookup or store;
+- Redis, Qdrant, or embedding failures used only for evaluation do not interrupt live application traffic;
+- production cache-hit and production savings counters are not incremented by shadow hits;
+- controlled JSON/SSE cache identity remains transport-independent.
+
+Useful evaluation metrics include:
+
+```text
+aif_evaluation_exact_hits_total
+aif_evaluation_semantic_hits_total
+aif_evaluation_misses_total
+aif_evaluation_tokens_avoided_total
+aif_evaluation_gross_saved_micro_usd_total
+aif_evaluation_net_saved_micro_usd_total
+aif_evaluation_errors_total
+```
+
+The AIF enforcement mode controls caching and cost-optimization behavior only. It does not independently switch VCAL Security Guard, Privacy Guard, or Usage Guard into observe mode.
 
 ---
 
 ## Streaming behavior
 
-AI Cost Firewall v0.7.0 supports controlled OpenAI-compatible streaming. Ordinary requests continue to use the normal JSON completion path and do not require Ollama streaming support. When a client sends `"stream": true`, the configured Ollama OpenAI-compatible endpoint must provide compatible SSE; AIF consumes and assembles the complete response before returning approved SSE to the client.
+AI Cost Firewall v0.8.0 retains the controlled OpenAI-compatible streaming path introduced in v0.7.0. Ordinary requests continue to use the normal JSON completion path and do not require Ollama streaming support. When a client sends `"stream": true`, the configured Ollama OpenAI-compatible endpoint must provide compatible SSE; AIF consumes and assembles the complete response before returning approved SSE to the client.
 
 `streaming_enabled true;` permits controlled streaming; it does not force ordinary requests to stream.
 
@@ -139,6 +194,14 @@ The client receives `text/event-stream` only after AIF has assembled and approve
 
 ---
 
+### Enforce vs observe expectations
+
+With the supplied default `aif_enforcement_mode enforce;`, repeated identical requests can be served from the exact cache and sufficiently similar requests can be served from the semantic cache.
+
+If you switch to `observe`, the same cache opportunities are evaluated using shadow state, but the live upstream provider is still called. Use the evaluation metrics above to confirm would-have hits rather than expecting production cache-hit counters to increase.
+
+---
+
 ## Expected Behavior
 
 - Fully local evaluation stack.
@@ -176,11 +239,19 @@ The Grafana dashboards should begin populating after a few minutes of demo or re
 
 ---
 
+In `enforce` mode, the production cache and savings counters describe actions actually applied to live traffic. In `observe` mode, use the `aif_evaluation_*` counters for would-have cache outcomes and estimated avoided usage; do not interpret production cache-hit/savings counters as evaluation results.
+
+---
+
 ## Evidence events
 
 The firewall emits structured `vcal.evidence.event` schema v1.1 records to
 application logs. Every trace that emits `request.received` ends with exactly
 one `request.completed` or `request.failed` event.
+
+In Evaluation Mode, cache-related evidence also distinguishes the hypothetical
+decision from the live action using attributes such as `enforcement_mode`,
+`decision`, `would_action`, and `applied_action`.
 
 Inspect evidence events with:
 
