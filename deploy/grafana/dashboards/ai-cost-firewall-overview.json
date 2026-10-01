@@ -72,7 +72,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(aif_requests_total)",
+          "expr": "sum(increase(aif_requests_total[$__range]))",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -131,7 +131,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(aif_model_cost_micro_usd_total) / 1000000",
+          "expr": "sum(increase(aif_model_cost_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -190,7 +190,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(aif_gross_saved_micro_usd_total) / 1000000",
+          "expr": "sum(increase(aif_gross_saved_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -249,7 +249,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(aif_embedding_overhead_micro_usd_total) / 1000000",
+          "expr": "sum(increase(aif_embedding_overhead_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -308,7 +308,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(aif_net_saved_micro_usd_total) / 1000000",
+          "expr": "sum(increase(aif_net_saved_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -375,7 +375,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * sum(aif_net_saved_micro_usd_total) / clamp_min(sum(aif_model_cost_micro_usd_total) + sum(aif_net_saved_micro_usd_total), 1)",
+          "expr": "100 * sum(increase(aif_net_saved_micro_usd_total[$__range])) / clamp_min(sum(increase(aif_model_cost_micro_usd_total[$__range])) + sum(increase(aif_net_saved_micro_usd_total[$__range])), 1)",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -442,7 +442,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * sum(aif_cache_hits_total) / clamp_min(sum(aif_cache_hits_total) + sum(aif_cache_misses), 1)",
+          "expr": "100 * sum(increase(aif_cache_hits_total[$__range])) / clamp_min(sum(increase(aif_cache_hits_total[$__range])) + sum(increase(aif_cache_misses[$__range])), 1)",
           "legendFormat": "",
           "range": true,
           "refId": "A"
@@ -644,34 +644,34 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(aif_model_cost_micro_usd_total) / 1000000",
-          "legendFormat": "Estimated chat cost",
+          "expr": "sum(rate(aif_model_cost_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Estimated chat cost/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "sum(aif_gross_saved_micro_usd_total) / 1000000",
-          "legendFormat": "Gross savings",
+          "expr": "sum(rate(aif_gross_saved_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Gross savings/sec",
           "range": true,
           "refId": "B"
         },
         {
           "editorMode": "code",
-          "expr": "sum(aif_embedding_overhead_micro_usd_total) / 1000000",
-          "legendFormat": "Embedding overhead",
+          "expr": "sum(rate(aif_embedding_overhead_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Embedding overhead/sec",
           "range": true,
           "refId": "C"
         },
         {
           "editorMode": "code",
-          "expr": "sum(aif_net_saved_micro_usd_total) / 1000000",
-          "legendFormat": "Net savings",
+          "expr": "sum(rate(aif_net_saved_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Net savings/sec",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "Cost and Savings Breakdown",
+      "title": "Cost and Savings Rate",
       "type": "timeseries"
     },
     {
@@ -756,20 +756,20 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (cache_type) (aif_gross_saved_micro_usd_total) / 1000000",
-          "legendFormat": "Gross {{cache_type}}",
+          "expr": "sum by (cache_type) (rate(aif_gross_saved_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Gross {{cache_type}}/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "sum by (cache_type) (aif_net_saved_micro_usd_total) / 1000000",
-          "legendFormat": "Net {{cache_type}}",
+          "expr": "sum by (cache_type) (rate(aif_net_saved_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Net {{cache_type}}/sec",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Savings by Cache Type",
+      "title": "Savings Rate by Cache Type",
       "type": "timeseries"
     },
     {
@@ -854,20 +854,20 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (model) (aif_model_cost_micro_usd_total) / 1000000",
-          "legendFormat": "Spend {{model}}",
+          "expr": "sum by (model) (rate(aif_model_cost_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Spend {{model}}/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "sum by (model) (aif_net_saved_micro_usd_total) / 1000000",
-          "legendFormat": "Saved {{model}}",
+          "expr": "sum by (model) (rate(aif_net_saved_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "Saved {{model}}/sec",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Spend and Savings by Model",
+      "title": "Spend and Savings Rate by Model",
       "type": "timeseries"
     },
     {
@@ -1204,7 +1204,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, sum by (model) (aif_model_cost_micro_usd_total) / 1000000)",
+          "expr": "topk(10, sum by (model) (increase(aif_model_cost_micro_usd_total[$__range])) / 1000000)",
           "legendFormat": "{{model}}",
           "range": true,
           "refId": "A"
@@ -1268,7 +1268,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, sum by (model) (aif_net_saved_micro_usd_total) / 1000000)",
+          "expr": "topk(10, sum by (model) (increase(aif_net_saved_micro_usd_total[$__range])) / 1000000)",
           "legendFormat": "{{model}}",
           "range": true,
           "refId": "A"
@@ -1359,13 +1359,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (cost_type) (aif_request_cost_micro_usd_total) / 1000000",
-          "legendFormat": "{{cost_type}}",
+          "expr": "sum by (cost_type) (rate(aif_request_cost_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "{{cost_type}}/sec",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Request Cost by Cost Type",
+      "title": "Request Cost Rate by Cost Type",
       "type": "timeseries"
     },
     {
@@ -1450,13 +1450,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (operation) (aif_embedding_overhead_micro_usd_total) / 1000000",
-          "legendFormat": "{{operation}}",
+          "expr": "sum by (operation) (rate(aif_embedding_overhead_micro_usd_total[$__rate_interval])) / 1000000",
+          "legendFormat": "{{operation}}/sec",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Embedding Overhead by Operation",
+      "title": "Embedding Overhead Rate by Operation",
       "type": "timeseries"
     },
     {
@@ -1811,5 +1811,5 @@
   "uid": "ai-cost-firewall",
   "version": 10,
   "weekStart": "",
-  "description": "Overview dashboard for AI Cost Firewall v0.7.0: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, Usage Guard policy stops, and high-level guard orchestration health. Intentional Security/Usage policy decisions are control outcomes and are not treated as operational errors, with high-level streaming request and failure/abort visibility."
+  "description": "Overview dashboard for AI Cost Firewall: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, Usage Guard policy stops, and high-level guard orchestration health. Intentional Security/Usage policy decisions are control outcomes and are not treated as operational errors, with high-level streaming request and failure/abort visibility."
 }
