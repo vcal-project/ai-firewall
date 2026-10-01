@@ -26,9 +26,9 @@ COPY src ./src
 RUN cargo build --release --locked
 
 # ---------- runtime ----------
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 
-ARG AIF_VERSION=0.6.0
+ARG AIF_VERSION=0.8.1
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 
