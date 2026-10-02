@@ -71,13 +71,17 @@ AI Cost Firewall includes:
 - exact Redis caching
 - semantic Qdrant caching
 - OpenAI-compatible request routing
+- OpenAI-compatible `GET /v1/models` proxying to the configured chat/inference upstream
 - OpenAI-compatible streaming chat completions (SSE)
+- exact-cache identity that preserves OpenAI-compatible request/message extension fields
+- safe pass-through of OpenAI-style non-string/content-array message content, with semantic-cache bypass for those requests
 - AIF enforcement modes: `enforce` and non-disruptive `observe`
 - isolated shadow exact/semantic cache state for Evaluation Mode
 - configurable cache fail-open/fail-closed behavior
 - structured lifecycle evidence
 - Prometheus metrics and Grafana dashboards
-- readiness, liveness, graceful shutdown, and runtime diagnostics
+- startup, readiness, liveness, graceful shutdown, and runtime diagnostics
+- generic non-root OCI runtime hardening for Docker, Podman, Kubernetes, and OpenShift
 
 Optional integrations with separately licensed VCAL modules include:
 
@@ -194,6 +198,16 @@ Each example includes:
 - expected metrics
 - optional observability overlays
 
+AIF v0.8.2 also includes an OpenShift-specific baseline under:
+
+```text
+deploy/openshift/
+```
+
+The OpenShift assets are additive: the AIF container remains a generic OCI image and the normal Docker Compose deployment remains supported. The base manifests are designed for OpenShift `restricted-v2` without requesting `anyuid` or a custom SCC, use a read-only root filesystem, drop Linux capabilities, disable privilege escalation, and rely on the runtime-assigned OpenShift UID.
+
+The OpenShift configuration can use separate OpenAI-compatible services for chat/inference and embeddings, for example separate vLLM endpoints. Verify the served embedding model ID and returned vector dimension before enabling semantic caching and configuring the Qdrant vector size.
+
 ---
 
 # Architecture Overview
@@ -291,6 +305,7 @@ docker compose up -d
 
 ```bash
 curl http://localhost:8080/healthz
+curl http://localhost:8080/startupz
 curl http://localhost:8080/readyz
 curl http://localhost:8080/version
 ```
@@ -299,16 +314,25 @@ Expected:
 
 ```text
 OK
+started
 ready
 ```
 
 The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, and effective cache scope.
 
+When the configured chat/inference upstream supports OpenAI-style model discovery, AIF also proxies:
+
+```bash
+curl http://localhost:8080/v1/models
+```
+
+Model discovery is forwarded to the configured chat/inference upstream and is not counted as an inference/upstream chat call for cache-savings accounting.
+
 ---
 
 ## Evaluation / Observe Mode
 
-AI Cost Firewall v0.8.0 adds an AIF-level Evaluation Mode for low-risk production pilots.
+The AIF v0.8 series includes an AIF-level Evaluation Mode for low-risk production pilots. v0.8.2 keeps the Observe/Enforce behavior introduced in v0.8.0 while hardening deployment and OpenAI-compatible request handling.
 
 Configure the runtime mode with:
 
@@ -336,7 +360,7 @@ The core observe-mode guarantees are:
 - production cache state is not populated or reused by observe mode;
 - cache-bypass requests skip both evaluation lookup and evaluation store;
 - Redis, Qdrant, or embedding failures used only for evaluation do not interrupt live application traffic;
-- AIF remains ready when optional evaluation dependencies are temporarily unavailable;
+- AIF remains ready when optional evaluation dependencies are temporarily unavailable; deployments that mark Redis or Qdrant as required for readiness can use `/startupz` to require successful initialization before the pod is considered started;
 - Redis and Qdrant evaluation paths recover after dependency restart;
 - controlled streaming and non-streaming requests retain the same transport-independent cache identity.
 
@@ -440,7 +464,8 @@ AI Cost Firewall includes operational safeguards and observability features desi
 
 ## Runtime Features
 
-- readiness and liveness endpoints
+- startup, readiness, and liveness endpoints
+- strict `/startupz` validation for cache backends configured as required for readiness
 - graceful shutdown with request draining
 - startup dependency validation
 - nginx-style configuration reload (SIGHUP)
@@ -452,6 +477,8 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - upstream request timeout tracking plus controlled-stream idle and absolute-generation timeout protection
 - request size protection
 - runtime diagnostics
+- OpenAI-compatible `/v1/models` discovery proxying
+- numeric non-root OCI runtime with explicit SIGTERM container stop signal
 - configurable semantic cache fail-open behavior
 - optional Security Guard, Privacy Guard, and Usage Guard orchestration
 - configurable guard fail-open/fail-closed behavior
@@ -537,7 +564,8 @@ Security Guard, Privacy Guard, and Usage Guard are disabled by default in `confi
 | Endpoint | Purpose |
 |---|---|
 | `/healthz` | Process liveness |
-| `/readyz` | Ready to serve traffic |
+| `/startupz` | Strict startup check for cache backends configured as required for readiness |
+| `/readyz` | Ready to serve traffic according to normal AIF readiness/fail-open policy |
 
 ---
 
@@ -567,6 +595,8 @@ This setting applies to normal `enforce` runtime semantic cache behavior.
 
 In `observe` mode, Redis/Qdrant/embedding failures used only for evaluation are treated as non-blocking evaluation failures: the live request continues to the upstream provider and AIF remains available. Evaluation-specific error telemetry records the failure, and the evaluation cache path resumes after the dependency recovers.
 
+For orchestrated deployments, `/startupz` adds a separate startup-time guarantee. If an enabled Redis or Qdrant cache is also configured as required for readiness, `/startupz` remains unsuccessful when that backend was not initialized in the current process. This lets Kubernetes/OpenShift restart a pod that started during a dependency outage instead of leaving that process on a fail-open no-op cache for its lifetime.
+
 ---
 
 ## Print Loaded Configuration
@@ -592,7 +622,7 @@ upstream_provider openai_compatible;
 embedding_provider openai_compatible;
 ```
 
-This means AI Cost Firewall expects OpenAI-style chat and embedding APIs. It does not yet provide provider-specific configuration blocks or native provider-specific request transformations.
+This means AI Cost Firewall expects OpenAI-style chat and embedding APIs. For the configured chat/inference upstream, v0.8.2 also supports proxying OpenAI-compatible `GET /v1/models` discovery. It does not yet provide provider-specific configuration blocks or native provider-specific request transformations.
 
 Common OpenAI-compatible deployment patterns include:
 
@@ -617,12 +647,26 @@ embedding_base_url https://api.openai.com;
 embedding_api_key sk-your-key;
 ```
 
-The upstream provider and embedding provider may use different OpenAI-compatible base URLs.
+The upstream provider and embedding provider may use different OpenAI-compatible base URLs. This supports deployments where, for example, one vLLM service hosts the chat model and another vLLM service hosts an embedding model.
 
 For normal `stream=false` or omitted-stream requests, the upstream only needs to provide an OpenAI-compatible JSON chat-completion response. When clients request `stream=true`, the configured upstream must additionally provide OpenAI-compatible SSE streaming.
 
+### OpenAI-style message content
+
+AIF accepts message `content` as JSON rather than requiring a plain string at the parsing layer. OpenAI-style content-part arrays and other non-string message content are therefore preserved and forwarded instead of being rejected or flattened.
+
+In v0.8.2:
+
+- the complete JSON message content remains part of exact-cache identity;
+- top-level and message-level OpenAI-compatible extension fields such as tool definitions, tool choice, tool-call IDs, reasoning parameters, response-format fields, and future flattened extensions remain part of exact-cache identity;
+- requests containing non-string message content bypass semantic-cache lookup and store;
+- Privacy Guard, Security Guard, and Usage Guard currently inspect only plain string message content, so text nested inside content-part arrays is not yet scanned, anonymized, or classified.
+
+This makes multimodal-shaped requests safe to pass through at the AIF parsing/cache layer without claiming full multimodal guard processing. Full nested content-part guard handling is deferred to a later release.
+
 Important limitations:
 
+* `GET /v1/models` requires the configured chat/inference upstream to provide a compatible model-discovery endpoint.
 * AI Cost Firewall does not claim universal compatibility with every OpenAI-like API.
 * Native Anthropic, Gemini, Mistral, and Cohere APIs are not currently supported directly.
 * Mistral, Anthropic, Gemini, or other providers may be used only when exposed through an OpenAI-compatible layer such as LiteLLM, OpenRouter, or another compatible gateway.
@@ -632,6 +676,7 @@ See:
 ```text
 configs/examples/
 deploy/examples/
+deploy/openshift/
 docs/provider-compatibility.md
 ```
 
@@ -883,6 +928,10 @@ AI Cost Firewall includes tests for:
 - Security Guard orchestration
 - Usage Guard orchestration
 - OpenAI-compatible metadata preservation
+- exact-cache identity coverage for top-level and message-level OpenAI-compatible extension fields
+- non-string/content-array message pass-through with semantic-cache bypass
+- OpenAI-compatible `/v1/models` proxy behavior
+- startup probe behavior for readiness-required Redis/Qdrant initialization
 - evidence lifecycle completion
 - request and response Security Guard block evidence
 - controlled streaming assembly, cross-mode cache reuse, response controls, Privacy restoration, SSE replay, pre-commit failure isolation, provider idle timeout, absolute generation timeout, and upstream-permit release
