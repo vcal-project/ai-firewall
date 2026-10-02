@@ -110,6 +110,11 @@ embedding_timeout_seconds 30;
 max_request_body_bytes 1048576;
 max_prompt_chars 65536;
 
+# Graceful shutdown drain window. Container/orchestrator termination grace
+# should be set longer than this value so AIF can withdraw readiness and finish
+# in-flight requests before the runtime sends SIGKILL.
+graceful_shutdown_timeout_seconds 30;
+
 # Per-request troubleshooting bypass.
 # When the configured header is sent with value true, 1, yes, or on,
 # AI Cost Firewall skips exact/semantic lookup and skips cache store.
@@ -254,9 +259,11 @@ guard_fail_open false;
 # 5. Security Guard response scan
 # 6. Privacy Guard restore
 #
-# Current guard modules inspect text content only. Non-text content such as
-# images, audio, video, or binary payloads is preserved where possible but is
-# not scanned, anonymized, or classified by AI Firewall guard modules.
+# Current guard modules inspect plain string message content only. OpenAI-style
+# content-part arrays are preserved and forwarded, but text nested inside those
+# arrays is not yet scanned, anonymized, or classified by AIF guard modules.
+# Requests containing non-string message content are ineligible for semantic
+# cache; exact-cache identity still preserves the complete JSON content.
 
 # VCAL Audit integration
 #

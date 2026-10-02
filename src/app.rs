@@ -187,6 +187,33 @@ impl AppState {
         }
     }
 
+    /// Strict startup dependency check for orchestrators. Unlike normal
+    /// readiness in Evaluation Mode, this verifies that cache backends marked
+    /// as required for readiness were initialized in the current process. It is intended
+    /// for Kubernetes/OpenShift startupProbe use so a pod that started before
+    /// Redis or Qdrant can be restarted and initialize the real cache clients
+    /// instead of remaining on a fail-open Noop cache for its whole lifetime.
+    pub async fn startup_failure(&self) -> Option<&'static str> {
+        if self.shutdown.is_shutting_down() {
+            return Some("not started: shutting down\n");
+        }
+
+        let cfg = self.config.read().await;
+        let requires_redis = cfg.exact_cache_enabled && cfg.readiness_requires_redis;
+        let requires_qdrant = cfg.semantic_cache_enabled && cfg.readiness_requires_qdrant;
+        drop(cfg);
+
+        if requires_redis && !self.dependencies.redis_available.load(Ordering::Relaxed) {
+            return Some("not started: enabled Redis exact cache was not initialized\n");
+        }
+
+        if requires_qdrant && !self.dependencies.qdrant_available.load(Ordering::Relaxed) {
+            return Some("not started: enabled Qdrant semantic cache was not initialized\n");
+        }
+
+        None
+    }
+
     pub async fn readiness_failure(&self) -> Option<&'static str> {
         if !self.shutdown.is_ready() {
             return Some("not ready: shutting down\n");
@@ -621,9 +648,11 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
 
     let router = Router::new()
         .route("/healthz", get(api::health))
+        .route("/startupz", get(startupz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
         .route("/version", get(version))
+        .route("/v1/models", get(api::models::list_models))
         .route("/v1/chat/completions", post(api::chat::chat_completions))
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
         .layer(axum::middleware::from_fn_with_state(
@@ -696,6 +725,14 @@ async fn metrics_handler(State(state): State<Arc<AppState>>, headers: HeaderMap)
     api::metrics().await.into_response()
 }
 
+async fn startupz(State(state): State<Arc<AppState>>) -> (StatusCode, &'static str) {
+    if let Some(reason) = state.startup_failure().await {
+        return (StatusCode::SERVICE_UNAVAILABLE, reason);
+    }
+
+    (StatusCode::OK, "started\n")
+}
+
 async fn readyz(State(state): State<Arc<AppState>>) -> (StatusCode, &'static str) {
     if let Some(reason) = state.readiness_failure().await {
         metrics::READINESS_STATE.set(0);
@@ -712,7 +749,10 @@ async fn shutdown_gate_middleware(
     next: Next,
 ) -> Response {
     let path = req.uri().path();
-    let is_probe = matches!(path, "/healthz" | "/readyz" | "/metrics" | "/version");
+    let is_probe = matches!(
+        path,
+        "/healthz" | "/startupz" | "/readyz" | "/metrics" | "/version"
+    );
 
     if state.shutdown.is_shutting_down() && !is_probe {
         metrics::SHUTDOWN_REJECTIONS_TOTAL.inc();

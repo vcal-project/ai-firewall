@@ -132,6 +132,14 @@ pub trait LlmUpstream: Send + Sync {
         req: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, AppError>;
 
+    /// Return the configured provider's OpenAI-compatible model list. This is
+    /// discovery traffic only; it must not be counted as a chat/inference call.
+    async fn list_models(&self) -> Result<serde_json::Value, AppError> {
+        Err(AppError::unprocessable(
+            "model discovery is not supported by the configured upstream implementation",
+        ))
+    }
+
     /// Opens the provider-side streaming transport. AI Firewall consumes this
     /// stream internally and does not expose these bytes directly to clients.
     async fn chat_completion_stream(

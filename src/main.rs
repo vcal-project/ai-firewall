@@ -438,6 +438,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Server:");
     tracing::info!("- listening on {}", listen_addr);
     tracing::info!("- health: http://{}/healthz", display_addr);
+    tracing::info!("- startup: http://{}/startupz", display_addr);
     tracing::info!("- readiness: http://{}/readyz", display_addr);
     tracing::info!("- metrics: http://{}/metrics", display_addr);
     tracing::info!("- version: http://{}/version", display_addr);

@@ -4,6 +4,7 @@ use crate::error::AppError;
 pub enum OpenAiCompatEndpoint {
     ChatCompletions,
     Embeddings,
+    Models,
 }
 
 impl OpenAiCompatEndpoint {
@@ -11,11 +12,12 @@ impl OpenAiCompatEndpoint {
         match self {
             Self::ChatCompletions => "chat/completions",
             Self::Embeddings => "embeddings",
+            Self::Models => "models",
         }
     }
 
     fn forbidden_suffixes() -> &'static [&'static str] {
-        &["/chat/completions", "/embeddings"]
+        &["/chat/completions", "/embeddings", "/models"]
     }
 }
 
@@ -100,6 +102,26 @@ mod tests {
                 .unwrap();
 
         assert_eq!(url, "http://ollama:11434/v1/embeddings");
+    }
+
+    #[test]
+    fn builds_models_url_from_root_and_v1_base_urls() {
+        let root =
+            build_openai_compat_url("http://vllm:8000", OpenAiCompatEndpoint::Models).unwrap();
+        let v1 =
+            build_openai_compat_url("http://vllm:8000/v1", OpenAiCompatEndpoint::Models).unwrap();
+
+        assert_eq!(root, "http://vllm:8000/v1/models");
+        assert_eq!(v1, "http://vllm:8000/v1/models");
+    }
+
+    #[test]
+    fn rejects_full_models_endpoint_as_base_url() {
+        let err =
+            build_openai_compat_url("http://vllm:8000/v1/models", OpenAiCompatEndpoint::Models)
+                .unwrap_err();
+
+        assert!(err.to_string().contains("not a full endpoint path"));
     }
 
     #[test]

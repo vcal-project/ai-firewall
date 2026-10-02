@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-firewall-config
+data:
+  # Environment-only configuration keeps credentials separate in Secret refs.
+  AIF_CONFIG_VERSION: "1"
+  AIF_LISTEN_ADDR: "0.0.0.0:8080"
+
+  # Initial design-partner posture: Observe first, then switch to enforce.
+  AIF_ENFORCEMENT_MODE: "observe"
+
+  # Chat/inference vLLM endpoint. The OpenShift Service name is illustrative;
+  # replace it with the MSSP cluster-local Service that serves gpt-oss:20b.
+  AIF_UPSTREAM_PROVIDER: "openai_compatible"
+  AIF_UPSTREAM_BASE_URL: "http://vllm-chat:8000/v1"
+  AIF_STREAMING_ENABLED: "true"
+  AIF_UPSTREAM_TIMEOUT_SECONDS: "120"
+  AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH: "true"
+
+  # Embeddings are a separate OpenAI-compatible vLLM endpoint. Keep semantic
+  # caching disabled until the exact served Nomic model ID and output dimension
+  # have been verified with GET /v1/models and POST /v1/embeddings.
+  AIF_EMBEDDING_PROVIDER: "openai_compatible"
+  AIF_EMBEDDING_BASE_URL: "http://vllm-embeddings:8000/v1"
+  AIF_EMBEDDING_MODEL: "replace-with-vllm-served-nomic-model-id"
+  AIF_EMBEDDING_TIMEOUT_SECONDS: "30"
+
+  AIF_EXACT_CACHE_ENABLED: "true"
+  AIF_EXACT_CACHE_FAIL_OPEN: "true"
+  AIF_EXACT_CACHE_STORE_ENABLED: "true"
+  AIF_REDIS_TIMEOUT_SECONDS: "2"
+
+  AIF_SEMANTIC_CACHE_ENABLED: "false"
+  AIF_SEMANTIC_CACHE_FAIL_OPEN: "true"
+  AIF_SEMANTIC_CACHE_STORE_ENABLED: "true"
+  AIF_SEMANTIC_SIMILARITY_THRESHOLD: "0.92"
+  AIF_QDRANT_URL: "http://qdrant:6334"
+  # 1536 is only a disabled-path placeholder here. Before enabling semantic
+  # cache, set this to len(data[0].embedding) returned by the Nomic endpoint.
+  AIF_QDRANT_VECTOR_SIZE: "1536"
+
+  # Operational hardening.
+  AIF_MAX_REQUEST_BODY_BYTES: "1M"
+  AIF_MAX_PROMPT_CHARS: "65536"
+  AIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS: "30"
+  AIF_READINESS_REQUIRES_REDIS: "true"
+  AIF_READINESS_REQUIRES_QDRANT: "false"
+  AIF_READINESS_REQUIRES_UPSTREAM: "false"
+  AIF_METRICS_AUTH_REQUIRED: "false"
+
+  RUST_LOG: "info,vcal_evidence=info"

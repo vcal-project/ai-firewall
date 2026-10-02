@@ -1,0 +1,26 @@
+# Example ingress restriction for a single shared namespace. Adapt labels and
+# namespace selectors to the design partner's topology before applying.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-firewall-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ai-firewall
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: open-webui
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vcal-console
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Add the cluster/user-workload Prometheus namespace/labels when Prometheus
+    # scrapes AIF directly. Do not copy a namespace selector blindly because
+    # OpenShift monitoring labels vary by cluster configuration.

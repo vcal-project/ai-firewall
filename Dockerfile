@@ -28,7 +28,7 @@ RUN cargo build --release --locked
 # ---------- runtime ----------
 FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 
-ARG AIF_VERSION=0.8.1
+ARG AIF_VERSION=0.8.2
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 
@@ -44,8 +44,12 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/ai-firewall /usr/local/bin/ai-firewall
 
-USER nonroot:nonroot
+# Keep a numeric non-root fallback for Docker/Podman and generic Kubernetes.
+# Orchestrators such as OpenShift may override this with a runtime-assigned UID.
+USER 65532:65532
 
 EXPOSE 8080
+
+STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["/usr/local/bin/ai-firewall"]

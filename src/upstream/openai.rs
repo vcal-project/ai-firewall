@@ -64,6 +64,65 @@ impl LlmUpstream for OpenAiUpstream {
         self.stream_headers_timeout
     }
 
+    async fn list_models(&self) -> Result<serde_json::Value, AppError> {
+        let url = crate::upstream::openai_compat::build_openai_compat_url(
+            &self.base_url,
+            crate::upstream::openai_compat::OpenAiCompatEndpoint::Models,
+        )?;
+
+        let mut request = self.client.get(url);
+        if should_send_bearer_auth(&self.api_key) {
+            request = request.bearer_auth(self.api_key.trim());
+        }
+
+        let response = request.send().await.map_err(|error| {
+            let kind = classify_reqwest_error(&error);
+            AppError::upstream_kind(
+                kind,
+                format!(
+                    "{} Model discovery upstream: '{}'.",
+                    kind.default_message(),
+                    self.base_url
+                ),
+            )
+        })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            AppError::upstream_kind(
+                UpstreamErrorKind::Other,
+                format!(
+                    "Failed to read /v1/models response from '{}': {}",
+                    self.base_url, error
+                ),
+            )
+        })?;
+
+        if !status.is_success() {
+            let kind = classify_upstream_status(status);
+            return Err(AppError::upstream_kind_with_status(
+                status,
+                kind,
+                format!(
+                    "{} Status: {}. Model discovery upstream: '{}'.",
+                    kind.default_message(),
+                    status,
+                    self.base_url
+                ),
+            ));
+        }
+
+        serde_json::from_str::<serde_json::Value>(&body).map_err(|error| {
+            AppError::upstream_kind(
+                UpstreamErrorKind::Other,
+                format!(
+                    "Upstream /v1/models response from '{}' was not valid JSON: {}",
+                    self.base_url, error
+                ),
+            )
+        })
+    }
+
     async fn chat_completion(
         &self,
         req: &ChatCompletionRequest,

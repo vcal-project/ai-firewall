@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod models;
 
 use crate::metrics;
 use axum::response::IntoResponse;

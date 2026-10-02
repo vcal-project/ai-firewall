@@ -356,6 +356,10 @@ impl ChatService {
         }
     }
 
+    pub async fn list_models(&self) -> Result<serde_json::Value, AppError> {
+        self.upstream.list_models().await
+    }
+
     #[cfg(test)]
     pub async fn handle(
         &self,
@@ -543,7 +547,8 @@ impl ChatService {
 
         let normalized = normalize_chat_request(&cache_req)
             .map_err(|e| AppError::bad_request(format!("normalize failed: {e}")))?;
-        let semantic_text = semantic_text_from_request(&cache_req);
+        let semantic_eligible = self.semantic_eligible(&cache_req);
+        let semantic_text = semantic_eligible.then(|| semantic_text_from_request(&cache_req));
         let privacy_placeholder_signature = guard_context.privacy_placeholder_signature.as_deref();
 
         let exact_key_hash = sha256_hex(&normalized);
@@ -775,7 +780,7 @@ impl ChatService {
         if self.semantic_cache_enabled
             && !cache_control.bypass_lookup
             && evaluation_hit.is_none()
-            && self.semantic_eligible(&cache_req)
+            && semantic_eligible
         {
             if observe_mode && !self.track_qdrant_runtime {
                 evaluation_incomplete = true;
@@ -813,7 +818,9 @@ impl ChatService {
                     .semantic_cache
                     .lookup(
                         req.normalized_model(),
-                        &semantic_text,
+                        semantic_text
+                            .as_deref()
+                            .expect("semantic text must exist for eligible requests"),
                         privacy_placeholder_signature,
                     )
                     .await
@@ -1081,7 +1088,7 @@ impl ChatService {
         } else if self.semantic_cache_enabled
             && !cache_control.bypass_lookup
             && evaluation_hit.is_none()
-            && !self.semantic_eligible(&cache_req)
+            && !semantic_eligible
         {
             self.record_semantic_skip("ineligible_request");
 
@@ -1223,7 +1230,7 @@ impl ChatService {
             && self.semantic_cache_enabled
             && self.semantic_cache_store_enabled
             && !cache_control.bypass_store
-            && self.semantic_eligible(&cache_req)
+            && semantic_eligible
         {
             if observe_mode && !self.track_qdrant_runtime {
                 evaluation_incomplete = true;
@@ -1234,7 +1241,9 @@ impl ChatService {
                     .semantic_cache
                     .store(
                         req.normalized_model(),
-                        &semantic_text,
+                        semantic_text
+                            .as_deref()
+                            .expect("semantic text must exist for eligible requests"),
                         &response,
                         privacy_placeholder_signature,
                     )
@@ -1962,6 +1971,19 @@ impl ChatService {
         }
 
         if req.extra.contains_key("response_format") {
+            return false;
+        }
+
+        // v0.8.2 keeps OpenAI-compatible non-string content as a transparent
+        // pass-through shape for the upstream and exact cache, but does not
+        // embed JSON arrays/objects. This prevents image/file/audio payloads
+        // (including base64 data) from entering the text embedding path and
+        // avoids unsafe semantic reuse across different non-text inputs.
+        if req
+            .messages
+            .iter()
+            .any(|message| !message.content.is_string())
+        {
             return false;
         }
 
@@ -4200,6 +4222,45 @@ mod tests {
         let result = service.handle(req).await.unwrap();
 
         assert_eq!(result.id, "tools-upstream");
+        assert_eq!(upstream_state.lock().unwrap().call_count, 1);
+
+        let exact = exact_state.lock().unwrap();
+        assert_eq!(exact.get_calls, 1);
+        assert_eq!(exact.set_calls, 1);
+        drop(exact);
+
+        let semantic = semantic_state.lock().unwrap();
+        assert_eq!(semantic.lookup_calls, 0);
+        assert_eq!(semantic.store_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn non_string_message_content_skips_semantic_lookup_and_store() {
+        let mut req = request();
+        req.messages[0].content = json!([
+            {"type": "text", "text": "describe this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        ]);
+
+        let exact_cache = FakeExactCache::new();
+        let exact_state = exact_cache.state();
+
+        let semantic_cache = FakeSemanticCache::new();
+        let semantic_state = semantic_cache.state();
+
+        let upstream = FakeUpstream::new(response_with_usage("array-upstream", 1000, 500));
+        let upstream_state = upstream.state();
+
+        let service = build_service(
+            Arc::new(exact_cache),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            true,
+        );
+
+        let result = service.handle(req).await.unwrap();
+
+        assert_eq!(result.id, "array-upstream");
         assert_eq!(upstream_state.lock().unwrap().call_count, 1);
 
         let exact = exact_state.lock().unwrap();
