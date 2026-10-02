@@ -264,11 +264,33 @@ Supported.
 http://vllm:8000/v1
 ```
 
+## Model discovery
+
+AIF v0.8.2 proxies:
+
+```text
+GET /v1/models
+```
+
+to the configured chat/inference vLLM endpoint. This is useful for clients such as Open WebUI that perform OpenAI-compatible model discovery through the gateway.
+
+## Separate chat and embedding services
+
+Chat and embeddings may be served by separate vLLM Services:
+
+```text
+upstream_base_url http://vllm-chat:8000/v1;
+embedding_base_url http://vllm-embeddings:8000/v1;
+```
+
+For a Nomic embedding service, determine the exact served model ID from the embedding server and verify the returned embedding length before setting `qdrant_vector_size`. Do not assume a fixed dimension solely from the Nomic family name or from an Ollama example.
+
 ## Notes
 
 - tune request timeouts for large models
-- verify embeddings support separately
+- verify embeddings support separately from chat inference
 - startup latency may be higher for large models
+- `GET /v1/models` through AIF discovers the chat upstream, not a separately configured embedding server
 - useful for self-hosted OpenAI-compatible APIs
 
 ---
@@ -369,14 +391,14 @@ Semantic cache correctness depends heavily on embedding compatibility.
 
 ## Important Requirements
 
-The configured vector size must match the embedding model dimension.
+The configured vector size must match the actual embedding vector returned by the serving endpoint. Model-family defaults are useful examples but should not replace a runtime check when the server supports configurable or model-specific dimensions.
 
 Examples:
 
 | Embedding Model | Vector Size |
 |---|---|
 | text-embedding-3-small | 1536 |
-| nomic-embed-text | 768 |
+| nomic-embed-text (common Ollama configuration) | 768 |
 
 ## Common Error
 

@@ -903,9 +903,13 @@ aif_stream_client_time_to_first_byte_seconds
 
 ---
 
-# Non-text Content Not Scanned
+# Non-text / Content-part Behavior
 
-The current guard modules inspect text content only. Images, audio, video, and binary payloads are not scanned, anonymized, or classified by AI Firewall guard modules.
+OpenAI-style non-string message content is accepted and preserved by the parsing/proxy layer, and the full JSON shape remains part of exact-cache identity.
+
+In v0.8.2, requests containing any non-string message content deliberately bypass semantic lookup/store. This prevents image/file/audio structures and base64 data from entering the text embedding path.
+
+The current Security, Privacy, and Usage Guard integrations inspect plain string message content only. Text nested inside a content-part array is not yet scanned, anonymized/restored, or classified.
 
 Extract text before sending it through AI Firewall if you need text-oriented guard protection for non-text assets.
 
@@ -1060,6 +1064,21 @@ Check:
 ```bash
 docker compose logs firewall
 ```
+
+---
+
+## `/startupz` Fails
+
+`/startupz` is stricter than normal readiness for enabled cache backends marked required for readiness. A failure commonly means Redis or Qdrant was not initialized successfully in this process.
+
+Check:
+
+```bash
+curl -i http://localhost:8080/startupz
+docker compose logs firewall
+```
+
+If the dependency became available only after AIF started, restart the AIF process/pod so it can initialize the real cache client. In Kubernetes/OpenShift, use `/startupz` as the `startupProbe` so this recovery can happen automatically.
 
 ---
 
@@ -1329,6 +1348,21 @@ The sender queue is memory-backed. Batches dropped after retry exhaustion are no
 ## Requests succeed while Audit is unavailable
 
 This is expected. Audit delivery is asynchronous and does not normally fail the LLM request path.
+
+# `/v1/models` Discovery Problems
+
+AIF v0.8.2 proxies `GET /v1/models` to the configured chat/inference upstream. If discovery fails, verify the upstream base URL and query the provider directly. For a typical vLLM deployment:
+
+```bash
+curl -s http://localhost:8080/v1/models | jq
+curl -s http://vllm-chat:8000/v1/models | jq
+```
+
+For authenticated providers, confirm the configured upstream API key is valid. Model discovery uses the same bearer-auth policy as chat requests.
+
+If chat inference and embeddings use separate vLLM services, AIF `/v1/models` represents only the chat upstream. Query the embedding server directly to determine its model ID and vector dimension.
+
+---
 
 # Provider Compatibility Notes
 

@@ -151,6 +151,8 @@ embedding_price 0.020;
 
 # Deployment Examples
 
+Docker/Compose examples remain under `deploy/examples/`. v0.8.2 also provides an OpenShift-specific baseline under `deploy/openshift/`. The OpenShift manifests do not change the generic OCI image or the normal Docker Compose configuration path.
+
 Ready-to-run examples are included under:
 
 ```text
@@ -199,6 +201,8 @@ The provider URL may be:
 
 - provider root URL
 - `/v1` base path
+
+For the chat upstream, AIF constructs both `/v1/chat/completions` and `/v1/models` from this base URL. For the embedding provider, it constructs `/v1/embeddings`. Do not configure a full endpoint URL.
 
 ---
 
@@ -518,7 +522,7 @@ Typical models:
 | Model | Dimensions |
 |---|---|
 | text-embedding-3-small | 1536 |
-| nomic-embed-text | 768 |
+| nomic-embed-text (common Ollama configuration) | 768 |
 
 ---
 
@@ -592,6 +596,8 @@ dimension.
 ---
 
 # Vector Size Validation
+
+For self-hosted embedding servers, including Nomic models behind vLLM, verify the actual returned vector length with a test `/v1/embeddings` request before enabling semantic cache. Do not assume the dimension solely from a model-family name or another runtime's default.
 
 If the Qdrant collection already exists, AI Cost Firewall validates:
 
@@ -1430,6 +1436,8 @@ In `enforce`, Redis/Qdrant availability follows the normal cache fail-open and r
 
 In `observe`, Redis, Qdrant, and embedding infrastructure used only for evaluation are optional to live request serving: initialization or runtime failure is recorded as evaluation telemetry and requests continue to the upstream provider. Static configuration errors, such as invalid syntax or incompatible configured vector dimensions, are still rejected.
 
+AIF v0.8.2 additionally exposes `/startupz`. When an enabled Redis/Qdrant cache is also marked required for readiness, `/startupz` requires that cache backend to have initialized successfully in the current process. This is intentionally stricter than Observe-mode `/readyz` and is intended for Kubernetes/OpenShift startup probes.
+
 ---
 
 # Readiness Dependency Behavior
@@ -1478,6 +1486,8 @@ This is often left disabled because upstream providers may be external services 
 
 In `observe`, Redis and Qdrant are evaluation-only dependencies and do not make `/readyz` fail solely because they are unavailable. Upstream availability remains part of the live request path.
 
+This Observe-mode readiness exemption does not override `/startupz` when an enabled Redis/Qdrant cache is explicitly marked required for readiness.
+
 ---
 
 # Environment Variables
@@ -1489,10 +1499,17 @@ Example:
 ```text
 AIF_ENFORCEMENT_MODE=observe
 AIF_REDIS_URL=redis://127.0.0.1:6379
+AIF_UPSTREAM_PROVIDER=openai_compatible
+AIF_UPSTREAM_BASE_URL=http://vllm-chat:8000/v1
 AIF_UPSTREAM_API_KEY=sk-xxxx
+AIF_ALLOW_UNKNOWN_MODELS_PASS_THROUGH=true
 AIF_STREAMING_ENABLED=true
 AIF_MAX_STREAM_UPSTREAM_BYTES=8M
-AIF_EMBEDDING_MODEL=text-embedding-3-small
+AIF_EMBEDDING_PROVIDER=openai_compatible
+AIF_EMBEDDING_BASE_URL=http://vllm-embeddings:8000/v1
+AIF_EMBEDDING_MODEL=replace-with-served-model-id
+AIF_QDRANT_URL=http://qdrant:6334
+AIF_QDRANT_VECTOR_SIZE=<returned-vector-length>
 AIF_MAX_REQUEST_BODY_BYTES=2M
 AIF_MAX_PROMPT_CHARS=200000
 AIF_CACHE_BYPASS_HEADER=X-AIF-Cache-Bypass

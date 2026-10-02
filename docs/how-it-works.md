@@ -297,7 +297,9 @@ aif_cache_bypass_requests_total
 
 Before cache lookup, the firewall normalizes requests.
 
-Normalization removes non-deterministic request fields and produces stable semantic text.
+Exact-cache normalization preserves completion-affecting OpenAI-compatible extension fields at both request and message level. This includes fields such as tool definitions/selection, structured-output options, reasoning/provider extensions, tool-call identifiers, and future flattened fields that AIF proxies without requiring a schema release. Delivery-only streaming options remain outside completion identity.
+
+For semantic caching, AIF derives stable text only from eligible plain-string messages. Requests containing `tools`, `response_format`, or any non-string message content bypass semantic lookup and store.
 
 Example normalized prompt:
 
@@ -414,7 +416,7 @@ Typical embedding models:
 | Model | Vector Size |
 |---|---|
 | text-embedding-3-small | 1536 |
-| nomic-embed-text | 768 |
+| nomic-embed-text (common Ollama configuration) | 768 |
 
 Example configuration:
 
@@ -423,7 +425,7 @@ embedding_model text-embedding-3-small;
 qdrant_vector_size 1536;
 ```
 
-The vector size must match the embedding model dimension.
+The vector size must match the actual embedding vector returned by the serving endpoint. For self-hosted runtimes such as vLLM, verify the returned length before enabling semantic cache.
 
 ---
 
@@ -815,13 +817,15 @@ Controlled streaming reconstructs fragmented content and tool-call/function argu
 
 # Structured Outputs and Tools
 
-Semantic cache may also be skipped for:
+Exact cache remains available because the exact identity includes the complete preserved request/message extension fields.
 
-- tool-calling requests
-- function-calling requests
-- structured response formats
+Semantic cache is skipped for requests containing:
 
-These request types often contain non-deterministic structures that reduce safe semantic reuse.
+- `tools` / tool-calling schemas
+- `response_format` / structured response formats
+- any non-string message content
+
+These request types depend on exact structure or non-text context and are intentionally excluded from semantic reuse in v0.8.2.
 
 ---
 
@@ -853,13 +857,13 @@ In this mode:
 
 ---
 
-# Non-text Content
+# Non-text and Content-part Messages
 
-The current guard modules inspect text content only.
+OpenAI-style message content is parsed as JSON, so array/object content can be preserved and forwarded rather than rejected at the parsing layer. Exact-cache identity preserves that complete JSON content.
 
-Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+Requests containing any non-string message content bypass semantic cache in v0.8.2. This prevents image/file/audio payload structures or base64 data from entering the text embedding path.
 
-Text extracted by the client application, such as OCR text or captions, can be scanned and anonymized normally if it is sent as text content.
+The current Security, Privacy, and Usage Guard integrations inspect only plain string message content. Text nested inside content-part arrays is not yet guard-inspected or anonymized/restored. Client-extracted OCR text, captions, or metadata can be processed normally when sent as plain text content.
 
 ---
 # Metrics and Observability
@@ -1061,7 +1065,10 @@ Deployment examples:
 
 ```text
 deploy/examples/
+deploy/openshift/
 ```
+
+The OpenShift directory provides a deployment-specific Kubernetes baseline; it does not change the portability of the generic AIF OCI image.
 
 ---
 

@@ -65,6 +65,8 @@ Supported deployment patterns include:
 - LiteLLM
 - OpenRouter
 
+AIF v0.8.2 also proxies OpenAI-compatible `GET /v1/models` discovery to the configured chat/inference upstream.
+
 without requiring provider-specific configuration blocks.
 
 ---
@@ -478,7 +480,7 @@ Typical embedding models:
 | Model | Vector Size |
 |---|---|
 | text-embedding-3-small | 1536 |
-| nomic-embed-text | 768 |
+| nomic-embed-text (common Ollama configuration) | 768 |
 
 Embedding requests use `embedding_timeout_seconds` when configured.
 
@@ -486,7 +488,7 @@ Embedding requests use `embedding_timeout_seconds` when configured.
 
 # Vector Size Validation
 
-The configured vector size must match the embedding model dimension.
+The configured vector size must match the actual embedding vector returned by the configured serving endpoint. For self-hosted runtimes, verify the returned vector length rather than assuming a family-wide default.
 
 Example:
 
@@ -812,7 +814,7 @@ Requests reach upstream providers when:
 - exact cache misses or is disabled
 - semantic cache misses or is disabled
 - cache infrastructure fails open
-- tool/function/structured-output behavior makes semantic reuse ineligible
+- request contains `tools`, `response_format`, or non-string message content, making semantic reuse ineligible
 
 Streaming itself does not bypass cache. Controlled streaming and non-streaming delivery use the same transport-independent cache identity, so eligible cached completions can be reused across JSON and SSE delivery.
 
@@ -1006,13 +1008,9 @@ Controlled streaming prioritizes response-control guarantees over token-by-token
 
 # Structured Outputs and Tools
 
-Semantic cache may also be skipped for:
+Exact-cache identity preserves flattened OpenAI-compatible request and message extension fields, including tool schemas, tool-selection fields, structured-output parameters, tool-call identifiers, and provider-specific extensions. Requests that differ in these fields therefore do not incorrectly share the same exact-cache entry.
 
-- tool-calling requests
-- function-calling requests
-- structured output requests
-
-These request types often reduce safe semantic reuse.
+Semantic cache is intentionally more conservative. It is skipped for requests that contain `tools`, `response_format`, or non-string message content. Tool/structured-output request shapes often depend on exact structure or execution context and are not safe candidates for ordinary semantic reuse.
 
 ---
 
@@ -1022,12 +1020,15 @@ AI Cost Firewall exposes:
 
 ```text
 /healthz
+/startupz
 /readyz
 ```
 
 `/healthz` indicates process liveness.
 
-`/readyz` indicates whether the instance should receive traffic.
+`/startupz` is the strict startup check for orchestrators. When an enabled Redis/Qdrant cache is configured as required for readiness, the backend must have initialized successfully in the current process.
+
+`/readyz` indicates whether the instance should receive traffic and preserves the normal fail-open / Observe-mode readiness semantics.
 
 Readiness behavior can be configured with:
 
@@ -1243,7 +1244,10 @@ Deployment examples:
 
 ```text
 deploy/examples/
+deploy/openshift/
 ```
+
+The OpenShift assets are deployment-specific; the AIF container image remains a generic OCI image and Docker/Compose deployments continue to use the same runtime.
 
 ---
 
@@ -1286,11 +1290,15 @@ Actual performance depends on:
 
 ---
 
-# Non-text Content
+# Non-text and Content-part Messages
 
-The current guard modules inspect text content. Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+The OpenAI-compatible parsing layer preserves non-string message content, including content-part arrays/objects, and exact-cache identity includes the complete preserved JSON shape.
 
-If a chatbot extracts OCR text, captions, or metadata from non-text assets and sends that extracted text through AI Firewall, the extracted text can be scanned and anonymized normally.
+In v0.8.2, any request containing non-string message content is ineligible for semantic-cache lookup/store. AIF does not serialize image/file/audio structures into the text embedding path.
+
+The current Security, Privacy, and Usage Guard integrations inspect plain string message content only. Text nested inside a content-part array is therefore not yet scanned, anonymized, restored, or classified by those guard modules. Non-text parts are forwarded unchanged where the upstream supports them.
+
+If a client extracts OCR text, captions, or metadata and sends that material as plain text content, the current guard integrations can process it normally.
 
 ---
 

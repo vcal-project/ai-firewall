@@ -272,9 +272,9 @@ Usage Guard runs on request text after Privacy Guard and before cache/upstream p
 Operational Usage Guard failures follow `guard_fail_open`; intentional policy blocks do not fail open.
 
 ---
-# Health & Readiness Endpoints
+# Health, Startup & Readiness Endpoints
 
-AI Cost Firewall exposes two operational endpoints.
+AI Cost Firewall exposes three operational probe endpoints.
 
 ---
 
@@ -293,6 +293,26 @@ Behavior:
 - returns `200 OK` while the process is running
 - does not depend on downstream providers
 - suitable for container liveness probes
+
+---
+
+## `/startupz` — Startup
+
+Intended for Kubernetes/OpenShift `startupProbe` use.
+
+Example:
+
+```bash
+curl http://localhost:8080/startupz
+```
+
+Behavior:
+
+- returns `200 OK` when startup requirements for the current process are satisfied
+- returns `503 Service Unavailable` during shutdown
+- when exact cache is enabled and `readiness_requires_redis true`, requires Redis to have initialized in the current process
+- when semantic cache is enabled and `readiness_requires_qdrant true`, requires Qdrant to have initialized in the current process
+- deliberately remains stricter than Observe-mode `/readyz` so an orchestrator can restart a process that fell back to a startup-time no-op cache before a required backend became available
 
 ---
 
@@ -325,19 +345,19 @@ This allows deployments to choose whether readiness should fail when Redis, Qdra
 
 ---
 
-# Readiness Summary
+# Probe Summary
 
-| State | `/healthz` | `/readyz` |
-|---|---:|---:|
-| Normal operation | 200 | 200 |
-| Graceful shutdown | 200 | 503 |
-| Required Redis unavailable | 200 | 503 |
-| Required Qdrant unavailable | 200 | 503 |
-| Required upstream unavailable | 200 | 503 |
-| Observe mode + evaluation Redis/Qdrant unavailable | 200 | 200 |
-| Process stopped | unavailable | unavailable |
+| State | `/healthz` | `/startupz` | `/readyz` |
+|---|---:|---:|---:|
+| Normal operation | 200 | 200 | 200 |
+| Graceful shutdown | 200 | 503 | 503 |
+| Required Redis failed to initialize | 200 | 503 | mode/policy dependent |
+| Required Qdrant failed to initialize | 200 | 503 | mode/policy dependent |
+| Required upstream unavailable | 200 | 200 | 503 |
+| Observe mode + optional evaluation Redis/Qdrant unavailable | 200 | 200 | 200 |
+| Process stopped | unavailable | unavailable | unavailable |
 
----
+`/startupz` currently applies the strict initialization check to enabled Redis/Qdrant caches that are marked required for readiness; it does not add a separate upstream startup requirement.
 
 ---
 
@@ -656,6 +676,16 @@ For capacity planning, controlled-streaming requests may hold an upstream concur
 ---
 
 # OpenAI-Compatible Provider Diagnostics
+
+AIF v0.8.2 exposes `GET /v1/models` and transparently proxies it to the configured chat/inference upstream. This route does not execute guards or cache lookup/store and does not increment the chat-inference upstream-call counter used for cache-savings accounting. It does increment the general request counter and normal error/dependency telemetry on failures.
+
+Use it to verify discovery through the gateway:
+
+```bash
+curl -s http://localhost:8080/v1/models | jq
+```
+
+For deployments with a separate embedding service, query that service directly when determining the embedding model ID and vector dimension; AIF's `/v1/models` route represents the chat upstream only.
 
 AI Cost Firewall classifies common provider failures explicitly.
 
@@ -1251,9 +1281,11 @@ See also:
 
 ---
 
-# Non-text Content
+# Non-text and Content-part Messages
 
-The current guard modules inspect text content only. Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+AIF preserves OpenAI-style non-string message content at the parsing/proxy layer and includes it in exact-cache identity. Requests containing non-string message content bypass semantic cache in v0.8.2.
+
+The current Security, Privacy, and Usage Guard integrations inspect only plain string message content. Text nested inside content-part arrays is not yet scanned, anonymized/restored, or classified.
 
 ---
 # Operational Notes

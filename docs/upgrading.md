@@ -1,5 +1,21 @@
 # Upgrading AI Cost Firewall
 
+## v0.8.1 to v0.8.2
+
+v0.8.2 is a deployment-hardening and OpenAI-compatibility release. It does not change the default AIF enforcement mode and requires no Redis/Qdrant data migration.
+
+1. Back up the current configuration and deployment manifests.
+2. Deploy `vcalproject/ai-firewall:v0.8.2`; the image remains a generic OCI image suitable for Docker/Compose as well as Kubernetes/OpenShift.
+3. Verify `/healthz`, `/startupz`, `/readyz`, `/version`, and `GET /v1/models`.
+4. Review exact-cache behavior for OpenAI-compatible extension fields. v0.8.2 includes flattened request/message fields (for example tool schemas, tool-call IDs, response-format/provider extensions) in exact-cache identity. Existing v0.8.1 exact-cache entries are not migrated; for deterministic comparison, use a fresh cache namespace or clear test cache state.
+5. Requests with non-string message content now bypass semantic lookup/store. They can still pass through to the upstream and use exact cache when otherwise eligible.
+6. If Security, Privacy, or Usage Guard is enabled, note that nested text inside OpenAI content-part arrays is still not inspected; guard integrations currently process plain string content only.
+7. For Kubernetes/OpenShift, use `/startupz` as the startup probe. If an enabled Redis/Qdrant cache is marked required for readiness, a process that did not initialize that backend will fail `/startupz` so the orchestrator can restart it.
+8. OpenShift users can start from `deploy/openshift/`; these assets are optional and do not replace the Docker Compose deployment.
+9. If chat is served by vLLM, `GET /v1/models` can now be requested through AIF. If embeddings are served by a separate vLLM/Nomic endpoint, discover and test that endpoint directly, then set `qdrant_vector_size` to the actual returned vector length before enabling semantic cache.
+
+No configuration directive is mandatory solely for upgrading from v0.8.1. Existing deployments that do not use the new OpenShift assets or model-discovery route can retain their current deployment style.
+
 ## v0.7.0 to v0.8.0
 
 v0.8.0 introduces AI Cost Firewall Evaluation Mode. The default remains `enforce`, so existing v0.7.0 deployments retain normal production cache behavior unless `aif_enforcement_mode observe;` is explicitly configured.

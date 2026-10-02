@@ -1,6 +1,8 @@
 # Production deployment notes
 
-AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules. v0.8.0 can run either in normal `enforce` mode or in non-disruptive `observe` mode for production evaluations.
+AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules. v0.8.2 keeps the v0.8 Evaluation Mode model (`enforce` or non-disruptive `observe`) and adds deployment hardening for Docker, generic OCI/Kubernetes environments, and an OpenShift-specific example.
+
+The AIF image is not OpenShift-specific. The normal `docker-compose.yml` deployment remains supported, while OpenShift manifests are isolated under `deploy/openshift/`.
 
 ## Security baseline
 
@@ -8,7 +10,7 @@ AI Cost Firewall is designed to run as a single stateless application process wi
 - Use `guard_fail_open false` when Security Guard, Privacy Guard, or Usage Guard is an enforcement control.
 - Protect `/metrics` or expose it only on a trusted monitoring network.
 - Supply credentials through deployment secrets; never commit real secrets to the config file.
-- Run the Firewall as non-root, read-only where possible, with Linux capabilities dropped and `no-new-privileges`.
+- Run the Firewall as non-root, read-only where possible, with Linux capabilities dropped and `no-new-privileges`. The v0.8.2 image uses a numeric non-root fallback user and an explicit `SIGTERM` stop signal; orchestrators such as OpenShift may assign their own runtime UID.
 
 ## Evaluation deployments
 
@@ -28,9 +30,43 @@ The orchestrator must allow at least `graceful_shutdown_timeout_seconds` before 
 
 During shutdown `/readyz` becomes unavailable before in-flight requests are drained. Audit delivery is then flushed on a best-effort basis.
 
-## Readiness policy
+## Startup and readiness policy
 
-`/healthz` reports process liveness. `/readyz` additionally evaluates configured required dependencies and current runtime dependency observations. Do not mark an optional fail-open cache as a required readiness dependency unless removing the pod is the intended policy.
+AIF exposes three probe endpoints in v0.8.2:
+
+- `/healthz` reports process liveness.
+- `/readyz` evaluates whether the instance should currently receive traffic and preserves the existing fail-open / Observe semantics.
+- `/startupz` is a stricter orchestrator startup check. If an enabled Redis or Qdrant cache is also configured as required for readiness, `/startupz` requires that backend to have initialized successfully in the current process.
+
+The stricter startup check prevents a pod that started before Redis/Qdrant from remaining on a startup-time no-op cache for its whole lifetime. Use `/startupz` as a Kubernetes/OpenShift `startupProbe`, `/readyz` as the `readinessProbe`, and `/healthz` as the `livenessProbe`.
+
+Do not mark an optional fail-open cache as a required readiness dependency unless removing/restarting the pod is the intended policy.
+
+## OpenShift deployment
+
+v0.8.2 includes an OpenShift `restricted-v2` baseline under:
+
+```text
+deploy/openshift/
+```
+
+The example does not request `anyuid` or a custom SCC. It drops all Linux capabilities, disables privilege escalation, uses a read-only root filesystem, uses `RuntimeDefault` seccomp, and does not mount a service-account token. It deliberately leaves `runAsUser`/`runAsGroup` unset so OpenShift can assign a namespace-specific arbitrary UID.
+
+Review `deploy/openshift/README.md` and replace the illustrative Service names, model IDs, credentials, and resource settings before applying the manifests.
+
+## vLLM chat and embedding endpoints
+
+A supported self-hosted pattern is to keep chat inference and embeddings on separate OpenAI-compatible endpoints, for example:
+
+```text
+Open WebUI -> AIF -> vLLM chat endpoint -> gpt-oss:20b
+                  \
+                   -> vLLM embedding endpoint -> Nomic model -> Qdrant
+```
+
+AIF v0.8.2 proxies `GET /v1/models` to the configured chat/inference upstream so OpenAI-compatible clients can discover chat models through AIF. The embedding endpoint is configured separately and is not exposed through that chat-side discovery route.
+
+Before enabling semantic cache with a Nomic embedding service, verify the exact served embedding model ID and issue a test embedding request. Set `qdrant_vector_size` to the actual returned vector length rather than assuming a dimension from the model-family name.
 
 ## Backpressure
 

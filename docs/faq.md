@@ -58,15 +58,16 @@ Only cache misses are forwarded upstream.
 
 ---
 
-### Which endpoint is currently supported?
+### Which OpenAI-compatible routes are currently supported?
 
-Currently supported:
+Currently supported OpenAI-compatible routes include:
 
 ```text
-/v1/chat/completions
+POST /v1/chat/completions
+GET  /v1/models
 ```
 
-The API is OpenAI-compatible, so many existing SDKs and applications can point to AI Cost Firewall instead of calling the upstream provider directly.
+`/v1/models` is proxied to the configured chat/inference upstream for model discovery. It does not list models from a separately configured embedding endpoint. The API is OpenAI-compatible, so many existing SDKs and applications can point to AI Cost Firewall instead of calling the upstream provider directly.
 
 ---
 
@@ -332,20 +333,15 @@ Controlled streaming uses the same exact and semantic cache pipeline as non-stre
 
 On a streaming cache miss, AI Cost Firewall consumes provider SSE internally, assembles the canonical completion, applies response controls, stores the eligible pre-Privacy-restore response, restores Privacy placeholders when needed, and then replays approved SSE to the client.
 
-Tool/function calling and structured-output requests may still be ineligible for semantic reuse for reasons unrelated to streaming.
+Requests containing `tools`, `response_format`, or non-string message content remain ineligible for semantic reuse for reasons unrelated to streaming.
 
 ---
 
 ### Are tool-calling and structured outputs cached?
 
-Semantic cache may be skipped for:
+Exact cache can still be used when the request is otherwise eligible. v0.8.2 includes preserved OpenAI-compatible request/message extension fields in exact-cache identity, so requests with different tool schemas, tool choices, tool-call IDs, response formats, reasoning/provider extensions, or other flattened fields do not incorrectly share one exact entry.
 
-- tool-calling requests
-- function-calling requests
-- structured outputs
-- request shapes that contain non-deterministic or complex structured data
-
-These request types often depend on exact structure, tool schemas, or execution context, so reuse must be more conservative.
+Semantic cache is more conservative and is skipped for requests containing `tools`, `response_format`, or non-string message content. These shapes depend on exact structure, execution context, or non-text inputs and are not ordinary semantic-reuse candidates.
 
 ---
 
@@ -689,13 +685,16 @@ Use:
 
 ```bash
 curl -s http://localhost:8080/healthz
+curl -s http://localhost:8080/startupz
 curl -s http://localhost:8080/readyz
 curl -s http://localhost:8080/version
 ```
 
 Use `/healthz` to check whether the process is alive.
 
-Use `/readyz` to check whether required dependencies are ready.
+Use `/startupz` as the strict orchestrator startup check for required cache backends that must have initialized in the current process.
+
+Use `/readyz` to check whether the instance should currently receive traffic under the configured readiness/fail-open policy.
 
 Use `/version` to confirm the running release, compatibility model, current AIF enforcement mode, and effective cache scope. In v0.8.0 this is also the authoritative way to distinguish production (`enforce`) from evaluation (`observe`) cache scope.
 
@@ -1152,11 +1151,11 @@ Privacy flows that create anonymization mappings no longer need to reject stream
 
 ### What happens if a request contains images or other non-text content?
 
-The current guard modules inspect text content only.
+The parsing/proxy layer accepts OpenAI-style array/object message content and preserves it for upstream forwarding. The full JSON content remains part of exact-cache identity.
 
-Non-text content such as images, audio, video, and binary payloads may be preserved where possible and forwarded upstream, but it is not scanned, anonymized, or classified by AI Firewall guard modules.
+In v0.8.2, a request containing any non-string message content bypasses semantic cache, preventing image/file/audio structures or base64 data from entering the text embedding path.
 
-If the client application extracts OCR text, captions, or metadata from non-text content and sends that extracted text through AI Firewall, that extracted text can be scanned and anonymized normally.
+The current Security, Privacy, and Usage Guard integrations inspect plain string content only. Text nested inside a content-part array is therefore not yet scanned, anonymized/restored, or classified. If the client extracts OCR text, captions, or metadata and sends it as plain text content, the current guards can process it normally.
 
 ---
 ### What happens if Redis, Qdrant, or embeddings fail during observe mode?
@@ -1227,7 +1226,7 @@ Common causes:
 - embeddings are unavailable
 - Qdrant is unavailable
 - entries expired
-- request contains tool calls or structured output
+- request contains `tools`, `response_format`, or non-string message content
 - request parameters changed enough to prevent safe reuse
 
 Inspect metrics such as:
@@ -1257,7 +1256,7 @@ Common causes:
 - cache bypass header is set
 - exact cache is disabled
 - semantic cache is disabled
-- tool/function/structured-output behavior makes semantic reuse ineligible
+- request contains `tools`, `response_format`, or non-string message content, making semantic reuse ineligible
 - cache entry expired
 
 Important request fields include:
@@ -1344,11 +1343,19 @@ graceful_shutdown_timeout_seconds 10;
 
 ### What deployment examples are included?
 
-Ready-to-run deployment examples are available under:
+Ready-to-run Docker examples are available under:
 
 ```text
 deploy/examples/
 ```
+
+An OpenShift-specific `restricted-v2` baseline is also provided under:
+
+```text
+deploy/openshift/
+```
+
+The OpenShift manifests are additive; the AIF image remains a generic OCI image and Docker Compose remains supported.
 
 Common patterns include:
 
@@ -1382,7 +1389,7 @@ The project includes:
 - Qdrant semantic cache
 - Prometheus metrics
 - Grafana dashboards
-- health and readiness endpoints
+- health, startup, and readiness endpoints
 - version reporting
 - graceful shutdown
 - configuration validation

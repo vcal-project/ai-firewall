@@ -202,6 +202,18 @@ Expected:
 OK
 ```
 
+Check startup state (v0.8.2):
+
+```bash
+curl http://localhost:8080/startupz
+```
+
+Expected:
+
+```text
+started
+```
+
 Check readiness:
 
 ```bash
@@ -221,6 +233,14 @@ curl http://localhost:8080/version
 ```
 
 The `/version` endpoint returns the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, and effective cache scope.
+
+Check chat-side model discovery:
+
+```bash
+curl -s http://localhost:8080/v1/models | jq
+```
+
+AIF v0.8.2 proxies this route to the configured chat/inference upstream. A separately configured embedding endpoint is not included in this model list.
 
 Check logs:
 
@@ -472,6 +492,20 @@ It demonstrates:
 - semantic cache misses vs threshold passes
 - semantic store health
 - provider error classes
+
+---
+
+# OpenShift Deployment Baseline
+
+v0.8.2 includes OpenShift-specific manifests under:
+
+```text
+deploy/openshift/
+```
+
+The AIF image itself remains a generic OCI image and the normal Docker/Compose path is unchanged. The OpenShift baseline is designed for `restricted-v2` behavior and keeps platform-specific security settings isolated from generic deployments.
+
+For deployments with separate vLLM chat and embedding Services, configure the two base URLs independently. Keep semantic cache disabled until the exact embedding model ID and returned vector length are verified, then set `qdrant_vector_size` to the measured dimension. See `deploy/openshift/README.md`.
 
 ---
 
