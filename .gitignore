@@ -34,3 +34,4 @@ sbom/
 
 tests/
 scripts/
+release-security/
