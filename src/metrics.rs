@@ -218,6 +218,17 @@ pub static ENFORCEMENT_MODE_INFO: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric aif_enforcement_mode_info must be valid")
 });
 
+pub static RUNTIME_INFO: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        prometheus::Opts::new(
+            "aif_runtime_info",
+            "Current AIF build and assessment-configuration fingerprint; active tuple has value 1",
+        ),
+        &["version", "config_schema", "configuration_hash"],
+    )
+    .expect("metric aif_runtime_info must be valid")
+});
+
 pub static EVALUATION_REQUESTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_evaluation_requests_total",
@@ -320,6 +331,18 @@ pub fn set_enforcement_mode(mode: &str) {
             .with_label_values(&[candidate])
             .set(if candidate == mode { 1 } else { 0 });
     }
+}
+
+pub fn set_runtime_info(version: &str, config_schema: u32, configuration_hash: &str) {
+    let config_schema = config_schema.to_string();
+
+    // Only the currently active tuple is exported by this process. Prometheus retains
+    // historical samples for prior tuples, which lets Console detect changes over a
+    // bounded assessment window without reporting stale tuples as concurrently active.
+    RUNTIME_INFO.reset();
+    RUNTIME_INFO
+        .with_label_values(&[version, &config_schema, configuration_hash])
+        .set(1);
 }
 
 // -----------------------------
@@ -892,6 +915,7 @@ pub fn evidence_delivery_snapshot() -> (i64, u64, u64, u64) {
 
 pub fn init() {
     Lazy::force(&ENFORCEMENT_MODE_INFO);
+    Lazy::force(&RUNTIME_INFO);
     Lazy::force(&EVALUATION_REQUESTS_TOTAL);
     Lazy::force(&EVALUATION_CACHE_OUTCOMES_TOTAL);
     Lazy::force(&EVALUATION_UPSTREAM_CALLS_AVOIDED_TOTAL);
@@ -961,6 +985,7 @@ pub fn init() {
         let collectors: Vec<Box<dyn Collector>> = vec![
             Box::new(REQUESTS_TOTAL.clone()),
             Box::new(ENFORCEMENT_MODE_INFO.clone()),
+            Box::new(RUNTIME_INFO.clone()),
             Box::new(EVALUATION_REQUESTS_TOTAL.clone()),
             Box::new(EVALUATION_CACHE_OUTCOMES_TOTAL.clone()),
             Box::new(EVALUATION_UPSTREAM_CALLS_AVOIDED_TOTAL.clone()),
@@ -1065,11 +1090,14 @@ pub fn render() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn evaluation_metrics_are_registered() {
         init();
         set_enforcement_mode("observe");
+        set_runtime_info("0.8.2-test", 1, "sha256:test");
         EVALUATION_REQUESTS_TOTAL.inc();
         EVALUATION_CACHE_OUTCOMES_TOTAL
             .with_label_values(&[CACHE_TYPE_EXACT, "hit"])
@@ -1099,6 +1127,7 @@ mod tests {
         let rendered = render().expect("metrics should render");
         for metric in [
             "aif_enforcement_mode_info",
+            "aif_runtime_info",
             "aif_evaluation_requests_total",
             "aif_evaluation_cache_outcomes_total",
             "aif_evaluation_upstream_calls_avoided_total",
@@ -1111,5 +1140,17 @@ mod tests {
         ] {
             assert!(rendered.contains(metric), "missing metric {metric}");
         }
+    }
+
+    #[test]
+    #[serial]
+    fn runtime_info_replaces_previous_active_tuple() {
+        init();
+        set_runtime_info("0.8.2-test", 1, "sha256:first");
+        set_runtime_info("0.8.2-test", 1, "sha256:second");
+
+        let rendered = render().expect("metrics should render");
+        assert!(rendered.contains("configuration_hash=\"sha256:second\""));
+        assert!(!rendered.contains("configuration_hash=\"sha256:first\""));
     }
 }

@@ -1,4 +1,5 @@
 mod app;
+mod assessment;
 mod config;
 mod error;
 mod guards;
@@ -157,7 +158,32 @@ async fn config_reload_loop(
                     tracing::error!(error = %e, "config validation failed during reload");
                     continue;
                 }
+
+                let restart_required_changes = {
+                    let current_config = state.config.read().await;
+                    current_config.restart_required_changes(&new_config)
+                };
+                if !restart_required_changes.is_empty() {
+                    tracing::warn!(
+                        fields = %restart_required_changes.join(","),
+                        "config reload skipped because one or more changed fields require a process restart"
+                    );
+                    continue;
+                }
+
                 log_hardening_warnings(&new_config);
+
+                let assessment_context =
+                    match assessment::AssessmentContextV1::from_config(&new_config) {
+                        Ok(context) => context,
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                "config reload aborted: failed to build assessment context"
+                            );
+                            continue;
+                        }
+                    };
 
                 match app::build_runtime(&new_config).await {
                     Ok(runtime) => {
@@ -179,7 +205,18 @@ async fn config_reload_loop(
                             )
                             .await;
 
-                        tracing::info!("config and runtime successfully reloaded from {}", path);
+                        metrics::set_enforcement_mode(new_config.aif_enforcement_mode.as_str());
+                        metrics::set_runtime_info(
+                            release::PRODUCT_VERSION,
+                            release::CONFIG_SCHEMA_VERSION,
+                            &assessment_context.configuration_hash,
+                        );
+
+                        tracing::info!(
+                            configuration_hash = %assessment_context.configuration_hash,
+                            "config and runtime successfully reloaded from {}",
+                            path
+                        );
                     }
                     Err(e) => {
                         tracing::error!(
@@ -442,6 +479,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("- readiness: http://{}/readyz", display_addr);
     tracing::info!("- metrics: http://{}/metrics", display_addr);
     tracing::info!("- version: http://{}/version", display_addr);
+    tracing::info!(
+        "- assessment context: http://{}/assessment-context",
+        display_addr
+    );
     tracing::info!("=== AI Cost Firewall ready ===");
 
     axum::serve(listener, built.router)

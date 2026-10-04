@@ -77,6 +77,8 @@ AI Cost Firewall includes:
 - safe pass-through of OpenAI-style non-string/content-array message content, with semantic-cache bypass for those requests
 - AIF enforcement modes: `enforce` and non-disruptive `observe`
 - isolated shadow exact/semantic cache state for Evaluation Mode
+- sanitized Assessment Context API for reproducible Observe-mode assessment
+- deterministic configuration identity exposed through `aif_runtime_info`
 - configurable cache fail-open/fail-closed behavior
 - structured lifecycle evidence
 - Prometheus metrics and Grafana dashboards
@@ -92,6 +94,78 @@ Optional integrations with separately licensed VCAL modules include:
 - VCAL Compliance
 
 See the latest GitHub release for release-specific changes.
+
+---
+
+# v0.8.3 — Assessment Context
+
+AIF v0.8.3 adds the runtime/configuration context needed to turn a bounded Observe-mode period into a reproducible assessment without changing the request-path behavior introduced in v0.8.0.
+
+The release adds:
+
+- `GET /assessment-context`
+- Assessment Context schema `1.0`
+- deterministic SHA-256 configuration identity
+- historical runtime identity through the `aif_runtime_info` Prometheus metric
+- `/version` advertisement of the supported Assessment Context schema
+- safe effective configuration context for cache, embedding, request-path, pricing, and mode interpretation
+- stricter SIGHUP handling for restart-only settings
+
+The evidence schema remains `1.1`, and Observe/Enforce cache semantics are unchanged.
+
+## Assessment Context endpoint
+
+The endpoint:
+
+```bash
+curl -s http://localhost:8080/assessment-context | jq
+```
+
+returns an allow-listed effective configuration snapshot intended for assessment and reporting tools.
+
+It includes context such as:
+
+- product version and schema versions
+- enforcement mode and effective cache scope
+- exact-cache state, TTL, timeout, and effective prefix
+- semantic-cache state, threshold, retention, and effective collection
+- embedding provider/model/vector size
+- upstream provider and timeout behavior
+- request-path limits relevant to interpretation
+- configured pricing assumptions
+- optional-module state
+- `configuration_hash`
+
+The response does **not** expose provider API keys, credentials, tenant identifiers, private license material, or other secret configuration values.
+
+The configuration hash is deterministic for the safe effective configuration represented by the Assessment Context. Pricing entries are normalized before hashing so ordering alone does not change the identity. Secret-only changes do not change the public configuration hash.
+
+## Historical runtime identity
+
+AIF exports the currently active runtime identity as:
+
+```text
+aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+```
+
+Assessment/reporting systems can query this metric over an exact historical window to verify that one AIF version/configuration identity remained active throughout the period.
+
+When a supported runtime reload changes the effective configuration, AIF replaces the current `aif_runtime_info` label set. Prometheus can therefore retain the previous series historically while the current process exposes only the active identity.
+
+## Reload safety
+
+AIF continues to support nginx-style SIGHUP configuration reloads, but v0.8.3 rejects reloads that attempt to change settings that require process restart.
+
+Restart-only settings include:
+
+```text
+listen_addr
+max_request_body_bytes
+max_inflight_requests
+graceful_shutdown_timeout_seconds
+```
+
+This prevents the process from reporting a new configuration identity for settings that the running process could not actually apply.
 
 ---
 
@@ -198,7 +272,7 @@ Each example includes:
 - expected metrics
 - optional observability overlays
 
-AIF v0.8.2 also includes an OpenShift-specific baseline under:
+AIF v0.8.2 and later include an OpenShift-specific baseline under:
 
 ```text
 deploy/openshift/
@@ -308,6 +382,7 @@ curl http://localhost:8080/healthz
 curl http://localhost:8080/startupz
 curl http://localhost:8080/readyz
 curl http://localhost:8080/version
+curl http://localhost:8080/assessment-context
 ```
 
 Expected:
@@ -318,7 +393,11 @@ started
 ready
 ```
 
-The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, and effective cache scope.
+The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, effective cache scope, and supported Assessment Context schema.
+
+For v0.8.3, the release title is `Assessment Context` and `assessment_context_schema` is `1.0`.
+
+The `/assessment-context` endpoint returns the sanitized effective configuration snapshot described in the v0.8.3 section above.
 
 When the configured chat/inference upstream supports OpenAI-style model discovery, AIF also proxies:
 
@@ -332,7 +411,7 @@ Model discovery is forwarded to the configured chat/inference upstream and is no
 
 ## Evaluation / Observe Mode
 
-The AIF v0.8 series includes an AIF-level Evaluation Mode for low-risk production pilots. v0.8.2 keeps the Observe/Enforce behavior introduced in v0.8.0 while hardening deployment and OpenAI-compatible request handling.
+The AIF v0.8 series includes an AIF-level Evaluation Mode for low-risk production pilots. v0.8.3 keeps the Observe/Enforce behavior introduced in v0.8.0, retains the deployment/OpenAI-compatibility hardening from v0.8.2, and adds Assessment Context without changing request-path semantics.
 
 Configure the runtime mode with:
 
@@ -410,6 +489,22 @@ Dedicated evaluation metrics are used for:
 
 This separation prevents hypothetical pilot savings from being mixed with actual production savings.
 
+### Assessment support
+
+Evaluation Mode produces the hypothetical cache/cost telemetry. Assessment Context provides the effective runtime/configuration identity needed to interpret that telemetry reproducibly.
+
+AIF itself does not create or persist assessment reports. A separate assessment/reporting layer can combine:
+
+```text
+bounded Evaluation telemetry
++
+GET /assessment-context
++
+historical aif_runtime_info
+```
+
+to verify configuration stability and freeze a bounded Observe-mode assessment.
+
 ---
 
 ## Streaming behavior
@@ -477,6 +572,8 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - upstream request timeout tracking plus controlled-stream idle and absolute-generation timeout protection
 - request size protection
 - runtime diagnostics
+- sanitized `/assessment-context` runtime/configuration snapshot
+- deterministic `aif_runtime_info` configuration identity
 - OpenAI-compatible `/v1/models` discovery proxying
 - numeric non-root OCI runtime with explicit SIGTERM container stop signal
 - configurable semantic cache fail-open behavior
@@ -622,7 +719,7 @@ upstream_provider openai_compatible;
 embedding_provider openai_compatible;
 ```
 
-This means AI Cost Firewall expects OpenAI-style chat and embedding APIs. For the configured chat/inference upstream, v0.8.2 also supports proxying OpenAI-compatible `GET /v1/models` discovery. It does not yet provide provider-specific configuration blocks or native provider-specific request transformations.
+This means AI Cost Firewall expects OpenAI-style chat and embedding APIs. For the configured chat/inference upstream, v0.8.2 and later support proxying OpenAI-compatible `GET /v1/models` discovery. It does not yet provide provider-specific configuration blocks or native provider-specific request transformations.
 
 Common OpenAI-compatible deployment patterns include:
 
@@ -655,7 +752,7 @@ For normal `stream=false` or omitted-stream requests, the upstream only needs to
 
 AIF accepts message `content` as JSON rather than requiring a plain string at the parsing layer. OpenAI-style content-part arrays and other non-string message content are therefore preserved and forwarded instead of being rejected or flattened.
 
-In v0.8.2:
+In v0.8.2 and later:
 
 - the complete JSON message content remains part of exact-cache identity;
 - top-level and message-level OpenAI-compatible extension fields such as tool definitions, tool choice, tool-call IDs, reasoning parameters, response-format fields, and future flattened extensions remain part of exact-cache identity;
@@ -721,6 +818,7 @@ aif_stream_upstream_response_bytes
 aif_stream_client_buffer_bytes
 aif_stream_duration_seconds
 aif_enforcement_mode_info
+aif_runtime_info
 aif_evaluation_requests_total
 aif_evaluation_cache_outcomes_total
 aif_evaluation_upstream_calls_avoided_total
@@ -744,6 +842,7 @@ AI Cost Firewall reports:
 - Privacy Guard restore-skip counters when response Security blocks occur
 - Usage Guard block counts by policy category and rule ID
 - current AIF enforcement mode
+- current AIF version/configuration identity through `aif_runtime_info`
 - observe-mode exact and semantic cache opportunities
 - potentially avoidable upstream calls, tokens, and estimated cost
 - shadow-cache store outcomes and evaluation failures
@@ -835,6 +934,8 @@ request.failed
 ```
 
 AI Cost Firewall also emits structured evidence for VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard activity.
+
+AIF v0.8.3 does not change the evidence schema; `schema_version: 1.1` remains current.
 
 Guard evidence contains operational metadata only. Prompt and response content is not included.
 
@@ -936,6 +1037,9 @@ AI Cost Firewall includes tests for:
 - request and response Security Guard block evidence
 - controlled streaming assembly, cross-mode cache reuse, response controls, Privacy restoration, SSE replay, pre-commit failure isolation, provider idle timeout, absolute generation timeout, and upstream-permit release
 - AIF `observe` / `enforce` configuration and behavior
+- Assessment Context serialization, schema advertisement, sanitization, and deterministic configuration hashing
+- `aif_runtime_info` identity updates
+- SIGHUP rejection of restart-only configuration changes
 - isolated shadow exact/semantic cache behavior
 - observe-mode cache bypass semantics
 - observe-mode production-metric isolation

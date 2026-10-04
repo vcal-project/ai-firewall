@@ -28,7 +28,7 @@ RUN cargo build --release --locked
 # ---------- runtime ----------
 FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 
-ARG AIF_VERSION=0.8.2
+ARG AIF_VERSION=0.8.3
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 

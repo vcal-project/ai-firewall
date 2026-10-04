@@ -1,4 +1,4 @@
-use crate::{core::pricing::is_priced_model, release};
+use crate::{assessment::AssessmentContextV1, core::pricing::is_priced_model, release};
 
 use crate::{
     api,
@@ -608,7 +608,6 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
         cfg.embedding_price.clone(),
     ));
 
-    metrics::set_enforcement_mode(cfg.aif_enforcement_mode.as_str());
     tracing::info!("[OK] Runtime initialized");
 
     Ok(RuntimeBuild {
@@ -636,6 +635,15 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
     metrics::init();
 
     let runtime = build_runtime(&config).await?;
+    let assessment_context = AssessmentContextV1::from_config(&config)
+        .context("failed to build assessment context from effective configuration")?;
+
+    metrics::set_enforcement_mode(config.aif_enforcement_mode.as_str());
+    metrics::set_runtime_info(
+        release::PRODUCT_VERSION,
+        release::CONFIG_SCHEMA_VERSION,
+        &assessment_context.configuration_hash,
+    );
 
     let state = Arc::new(AppState {
         config: Arc::new(RwLock::new(config.clone())),
@@ -652,6 +660,10 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
         .route("/version", get(version))
+        .route(
+            "/assessment-context",
+            get(api::assessment::get_assessment_context),
+        )
         .route("/v1/models", get(api::models::list_models))
         .route("/v1/chat/completions", post(api::chat::chat_completions))
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
@@ -673,6 +685,7 @@ async fn version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "version": release::PRODUCT_VERSION,
         "api_compatibility": release::API_COMPATIBILITY_VERSION,
         "config_schema": release::CONFIG_SCHEMA_VERSION,
+        "assessment_context_schema": release::ASSESSMENT_CONTEXT_SCHEMA_VERSION,
         "evidence_schema": crate::evidence::EVIDENCE_SCHEMA_VERSION,
         "release_title": release::RELEASE_TITLE,
         "supported_api_style": release::SUPPORTED_API_STYLE,

@@ -1885,6 +1885,27 @@ impl Config {
         Self::from_env()
     }
 
+    /// Return configuration fields that are bound into process/router state and
+    /// therefore cannot be made effective by the current SIGHUP reload path.
+    pub fn restart_required_changes(&self, candidate: &Self) -> Vec<&'static str> {
+        let mut changes = Vec::new();
+
+        if self.listen_addr != candidate.listen_addr {
+            changes.push("listen_addr");
+        }
+        if self.max_request_body_bytes != candidate.max_request_body_bytes {
+            changes.push("max_request_body_bytes");
+        }
+        if self.max_inflight_requests != candidate.max_inflight_requests {
+            changes.push("max_inflight_requests");
+        }
+        if self.graceful_shutdown_timeout_seconds != candidate.graceful_shutdown_timeout_seconds {
+            changes.push("graceful_shutdown_timeout_seconds");
+        }
+
+        changes
+    }
+
     pub fn effective_qdrant_collection(&self) -> String {
         if self.aif_enforcement_mode.is_observe() {
             format!("{}_eval", self.qdrant_collection)

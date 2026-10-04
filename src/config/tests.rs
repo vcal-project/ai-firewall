@@ -1246,3 +1246,40 @@ fn debug_output_masks_all_configured_secrets() {
         );
     }
 }
+
+#[test]
+fn restart_required_changes_identifies_startup_only_fields() {
+    let current = minimal_valid_config();
+    let mut candidate = current.clone();
+
+    assert!(current.restart_required_changes(&candidate).is_empty());
+
+    candidate.max_request_body_bytes += 1;
+    candidate.max_inflight_requests += 1;
+    candidate.graceful_shutdown_timeout_seconds += 1;
+    candidate.listen_addr = "127.0.0.1:8081".to_string();
+
+    assert_eq!(
+        current.restart_required_changes(&candidate),
+        vec![
+            "listen_addr",
+            "max_request_body_bytes",
+            "max_inflight_requests",
+            "graceful_shutdown_timeout_seconds",
+        ]
+    );
+}
+
+#[test]
+fn restart_required_changes_allows_hot_reloadable_fields() {
+    let current = minimal_valid_config();
+    let mut candidate = current.clone();
+
+    candidate.aif_enforcement_mode = AifEnforcementMode::Observe;
+    candidate.semantic_similarity_threshold = 0.95;
+    candidate.max_prompt_chars += 1;
+    candidate.max_inflight_upstream_requests += 1;
+    candidate.upstream_timeout_seconds += 1;
+
+    assert!(current.restart_required_changes(&candidate).is_empty());
+}
