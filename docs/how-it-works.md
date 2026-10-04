@@ -93,6 +93,28 @@ The potential cost/tokens attributed to a would-have hit are calculated from the
 
 ---
 
+# Assessment Context and Configuration Stability
+
+AIF v0.8.3 adds a read-only Assessment Context surface alongside the existing Evaluation Mode telemetry.
+
+```text
+GET /assessment-context
+```
+
+Evaluation Mode answers what AIF would have done for cache/cost optimization during Observe mode. Assessment Context answers which safe effective runtime configuration produced that telemetry.
+
+The endpoint returns an allow-listed configuration snapshot and a deterministic `configuration_hash`. AIF also publishes the same active identity through:
+
+```text
+aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+```
+
+A reporting/assessment layer can combine a bounded set of `aif_evaluation_*` metrics with historical `aif_runtime_info` samples and the current `/assessment-context` response to verify configuration stability before freezing an assessment.
+
+This path is observational only and does not participate in request routing, cache lookup/store, guard decisions, or upstream response handling.
+
+---
+
 # Request Flow Diagram
 
 ```mermaid
@@ -922,6 +944,7 @@ AIF v0.8.0 keeps hypothetical evaluation outcomes separate from production cache
 
 ```text
 aif_enforcement_mode_info
+aif_runtime_info{version,config_schema,configuration_hash}
 aif_evaluation_requests_total
 aif_evaluation_cache_outcomes_total
 aif_evaluation_upstream_calls_avoided_total

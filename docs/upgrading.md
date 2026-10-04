@@ -1,5 +1,33 @@
 # Upgrading AI Cost Firewall
 
+## v0.8.2 to v0.8.3
+
+v0.8.3 adds Assessment Context and deterministic runtime/configuration identity. It does not change the default enforcement mode, Observe/Enforce request-path semantics, cache data formats, or evidence schema, and it requires no Redis/Qdrant data migration.
+
+1. Back up the current configuration and deployment manifests.
+2. Deploy `vcalproject/ai-firewall:v0.8.3`.
+3. Verify `/healthz`, `/startupz`, `/readyz`, `/version`, and `GET /v1/models` as before.
+4. Verify the new endpoint:
+
+   ```bash
+   curl -s http://localhost:8080/assessment-context | jq
+   ```
+
+5. Confirm `/version` reports release `0.8.3`, release title `Assessment Context`, and Assessment Context schema `1.0`.
+6. Confirm Prometheus is scraping the new runtime identity metric:
+
+   ```text
+   aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+   ```
+
+7. If you use Observe-mode assessment/reporting, keep Prometheus history for the full selected assessment period so configuration stability can be verified from `aif_runtime_info`.
+8. Review automation that sends `SIGHUP`: v0.8.3 rejects reloads that attempt to change `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, or `graceful_shutdown_timeout_seconds`. Restart/recreate the process for those fields.
+9. If VCAL Console v0.3 Assessment is used, verify that its current AIF context matches the single historical runtime identity for the selected period before finalization.
+
+No new configuration directive is mandatory solely for upgrading from v0.8.2. The Assessment Context endpoint is additive and is derived from the existing effective configuration. Secrets remain excluded from the endpoint and from `aif_runtime_info` labels.
+
+The evidence schema remains `1.1`.
+
 ## v0.8.1 to v0.8.2
 
 v0.8.2 is a deployment-hardening and OpenAI-compatibility release. It does not change the default AIF enforcement mode and requires no Redis/Qdrant data migration.

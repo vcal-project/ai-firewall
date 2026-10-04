@@ -1,6 +1,6 @@
 # Production deployment notes
 
-AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules. v0.8.2 keeps the v0.8 Evaluation Mode model (`enforce` or non-disruptive `observe`) and adds deployment hardening for Docker, generic OCI/Kubernetes environments, and an OpenShift-specific example.
+AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules. v0.8.3 keeps the v0.8 Evaluation Mode model (`enforce` or non-disruptive `observe`), retains the v0.8.2 deployment hardening, and adds Assessment Context/runtime identity for reproducible Observe-mode assessment.
 
 The AIF image is not OpenShift-specific. The normal `docker-compose.yml` deployment remains supported, while OpenShift manifests are isolated under `deploy/openshift/`.
 
@@ -23,6 +23,10 @@ aif_enforcement_mode observe;
 In `observe`, live responses still come from the upstream provider. Redis and Qdrant are used as isolated evaluation state, and their temporary failure must not interrupt application traffic or make AIF unready solely because the evaluation cache is unavailable. Keep enough upstream capacity for the full live workload: observe-mode cache hits are hypothetical and do not reduce actual provider traffic.
 
 Evaluation Mode controls AIF caching only. Existing Security Guard, Privacy Guard, and Usage Guard settings continue to enforce exactly as configured.
+
+For assessment-capable deployments, keep Prometheus scraping AIF throughout the selected Observe period. v0.8.3 exposes the active runtime identity as `aif_runtime_info{version,config_schema,configuration_hash}` and exposes the current safe effective configuration at `GET /assessment-context`. Together these allow an assessment tool to verify that the selected period used one stable AIF runtime/configuration identity.
+
+`/assessment-context` is sanitized and does not return API keys or credentials, but it still contains operational configuration metadata. Expose it only where that administrative/runtime metadata is intended to be visible.
 
 ## Graceful shutdown
 

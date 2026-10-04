@@ -202,7 +202,7 @@ Expected:
 OK
 ```
 
-Check startup state (v0.8.2):
+Check startup state (v0.8.2 and later):
 
 ```bash
 curl http://localhost:8080/startupz
@@ -232,7 +232,15 @@ Check release metadata:
 curl http://localhost:8080/version
 ```
 
-The `/version` endpoint returns the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, and effective cache scope.
+The `/version` endpoint returns the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, effective cache scope, and—starting in v0.8.3—the supported Assessment Context schema.
+
+Check the sanitized effective Assessment Context (v0.8.3):
+
+```bash
+curl -s http://localhost:8080/assessment-context | jq
+```
+
+The response includes a deterministic `configuration_hash` and the allow-listed runtime/configuration context needed to interpret an Observe-mode assessment. It does not expose provider API keys or credentials.
 
 Check chat-side model discovery:
 
@@ -954,10 +962,11 @@ aif_upstream_calls_total
 aif_cache_bypass_requests_total
 ```
 
-Evaluation metrics:
+Evaluation and assessment identity metrics:
 
 ```text
 aif_enforcement_mode_info
+aif_runtime_info{version,config_schema,configuration_hash}
 aif_evaluation_requests_total
 aif_evaluation_cache_outcomes_total
 aif_evaluation_upstream_calls_avoided_total
@@ -1073,6 +1082,8 @@ Expected logs:
 received SIGHUP, reloading config
 config and runtime successfully reloaded
 ```
+
+In v0.8.3, SIGHUP reload is rejected if it changes a restart-only setting: `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, or `graceful_shutdown_timeout_seconds`. Restart/recreate the process or container for those changes.
 
 ---
 

@@ -449,6 +449,30 @@ aif_shutdown_rejections_total
 
 ---
 
+# Assessment Context and Runtime Identity
+
+AIF v0.8.3 exposes a read-only, allow-listed effective configuration snapshot at:
+
+```text
+GET /assessment-context
+```
+
+The response is intended for assessment/reporting systems and includes a deterministic `configuration_hash`. Sensitive values such as API keys and credentials are not included.
+
+The active identity is also exported through Prometheus:
+
+```text
+aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+```
+
+For an exact assessment period, a consumer can query historical `aif_runtime_info` samples and require one version/configuration identity across the period. The current `/assessment-context` can then be matched to that identity before an external assessment layer freezes its snapshot.
+
+When a supported hot reload changes the effective configuration identity, AIF replaces the current `aif_runtime_info` label set. Prometheus may continue to retain the old label set historically.
+
+Assessment Context does not affect readiness, cache behavior, guard behavior, upstream routing, or request accounting.
+
+---
+
 # Configuration Reload
 
 AI Cost Firewall supports nginx-style configuration reload using `SIGHUP`.
@@ -496,6 +520,8 @@ config and runtime successfully reloaded
 - invalid reload configuration does not replace the active runtime
 - traffic continues during successful reload
 - runtime dependencies are revalidated during reload
+- v0.8.3 rejects reloads that change restart-only fields: `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, or `graceful_shutdown_timeout_seconds`
+- restart the process/container to apply a restart-only field change
 
 ---
 
@@ -915,7 +941,10 @@ aif_inflight_requests
 aif_shutdown_in_progress
 aif_shutdown_rejections_total
 aif_readiness_state
+aif_runtime_info{version,config_schema,configuration_hash}
 ```
+
+`aif_runtime_info` identifies the active AIF version/configuration identity and is intended for historical configuration-stability checks over bounded assessment periods.
 
 ---
 

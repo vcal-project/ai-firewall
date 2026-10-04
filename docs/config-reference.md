@@ -1329,6 +1329,26 @@ Used for:
 
 ---
 
+# Assessment Context and Configuration Identity
+
+AIF v0.8.3 does not add a new configuration directive for Assessment Context. The read-only:
+
+```text
+GET /assessment-context
+```
+
+endpoint is derived from the already resolved effective configuration and exposes only an allow-listed subset suitable for assessment/reporting. Sensitive values are excluded.
+
+The response includes a deterministic `configuration_hash`, and the same identity is exported through:
+
+```text
+aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+```
+
+Secret-only changes do not change this public configuration identity. Configuration values that are part of the safe effective Assessment Context can change the identity when their effective value changes.
+
+---
+
 # Graceful Shutdown
 
 ---
@@ -1431,6 +1451,17 @@ embedding_api_key = sk-y...-key
 # Runtime Dependency Validation
 
 During startup and reload, AI Cost Firewall validates static configuration and constructs the configured runtime dependencies.
+
+In v0.8.3, SIGHUP reload is rejected if it attempts to change a restart-only setting that the running process cannot safely apply. Restart-only fields include:
+
+```text
+listen_addr
+max_request_body_bytes
+max_inflight_requests
+graceful_shutdown_timeout_seconds
+```
+
+The previous valid runtime remains active when such a reload is rejected.
 
 In `enforce`, Redis/Qdrant availability follows the normal cache fail-open and readiness policy.
 

@@ -1042,6 +1042,30 @@ This lets deployments decide whether Redis, Qdrant, or upstream-provider availab
 
 ---
 
+# Assessment Context and Runtime Identity
+
+AIF v0.8.3 adds a read-only assessment context surface that is separate from the request path:
+
+```text
+GET /assessment-context
+```
+
+The endpoint returns an allow-listed snapshot of the effective AIF configuration needed to interpret a bounded Observe-mode evaluation period. It includes runtime/version metadata, cache mode and scope, cache/embedding settings, request-path limits, pricing assumptions, optional-module state, and a deterministic `configuration_hash`.
+
+Secrets such as provider API keys, credentials, tenant identifiers, and private license material are not returned.
+
+AIF also exports the active runtime/configuration identity through Prometheus:
+
+```text
+aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+```
+
+This allows an assessment/reporting layer to verify that one AIF version/configuration identity remained active throughout an exact historical period. When a supported reload changes the effective configuration, AIF replaces the current runtime-info label set; Prometheus may retain the previous series as historical data.
+
+Assessment Context is observational only. It does not change cache lookup, guard orchestration, upstream routing, streaming, or Observe/Enforce behavior, and AIF itself does not create or persist assessment reports.
+
+---
+
 # Metrics & Observability
 
 AI Cost Firewall exports Prometheus metrics:
@@ -1124,7 +1148,10 @@ Useful for tuning:
 aif_inflight_requests
 aif_shutdown_in_progress
 aif_readiness_state
+aif_runtime_info{version,config_schema,configuration_hash}
 ```
+
+`aif_runtime_info` identifies the active AIF version and safe effective configuration. It is intended for historical configuration-stability checks over bounded assessment periods.
 
 ---
 

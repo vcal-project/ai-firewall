@@ -195,6 +195,32 @@ aif_enforcement_mode enforce;
 
 ---
 
+### What is Assessment Context in v0.8.3?
+
+AIF v0.8.3 exposes:
+
+```text
+GET /assessment-context
+```
+
+The endpoint returns an allow-listed snapshot of the current effective AIF configuration so an assessment/reporting layer can interpret a bounded Observe-mode period reproducibly.
+
+It includes the AIF version/schema context, enforcement mode, effective cache scope, cache/embedding settings, request-path limits, pricing assumptions, optional-module state, and a deterministic `configuration_hash`.
+
+It does not expose provider API keys, credentials, tenant identifiers, private license material, or other secret configuration values.
+
+AIF also publishes the active identity in Prometheus as:
+
+```text
+aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+```
+
+An assessment tool can query that metric over an exact time window to verify that one runtime/configuration identity remained active throughout the period, then compare it with the current `/assessment-context` before freezing the assessment.
+
+AIF itself does not persist or finalize assessment reports.
+
+---
+
 ### Does observe mode reduce my real provider traffic or bill?
 
 No. Observe mode deliberately calls the live upstream provider even on would-have cache hits. The evaluation metrics estimate calls, tokens, and cost that could have been avoided under enforcement, but those savings are hypothetical during the observe period.
@@ -533,6 +559,8 @@ kill -HUP $(pgrep ai-firewall)
 
 Some settings may still require process or container restart depending on how the deployment injects configuration and environment variables.
 
+In v0.8.3, AIF explicitly rejects SIGHUP reloads that attempt to change restart-only settings such as `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, or `graceful_shutdown_timeout_seconds`. Restart the process/container for those changes. The previous valid runtime remains active after a rejected reload.
+
 ---
 
 ### Do containers need to be recreated after config or environment changes?
@@ -651,6 +679,7 @@ aif_model_cost_micro_usd_total
 aif_gross_saved_micro_usd_total
 aif_embedding_overhead_micro_usd_total
 aif_net_saved_micro_usd_total
+aif_runtime_info{version,config_schema,configuration_hash}
 ```
 
 Depending on the version and enabled features, AI Cost Firewall may also export:
@@ -688,6 +717,7 @@ curl -s http://localhost:8080/healthz
 curl -s http://localhost:8080/startupz
 curl -s http://localhost:8080/readyz
 curl -s http://localhost:8080/version
+curl -s http://localhost:8080/assessment-context
 ```
 
 Use `/healthz` to check whether the process is alive.
@@ -696,7 +726,9 @@ Use `/startupz` as the strict orchestrator startup check for required cache back
 
 Use `/readyz` to check whether the instance should currently receive traffic under the configured readiness/fail-open policy.
 
-Use `/version` to confirm the running release, compatibility model, current AIF enforcement mode, and effective cache scope. In v0.8.0 this is also the authoritative way to distinguish production (`enforce`) from evaluation (`observe`) cache scope.
+Use `/version` to confirm the running release, compatibility model, current AIF enforcement mode, effective cache scope, and the supported Assessment Context schema. In v0.8.0 and later this is also the authoritative way to distinguish production (`enforce`) from evaluation (`observe`) cache scope.
+
+In v0.8.3, use `/assessment-context` to inspect the sanitized effective configuration and `configuration_hash` used for assessment/runtime identity.
 
 ---
 
