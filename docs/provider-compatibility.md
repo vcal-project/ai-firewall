@@ -445,7 +445,7 @@ VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard operate at the AI 
 
 Provider compatibility still matters for OpenAI-compatible chat request/response shape, model naming, streaming behavior, tool/function response formats, and embedding endpoint behavior when semantic cache is enabled.
 
-The current guard modules inspect text content. Non-text content such as images, audio, video, and binary payloads is preserved where possible but is not scanned, anonymized, or classified by AI Firewall guard modules.
+Privacy Guard inspects supported string and structured text-content arrays; Security Guard and Usage Guard have separate, more limited text inspection coverage. Non-text content such as images, audio, video, binary payloads, and referenced attachments is not inspected by these integrations. Recognized unsupported text-bearing content is rejected by Privacy Guard when enabled.
 
 AI Cost Firewall supports both ordinary JSON chat completions and controlled OpenAI-compatible SSE delivery. Optional guards use the same complete-response control pipeline for both delivery modes.
 

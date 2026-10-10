@@ -907,9 +907,9 @@ aif_stream_client_time_to_first_byte_seconds
 
 OpenAI-style non-string message content is accepted and preserved by the parsing/proxy layer, and the full JSON shape remains part of exact-cache identity.
 
-In v0.8.2, requests containing any non-string message content deliberately bypass semantic lookup/store. This prevents image/file/audio structures and base64 data from entering the text embedding path.
+Requests containing non-string message content deliberately bypass semantic lookup/store. This prevents image/file/audio structures and base64 data from entering the text embedding path.
 
-The current Security, Privacy, and Usage Guard integrations inspect plain string message content only. Text nested inside a content-part array is not yet scanned, anonymized/restored, or classified.
+Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned.
 
 Extract text before sending it through AI Firewall if you need text-oriented guard protection for non-text assets.
 

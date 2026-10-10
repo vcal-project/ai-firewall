@@ -1059,7 +1059,7 @@ can become:
 [EMAIL_1]
 ```
 
-This helps avoid storing or forwarding raw sensitive values.
+This helps avoid storing or forwarding raw sensitive values. With Privacy Guard enabled, exact and semantic cache identity is isolated by an opaque tenant-and-effective-policy scope (policy ID, version, and hash). Restored personal information is never written to cache; restoration uses the current request mapping. If the effective policy identity is incomplete or Privacy Guard fails open, AIF bypasses cache lookup and storage for that request.
 
 Deployments should still review cache-retention settings, access controls, metrics exposure, logs, and backup/snapshot handling.
 
@@ -1185,9 +1185,9 @@ Privacy flows that create anonymization mappings no longer need to reject stream
 
 The parsing/proxy layer accepts OpenAI-style array/object message content and preserves it for upstream forwarding. The full JSON content remains part of exact-cache identity.
 
-In v0.8.2, a request containing any non-string message content bypasses semantic cache, preventing image/file/audio structures or base64 data from entering the text embedding path.
+Requests containing non-string message content bypass semantic cache, preventing image/file/audio structures or base64 data from entering the text embedding path.
 
-The current Security, Privacy, and Usage Guard integrations inspect plain string content only. Text nested inside a content-part array is therefore not yet scanned, anonymized/restored, or classified. If the client extracts OCR text, captions, or metadata and sends it as plain text content, the current guards can process it normally.
+Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned. Client-extracted OCR text, captions, or metadata can be inspected when sent as supported text content.
 
 ---
 ### What happens if Redis, Qdrant, or embeddings fail during observe mode?

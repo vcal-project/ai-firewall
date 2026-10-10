@@ -261,7 +261,7 @@ Security Guard request-side blocks happen before Privacy Guard, Usage Guard, cac
 
 ## Privacy Guard Restore
 
-When Privacy Guard runs in `anonymize` mode, AI Firewall stores the returned `mapping_id` for the request flow and calls `/v1/restore` on assistant output when restoration is enabled and a mapping exists.
+When Privacy Guard runs in `anonymize` mode, AI Firewall stores the returned `mapping_id` for the current request flow and calls `/v1/restore` on assistant output when restoration is enabled and a mapping exists. Cached responses retain placeholders, not restored personal information. Privacy-aware cache scope isolates tenant and effective policy identity (ID/version/hash); missing policy identity or Privacy Guard fail-open bypasses cache lookup and storage.
 
 ## Usage Guard Decisions
 
@@ -1312,9 +1312,9 @@ See also:
 
 # Non-text and Content-part Messages
 
-AIF preserves OpenAI-style non-string message content at the parsing/proxy layer and includes it in exact-cache identity. Requests containing non-string message content bypass semantic cache in v0.8.2.
+AIF preserves OpenAI-style non-string message content at the parsing/proxy layer and includes it in exact-cache identity. Requests containing non-string message content bypass semantic cache.
 
-The current Security, Privacy, and Usage Guard integrations inspect only plain string message content. Text nested inside content-part arrays is not yet scanned, anonymized/restored, or classified.
+Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned.
 
 ---
 # Operational Notes

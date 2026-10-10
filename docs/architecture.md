@@ -1321,9 +1321,9 @@ Actual performance depends on:
 
 The OpenAI-compatible parsing layer preserves non-string message content, including content-part arrays/objects, and exact-cache identity includes the complete preserved JSON shape.
 
-In v0.8.2, any request containing non-string message content is ineligible for semantic-cache lookup/store. AIF does not serialize image/file/audio structures into the text embedding path.
+Requests containing non-string message content are ineligible for semantic-cache lookup/store. AIF does not serialize image/file/audio structures into the text embedding path. With Privacy Guard enabled, exact and semantic cache reuse is additionally isolated by effective tenant and policy identity; cache entries store placeholders rather than restored values.
 
-The current Security, Privacy, and Usage Guard integrations inspect plain string message content only. Text nested inside a content-part array is therefore not yet scanned, anonymized, restored, or classified by those guard modules. Non-text parts are forwarded unchanged where the upstream supports them.
+Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned.
 
 If a client extracts OCR text, captions, or metadata and sends that material as plain text content, the current guard integrations can process it normally.
 

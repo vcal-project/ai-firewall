@@ -885,7 +885,7 @@ OpenAI-style message content is parsed as JSON, so array/object content can be p
 
 Requests containing any non-string message content bypass semantic cache in v0.8.2. This prevents image/file/audio payload structures or base64 data from entering the text embedding path.
 
-The current Security, Privacy, and Usage Guard integrations inspect only plain string message content. Text nested inside content-part arrays is not yet guard-inspected or anonymized/restored. Client-extracted OCR text, captions, or metadata can be processed normally when sent as plain text content.
+Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned. Client-extracted OCR text, captions, or metadata can be inspected when sent as supported text content.
 
 ---
 # Metrics and Observability

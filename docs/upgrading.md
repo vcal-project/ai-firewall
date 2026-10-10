@@ -1,5 +1,18 @@
 # Upgrading AI Cost Firewall
 
+## v0.8.3 to v0.8.4
+
+This update integrates structured-content inspection with VCAL Privacy Guard and strengthens tenant/policy isolation of exact and semantic cache entries. Evaluation Mode, controlled streaming, and Assessment Context remain available.
+
+1. Back up the configuration and deployment manifests; deploy `vcalproject/ai-firewall:v0.8.4` alongside a compatible VCAL Privacy Guard v0.3.0 deployment when Privacy Guard is enabled.
+2. Verify `/healthz`, `/startupz`, `/readyz`, `/version`, and `/assessment-context`.
+3. Exercise supported string and text-content array requests through Privacy Guard. Recognized unsupported text-bearing structures are rejected instead of silently bypassing privacy inspection. Referenced file attachments remain outside inspection scope.
+4. Check that the effective privacy policy ID, version, and hash are available. Without a complete policy identity, or when Privacy Guard fails open, AIF bypasses cache lookup and storage for the request.
+5. Verify cross-tenant and cross-policy exact/semantic cache isolation. Previously cached privacy-protected entries may become cold because the cache identity has changed; unguarded cache behavior remains compatible where safe.
+6. Validate current-request placeholder restoration and ensure stored cache values contain placeholders rather than restored personal data. Recheck JSON and controlled-SSE behavior in both `observe` and `enforce` modes.
+
+Structured-content arrays remain ineligible for semantic reuse; eligible requests can still use exact cache. No Privacy Guard source modification or attachment processing is part of this update.
+
 ## v0.8.2 to v0.8.3
 
 v0.8.3 adds Assessment Context and deterministic runtime/configuration identity. It does not change the default enforcement mode, Observe/Enforce request-path semantics, cache data formats, or evidence schema, and it requires no Redis/Qdrant data migration.

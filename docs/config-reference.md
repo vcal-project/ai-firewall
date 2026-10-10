@@ -1114,7 +1114,7 @@ Privacy Guard scan mode.
 privacy_guard_mode anonymize;
 ```
 
-Common values are `detect_only`, `redact`, and `anonymize`.
+Common values are `detect_only`, `redact`, and `anonymize`. Privacy Guard processes supported structured text-content arrays as well as plain strings. Recognized unsupported text-bearing shapes are rejected independently of `guard_fail_open`; referenced document attachments are not inspected. Effective tenant and policy identity (ID/version/hash) scopes exact and semantic cache reuse. If identity is incomplete, cache lookup and store are bypassed.
 
 ## privacy_guard_restore_enabled
 
