@@ -74,7 +74,8 @@ AI Cost Firewall includes:
 - OpenAI-compatible `GET /v1/models` proxying to the configured chat/inference upstream
 - OpenAI-compatible streaming chat completions (SSE)
 - exact-cache identity that preserves OpenAI-compatible request/message extension fields
-- safe pass-through of OpenAI-style non-string/content-array message content, with semantic-cache bypass for those requests
+- structured-content array handling with Privacy Guard inspection of supported text parts and safe preservation of non-text parts
+- privacy-aware exact and semantic cache isolation by effective tenant and policy identity
 - AIF enforcement modes: `enforce` and non-disruptive `observe`
 - isolated shadow exact/semantic cache state for Evaluation Mode
 - sanitized Assessment Context API for reproducible Observe-mode assessment
@@ -97,11 +98,11 @@ See the latest GitHub release for release-specific changes.
 
 ---
 
-# v0.8.3 — Assessment Context
+# Assessment Context and Configuration Identity
 
-AIF v0.8.3 adds the runtime/configuration context needed to turn a bounded Observe-mode period into a reproducible assessment without changing the request-path behavior introduced in v0.8.0.
+AIF exposes sanitized runtime/configuration context so a bounded Observe-mode period can be interpreted as a reproducible assessment without altering request-path behavior.
 
-The release adds:
+Capabilities include:
 
 - `GET /assessment-context`
 - Assessment Context schema `1.0`
@@ -145,7 +146,7 @@ The configuration hash is deterministic for the safe effective configuration rep
 AIF exports the currently active runtime identity as:
 
 ```text
-aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
+aif_runtime_info{version="<running-version>",config_schema="1",configuration_hash="sha256:..."} 1
 ```
 
 Assessment/reporting systems can query this metric over an exact historical window to verify that one AIF version/configuration identity remained active throughout the period.
@@ -154,7 +155,7 @@ When a supported runtime reload changes the effective configuration, AIF replace
 
 ## Reload safety
 
-AIF continues to support nginx-style SIGHUP configuration reloads, but v0.8.3 rejects reloads that attempt to change settings that require process restart.
+AIF supports nginx-style SIGHUP configuration reloads but rejects reloads that attempt to change settings requiring a process restart.
 
 Restart-only settings include:
 
@@ -171,7 +172,7 @@ This prevents the process from reporting a new configuration identity for settin
 
 # Included Dashboards
 
-AI Cost Firewall includes Grafana dashboards for production cost visibility, cache effectiveness, runtime diagnostics, and high-level guard orchestration health. Evaluation-specific Prometheus metrics introduced in v0.8.0 are exposed for pilot analysis without being merged into normal production savings counters.
+AI Cost Firewall includes Grafana dashboards for production cost visibility, cache effectiveness, runtime diagnostics, and high-level guard orchestration health. Evaluation-specific Prometheus metrics are exposed for pilot analysis without being merged into normal production savings counters.
 
 The dashboards are included in the Docker deployment files and are automatically provisioned by Grafana when using the provided Docker Compose setup.
 
@@ -272,7 +273,7 @@ Each example includes:
 - expected metrics
 - optional observability overlays
 
-AIF v0.8.2 and later include an OpenShift-specific baseline under:
+An OpenShift-specific baseline is available under:
 
 ```text
 deploy/openshift/
@@ -395,9 +396,9 @@ ready
 
 The `/version` endpoint returns release metadata, including the AI Cost Firewall version, release title, OpenAI-compatible compatibility model, current AIF enforcement mode, effective cache scope, and supported Assessment Context schema.
 
-For v0.8.3, the release title is `Assessment Context` and `assessment_context_schema` is `1.0`.
+The release title reflects the installed build, and `assessment_context_schema` identifies the supported Assessment Context schema.
 
-The `/assessment-context` endpoint returns the sanitized effective configuration snapshot described in the v0.8.3 section above.
+The `/assessment-context` endpoint returns the sanitized effective configuration snapshot described in the Assessment Context section above.
 
 When the configured chat/inference upstream supports OpenAI-style model discovery, AIF also proxies:
 
@@ -411,7 +412,7 @@ Model discovery is forwarded to the configured chat/inference upstream and is no
 
 ## Evaluation / Observe Mode
 
-The AIF v0.8 series includes an AIF-level Evaluation Mode for low-risk production pilots. v0.8.3 keeps the Observe/Enforce behavior introduced in v0.8.0, retains the deployment/OpenAI-compatibility hardening from v0.8.2, and adds Assessment Context without changing request-path semantics.
+AIF includes an AIF-level Evaluation Mode for low-risk production pilots. Assessment Context and deployment hardening complement this mode without changing the Observe/Enforce request-path semantics.
 
 Configure the runtime mode with:
 
@@ -578,7 +579,7 @@ AI Cost Firewall includes operational safeguards and observability features desi
 - numeric non-root OCI runtime with explicit SIGTERM container stop signal
 - configurable semantic cache fail-open behavior
 - optional Security Guard, Privacy Guard, and Usage Guard orchestration
-- configurable guard fail-open/fail-closed behavior
+- configurable guard fail-open/fail-closed behavior for operational failures; unsupported recognized privacy text-bearing shapes are rejected independently
 - structured evidence events with trace correlation
 - exactly one terminal request lifecycle event per received trace
 - optional buffered HTTP evidence delivery to VCAL Audit
@@ -590,7 +591,7 @@ AI Cost Firewall includes operational safeguards and observability features desi
 
 VCAL Privacy Guard, VCAL Security Guard, VCAL Usage Guard, VCAL Audit, and VCAL Compliance are separate commercial products. They are not required to deploy or use AI Cost Firewall.
 
-AI Cost Firewall can optionally orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard around chat requests and responses. These modules can be enabled independently or in combination. Controlled streaming uses the same request-side guard processing and complete-response Security/Privacy controls described in the Streaming behavior section.
+AI Cost Firewall can optionally orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard around chat requests and responses. These modules can be enabled independently or in combination. Privacy Guard supports inspection of supported text-bearing content arrays; this does not extend Security Guard or Usage Guard coverage to every structured-content shape. Controlled streaming uses the same request-side guard processing and complete-response Security/Privacy controls described in the Streaming behavior section.
 
 The recommended full guard flow is:
 
@@ -719,7 +720,7 @@ upstream_provider openai_compatible;
 embedding_provider openai_compatible;
 ```
 
-This means AI Cost Firewall expects OpenAI-style chat and embedding APIs. For the configured chat/inference upstream, v0.8.2 and later support proxying OpenAI-compatible `GET /v1/models` discovery. It does not yet provide provider-specific configuration blocks or native provider-specific request transformations.
+This means AI Cost Firewall expects OpenAI-style chat and embedding APIs. For the configured chat/inference upstream, AIF supports proxying OpenAI-compatible `GET /v1/models` discovery. It does not yet provide provider-specific configuration blocks or native provider-specific request transformations.
 
 Common OpenAI-compatible deployment patterns include:
 
@@ -752,14 +753,17 @@ For normal `stream=false` or omitted-stream requests, the upstream only needs to
 
 AIF accepts message `content` as JSON rather than requiring a plain string at the parsing layer. OpenAI-style content-part arrays and other non-string message content are therefore preserved and forwarded instead of being rejected or flattened.
 
-In v0.8.2 and later:
+Content and guard handling:
 
-- the complete JSON message content remains part of exact-cache identity;
-- top-level and message-level OpenAI-compatible extension fields such as tool definitions, tool choice, tool-call IDs, reasoning parameters, response-format fields, and future flattened extensions remain part of exact-cache identity;
-- requests containing non-string message content bypass semantic-cache lookup and store;
-- Privacy Guard, Security Guard, and Usage Guard currently inspect only plain string message content, so text nested inside content-part arrays is not yet scanned, anonymized, or classified.
+- Complete JSON message content participates in exact-cache identity; top-level and message-level OpenAI-compatible extension fields (including tools, tool choice, tool-call IDs, reasoning parameters, and response-format fields) also remain part of identity.
+- With VCAL Privacy Guard enabled, supported string content, arrays of strings, and typed text parts such as `{"type":"text","text":"..."}` are sent for inspection without flattening the array; supported mixed text/non-text arrays retain their JSON shape.
+- Recognized unsupported text-bearing structures are rejected as a privacy inspection contract violation rather than silently forwarded as inspected text. Non-text parts can be preserved but are **not** scanned for embedded information.
+- Requests with non-string message content remain ineligible for semantic caching; eligible inspected structured-content requests can use exact caching.
+- Security Guard and Usage Guard do **not** gain nested content-part inspection automatically from Privacy Guard's structured-content integration. Their coverage is governed by their own adapters and APIs; do not assume all guards inspect arrays.
 
-This makes multimodal-shaped requests safe to pass through at the AIF parsing/cache layer without claiming full multimodal guard processing. Full nested content-part guard handling is deferred to a later release.
+**Privacy-aware caching:** when Privacy Guard supplies a complete effective policy ID, policy version, and policy hash, cache identity also incorporates an opaque scope derived from the effective tenant and privacy policy. Exact-cache identities and Qdrant semantic filters isolate requests across tenants/policies. Cached completions remain in their pre-restoration placeholder form; restoration uses the **current request's** mapping only. If a successful Privacy Guard scan lacks a complete effective policy identity, AIF bypasses cache lookup and store for that request. A fail-open Privacy Guard transport failure also bypasses both caches.
+
+**Scope limitation:** content-part support is not document or attachment processing. Referenced files and opaque non-text content are not fetched, parsed, or scanned by AIF. Additional arbitrary nested/custom text shapes are not guaranteed to be covered; unsupported recognized text-bearing forms are rejected. The behavior for unsupported privacy text is separate from `guard_fail_open`, which governs operational failures.
 
 Important limitations:
 
@@ -888,13 +892,13 @@ Full documentation:
 
 # Benchmarks
 
-Earlier controlled benchmarks using AI Cost Firewall v0.2.0 measured with a local simulated OpenAI-compatible upstream provider to isolate gateway behavior, Redis/Qdrant integration, cache effectiveness, and Prometheus metrics without external API cost or provider rate-limit noise.
+Earlier controlled benchmarks measured with a local simulated OpenAI-compatible upstream provider to isolate gateway behavior, Redis/Qdrant integration, cache effectiveness, and Prometheus metrics without external API cost or provider rate-limit noise.
 
 In a 30-minute cache-effectiveness benchmark, AI Cost Firewall sustained 30 RPS with 0% request failures, p95 latency of 9.03 ms, and a 98.86% aggregate cache-hit rate.
 
 In a single-VM high-load benchmark, AI Cost Firewall sustained approximately 500 RPS for 5 minutes with 0% HTTP failures. Higher RPS values caused instability in the single-VM test environment, so this should be treated as a local benchmark observation, not a universal capacity limit.
 
-These historical measurements have not yet been revalidated against v0.8.0.
+These are historical measurements, not capacity guarantees for the current release; see the benchmark report for test conditions.
 
 See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limitations, and detailed results.
 
@@ -902,7 +906,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology, environment, limit
 
 ### Evaluation Mode validation
 
-AIF v0.8.0 Observe Mode has been validated against Enforce Mode using the same controlled workload profile. The test compares predicted cache, guard, token, and cost outcomes with the outcomes subsequently realized under enforcement.
+AIF Observe Mode has been validated against Enforce Mode using the same controlled workload profile. The test compares predicted cache, guard, token, and cost outcomes with the outcomes subsequently realized under enforcement.
 
 In the validated pair of 5-minute runs, Observe predicted 720 exact-cache hits and 1 semantic-cache hit; Enforce realized 721 and 1 respectively. Guard outcomes matched, and predicted versus realized token/cost savings differed by less than 0.3%.
 
@@ -935,7 +939,7 @@ request.failed
 
 AI Cost Firewall also emits structured evidence for VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard activity.
 
-AIF v0.8.3 does not change the evidence schema; `schema_version: 1.1` remains current.
+The documented evidence schema is `schema_version: 1.1`; schema changes should be tracked separately from product releases.
 
 Guard evidence contains operational metadata only. Prompt and response content is not included.
 
@@ -1030,7 +1034,9 @@ AI Cost Firewall includes tests for:
 - Usage Guard orchestration
 - OpenAI-compatible metadata preservation
 - exact-cache identity coverage for top-level and message-level OpenAI-compatible extension fields
-- non-string/content-array message pass-through with semantic-cache bypass
+- structured-content parsing, supported Privacy Guard text-part inspection, shape preservation, and unsupported-text rejection
+- privacy-aware exact and semantic cache identity, cross-tenant/cross-policy isolation, and current-request-only restoration
+- non-string/content-array semantic-cache bypass
 - OpenAI-compatible `/v1/models` proxy behavior
 - startup probe behavior for readiness-required Redis/Qdrant initialization
 - evidence lifecycle completion
