@@ -14,6 +14,7 @@ pub trait SemanticCache: Send + Sync {
         &self,
         model: &str,
         normalized_prompt: &str,
+        privacy_cache_scope: Option<&str>,
         privacy_placeholder_signature: Option<&str>,
     ) -> anyhow::Result<Option<SemanticLookupHit>>;
 
@@ -22,6 +23,7 @@ pub trait SemanticCache: Send + Sync {
         model: &str,
         normalized_prompt: &str,
         response: &ChatCompletionResponse,
+        privacy_cache_scope: Option<&str>,
         privacy_placeholder_signature: Option<&str>,
     ) -> anyhow::Result<Option<EmbeddingUsage>>;
 }

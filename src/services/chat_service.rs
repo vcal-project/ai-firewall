@@ -549,9 +549,14 @@ impl ChatService {
             .map_err(|e| AppError::bad_request(format!("normalize failed: {e}")))?;
         let semantic_eligible = self.semantic_eligible(&cache_req);
         let semantic_text = semantic_eligible.then(|| semantic_text_from_request(&cache_req));
+        let privacy_cache_scope = guard_context.privacy_cache_scope.as_deref();
         let privacy_placeholder_signature = guard_context.privacy_placeholder_signature.as_deref();
 
-        let exact_key_hash = sha256_hex(&normalized);
+        let exact_identity = match privacy_cache_scope {
+            Some(scope) => format!("{normalized}\nprivacy_cache_scope={scope}"),
+            None => normalized.clone(),
+        };
+        let exact_key_hash = sha256_hex(&exact_identity);
         let exact_key = format!("{}:{exact_key_hash}", self.effective_exact_cache_prefix());
         let mut evaluation_hit: Option<&'static str> = None;
         let mut evaluation_semantic_lookup_tokens = 0u32;
@@ -821,6 +826,7 @@ impl ChatService {
                         semantic_text
                             .as_deref()
                             .expect("semantic text must exist for eligible requests"),
+                        privacy_cache_scope,
                         privacy_placeholder_signature,
                     )
                     .await
@@ -1245,6 +1251,7 @@ impl ChatService {
                             .as_deref()
                             .expect("semantic text must exist for eligible requests"),
                         &response,
+                        privacy_cache_scope,
                         privacy_placeholder_signature,
                     )
                     .await
@@ -2238,6 +2245,8 @@ mod tests {
         last_store_model: Option<String>,
         last_store_prompt: Option<String>,
         last_store_response: Option<ChatCompletionResponse>,
+        last_lookup_privacy_cache_scope: Option<String>,
+        last_store_privacy_cache_scope: Option<String>,
         last_lookup_privacy_placeholder_signature: Option<String>,
         last_store_privacy_placeholder_signature: Option<String>,
     }
@@ -2291,10 +2300,12 @@ mod tests {
             &self,
             _model: &str,
             _normalized_prompt: &str,
+            privacy_cache_scope: Option<&str>,
             privacy_placeholder_signature: Option<&str>,
         ) -> anyhow::Result<Option<SemanticLookupHit>> {
             let mut state = self.state.lock().unwrap();
             state.lookup_calls += 1;
+            state.last_lookup_privacy_cache_scope = privacy_cache_scope.map(ToOwned::to_owned);
             state.last_lookup_privacy_placeholder_signature =
                 privacy_placeholder_signature.map(ToOwned::to_owned);
 
@@ -2310,10 +2321,12 @@ mod tests {
             model: &str,
             normalized_prompt: &str,
             response: &ChatCompletionResponse,
+            privacy_cache_scope: Option<&str>,
             privacy_placeholder_signature: Option<&str>,
         ) -> anyhow::Result<Option<EmbeddingUsage>> {
             let mut state = self.state.lock().unwrap();
             state.store_calls += 1;
+            state.last_store_privacy_cache_scope = privacy_cache_scope.map(ToOwned::to_owned);
             state.last_store_privacy_placeholder_signature =
                 privacy_placeholder_signature.map(ToOwned::to_owned);
 
@@ -2325,6 +2338,75 @@ mod tests {
             state.last_store_prompt = Some(normalized_prompt.to_string());
             state.last_store_response = Some(response.clone());
 
+            Ok(None)
+        }
+    }
+
+    #[derive(Default)]
+    struct ScopeAwareSemanticCacheState {
+        entry: Option<(String, String, ChatCompletionResponse)>,
+        lookup_calls: usize,
+        store_calls: usize,
+    }
+
+    struct ScopeAwareSemanticCache {
+        state: Arc<Mutex<ScopeAwareSemanticCacheState>>,
+    }
+
+    impl ScopeAwareSemanticCache {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(Mutex::new(ScopeAwareSemanticCacheState::default())),
+            }
+        }
+
+        fn state(&self) -> Arc<Mutex<ScopeAwareSemanticCacheState>> {
+            Arc::clone(&self.state)
+        }
+    }
+
+    #[async_trait]
+    impl SemanticCache for ScopeAwareSemanticCache {
+        async fn lookup(
+            &self,
+            _model: &str,
+            _normalized_prompt: &str,
+            privacy_cache_scope: Option<&str>,
+            privacy_placeholder_signature: Option<&str>,
+        ) -> anyhow::Result<Option<SemanticLookupHit>> {
+            let mut state = self.state.lock().unwrap();
+            state.lookup_calls += 1;
+            let scope = privacy_cache_scope.unwrap_or("");
+            let signature = privacy_placeholder_signature.unwrap_or("");
+
+            Ok(state
+                .entry
+                .as_ref()
+                .and_then(|(entry_scope, entry_signature, response)| {
+                    (entry_scope == scope && entry_signature == signature).then(|| {
+                        SemanticLookupHit {
+                            response: response.clone(),
+                            embedding_usage: None,
+                        }
+                    })
+                }))
+        }
+
+        async fn store(
+            &self,
+            _model: &str,
+            _normalized_prompt: &str,
+            response: &ChatCompletionResponse,
+            privacy_cache_scope: Option<&str>,
+            privacy_placeholder_signature: Option<&str>,
+        ) -> anyhow::Result<Option<EmbeddingUsage>> {
+            let mut state = self.state.lock().unwrap();
+            state.store_calls += 1;
+            state.entry = Some((
+                privacy_cache_scope.unwrap_or("").to_string(),
+                privacy_placeholder_signature.unwrap_or("").to_string(),
+                response.clone(),
+            ));
             Ok(None)
         }
     }
@@ -2533,6 +2615,7 @@ mod tests {
                 context: GuardContext {
                     privacy_mapping_id: Some("mapping-test".to_string()),
                     privacy_tenant_id: None,
+                    privacy_cache_scope: Some("scope-test".to_string()),
                     privacy_placeholder_signature: Some(self.0.to_string()),
                     ..GuardContext::default()
                 },
@@ -3072,6 +3155,34 @@ mod tests {
 
     struct UserMappingGuard;
 
+    fn extract_test_email(request: &ChatCompletionRequest) -> String {
+        request.messages[0]
+            .content
+            .as_str()
+            .unwrap_or_default()
+            .split_whitespace()
+            .find(|part| part.contains('@'))
+            .unwrap_or_default()
+            .trim_matches(|c: char| c == ',' || c == '.')
+            .to_string()
+    }
+
+    fn restore_test_email(
+        context: &GuardContext,
+        mut response: ChatCompletionResponse,
+    ) -> ChatCompletionResponse {
+        if let Some(email) = context.privacy_mapping_id.as_deref() {
+            let content = response.choices[0]
+                .message
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .replace("[EMAIL_1]", email);
+            response.choices[0].message.content = json!(content);
+        }
+        response
+    }
+
     #[async_trait]
     impl GuardOrchestrator for UserMappingGuard {
         async fn before_cache(
@@ -3079,24 +3190,18 @@ mod tests {
             mut request: ChatCompletionRequest,
             _trace_id: uuid::Uuid,
         ) -> Result<GuardedRequest, AppError> {
-            let original = request.messages[0]
-                .content
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            let email = original
-                .split_whitespace()
-                .find(|part| part.contains('@'))
-                .unwrap_or_default()
-                .trim_matches(|c: char| c == ',' || c == '.')
-                .to_string();
+            let email = extract_test_email(&request);
             request.messages[0].content = json!("Email [EMAIL_1]");
 
             Ok(GuardedRequest {
                 request,
                 context: GuardContext {
-                    privacy_mapping_id: Some("mapping".to_string()),
-                    privacy_tenant_id: Some(email),
+                    privacy_mapping_id: Some(email),
+                    privacy_tenant_id: Some("tenant-a".to_string()),
+                    privacy_policy_id: Some("policy-a".to_string()),
+                    privacy_policy_version: Some("3".to_string()),
+                    privacy_policy_hash: Some("sha256:policy-a-v3".to_string()),
+                    privacy_cache_scope: Some("scope-tenant-a-policy-a-v3".to_string()),
                     privacy_placeholder_signature: Some("EMAIL:1".to_string()),
                     privacy_modified: true,
                     ..GuardContext::default()
@@ -3108,19 +3213,60 @@ mod tests {
         async fn restore_response(
             &self,
             context: &GuardContext,
-            mut response: ChatCompletionResponse,
+            response: ChatCompletionResponse,
             _trace_id: uuid::Uuid,
         ) -> Result<ChatCompletionResponse, AppError> {
-            if let Some(email) = context.privacy_tenant_id.as_deref() {
-                let content = response.choices[0]
-                    .message
-                    .content
-                    .as_str()
-                    .unwrap_or_default()
-                    .replace("[EMAIL_1]", email);
-                response.choices[0].message.content = json!(content);
-            }
-            Ok(response)
+            Ok(restore_test_email(context, response))
+        }
+    }
+
+    struct ScopedUserMappingGuard;
+
+    #[async_trait]
+    impl GuardOrchestrator for ScopedUserMappingGuard {
+        async fn before_cache(
+            &self,
+            mut request: ChatCompletionRequest,
+            _trace_id: uuid::Uuid,
+        ) -> Result<GuardedRequest, AppError> {
+            let email = extract_test_email(&request);
+            let tenant = request
+                .extra
+                .remove("__test_privacy_tenant")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_else(|| "tenant-a".to_string());
+            let policy = request
+                .extra
+                .remove("__test_privacy_policy")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_else(|| "policy-a".to_string());
+
+            request.messages[0].content = json!("Email [EMAIL_1]");
+
+            Ok(GuardedRequest {
+                request,
+                context: GuardContext {
+                    privacy_mapping_id: Some(email),
+                    privacy_tenant_id: Some(tenant.clone()),
+                    privacy_policy_id: Some(policy.clone()),
+                    privacy_policy_version: Some("3".to_string()),
+                    privacy_policy_hash: Some(format!("sha256:{policy}-v3")),
+                    privacy_cache_scope: Some(format!("scope:{tenant}:{policy}:3")),
+                    privacy_placeholder_signature: Some("EMAIL:1".to_string()),
+                    privacy_modified: true,
+                    ..GuardContext::default()
+                },
+                cache_control: CacheControl::default(),
+            })
+        }
+
+        async fn restore_response(
+            &self,
+            context: &GuardContext,
+            response: ChatCompletionResponse,
+            _trace_id: uuid::Uuid,
+        ) -> Result<ChatCompletionResponse, AppError> {
+            Ok(restore_test_email(context, response))
         }
     }
 
@@ -3543,8 +3689,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cross_user_exact_cache_restores_only_current_users_pii() {
+    async fn same_scope_exact_cache_restores_only_current_request_pii_and_stores_placeholders() {
         let exact = FakeExactCache::new();
+        let exact_state = exact.state();
         let upstream = FakeUpstream::new(response_with_content("Response for [EMAIL_1]"));
         let upstream_state = upstream.state();
         let service = ChatService::new_with_guards(
@@ -3592,6 +3739,99 @@ mod tests {
             1,
             "second request should be exact-cache hit"
         );
+
+        let exact = exact_state.lock().unwrap();
+        assert_eq!(exact.entries.len(), 1);
+        let cached = exact.entries.values().next().expect("cached response");
+        assert!(cached.contains("[EMAIL_1]"));
+        assert!(!cached.contains("alice@example.com"));
+        assert!(!cached.contains("bob@example.com"));
+    }
+
+    #[tokio::test]
+    async fn exact_cache_isolated_across_privacy_tenants() {
+        let exact = FakeExactCache::new();
+        let exact_state = exact.state();
+        let upstream = FakeUpstream::new(response_with_content("Response for [EMAIL_1]"));
+        let upstream_state = upstream.state();
+        let service = ChatService::new_with_guards(
+            Arc::new(exact),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(upstream),
+            Arc::new(ScopedUserMappingGuard),
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let mut tenant_a = request();
+        tenant_a.messages[0].content = json!("Email alice@example.com");
+        tenant_a
+            .extra
+            .insert("__test_privacy_tenant".into(), json!("tenant-a"));
+        service.handle(tenant_a).await.unwrap();
+
+        let mut tenant_b = request();
+        tenant_b.messages[0].content = json!("Email bob@example.com");
+        tenant_b
+            .extra
+            .insert("__test_privacy_tenant".into(), json!("tenant-b"));
+        service.handle(tenant_b).await.unwrap();
+
+        assert_eq!(upstream_state.lock().unwrap().call_count, 2);
+        assert_eq!(exact_state.lock().unwrap().entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn exact_cache_isolated_across_privacy_policies() {
+        let exact = FakeExactCache::new();
+        let exact_state = exact.state();
+        let upstream = FakeUpstream::new(response_with_content("Response for [EMAIL_1]"));
+        let upstream_state = upstream.state();
+        let service = ChatService::new_with_guards(
+            Arc::new(exact),
+            Arc::new(FakeSemanticCache::new()),
+            Arc::new(upstream),
+            Arc::new(ScopedUserMappingGuard),
+            ChatServiceSettings {
+                semantic_cache_enabled: false,
+                exact_cache_enabled: true,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: true,
+                semantic_cache_store_enabled: false,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let mut policy_a = request();
+        policy_a.messages[0].content = json!("Email alice@example.com");
+        policy_a
+            .extra
+            .insert("__test_privacy_policy".into(), json!("policy-a"));
+        service.handle(policy_a).await.unwrap();
+
+        let mut policy_b = request();
+        policy_b.messages[0].content = json!("Email bob@example.com");
+        policy_b
+            .extra
+            .insert("__test_privacy_policy".into(), json!("policy-b"));
+        service.handle(policy_b).await.unwrap();
+
+        assert_eq!(upstream_state.lock().unwrap().call_count, 2);
+        assert_eq!(exact_state.lock().unwrap().entries.len(), 2);
     }
 
     #[tokio::test]
@@ -3883,7 +4123,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guard_placeholder_signature_is_passed_to_semantic_lookup_and_store() {
+    async fn semantic_cache_does_not_reuse_entries_across_privacy_scopes() {
+        let semantic_cache = ScopeAwareSemanticCache::new();
+        let semantic_state = semantic_cache.state();
+        let upstream = FakeUpstream::new(response_with_content("Response for [EMAIL_1]"));
+        let upstream_state = upstream.state();
+        let service = ChatService::new_with_guards(
+            Arc::new(FakeExactCache::new()),
+            Arc::new(semantic_cache),
+            Arc::new(upstream),
+            Arc::new(ScopedUserMappingGuard),
+            ChatServiceSettings {
+                semantic_cache_enabled: true,
+                exact_cache_enabled: false,
+                exact_cache_fail_open: true,
+                exact_cache_store_enabled: false,
+                semantic_cache_store_enabled: true,
+                semantic_cache_fail_open: true,
+                max_prompt_chars: Some(200_000),
+                max_inflight_upstream_requests: 500,
+            },
+            model_prices(),
+            None,
+        );
+
+        let mut tenant_a = request();
+        tenant_a.messages[0].content = json!("Email alice@example.com");
+        tenant_a
+            .extra
+            .insert("__test_privacy_tenant".into(), json!("tenant-a"));
+        let first = service.handle(tenant_a).await.unwrap();
+        assert_eq!(
+            first.choices[0].message.content,
+            json!("Response for alice@example.com")
+        );
+
+        let mut tenant_b = request();
+        tenant_b.messages[0].content = json!("Email bob@example.com");
+        tenant_b
+            .extra
+            .insert("__test_privacy_tenant".into(), json!("tenant-b"));
+        let second = service.handle(tenant_b).await.unwrap();
+        assert_eq!(
+            second.choices[0].message.content,
+            json!("Response for bob@example.com")
+        );
+
+        assert_eq!(
+            upstream_state.lock().unwrap().call_count,
+            2,
+            "tenant-b must not receive tenant-a's semantic entry"
+        );
+        let semantic = semantic_state.lock().unwrap();
+        assert_eq!(semantic.lookup_calls, 2);
+        assert_eq!(semantic.store_calls, 2);
+    }
+
+    #[tokio::test]
+    async fn guard_privacy_scope_and_placeholder_signature_are_passed_to_semantic_cache() {
         let req = request();
         let exact_cache = FakeExactCache::new();
         let semantic_cache = FakeSemanticCache::new();
@@ -3919,6 +4216,14 @@ mod tests {
         let semantic = semantic_state.lock().unwrap();
         assert_eq!(semantic.lookup_calls, 1);
         assert_eq!(semantic.store_calls, 1);
+        assert_eq!(
+            semantic.last_lookup_privacy_cache_scope.as_deref(),
+            Some("scope-test")
+        );
+        assert_eq!(
+            semantic.last_store_privacy_cache_scope.as_deref(),
+            Some("scope-test")
+        );
         assert_eq!(
             semantic.last_lookup_privacy_placeholder_signature.as_deref(),
             Some("EMAIL:1|IP:1|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|OTHER:0")

@@ -12,6 +12,10 @@ pub struct SemanticCacheRecord {
     pub normalized_prompt: String,
     /// Cached upstream chat-completion response.
     pub response: ChatCompletionResponse,
+    /// Opaque Privacy Guard tenant/policy scope digest used for semantic isolation.
+    /// None means no Privacy Guard scope was active; omitting the payload field
+    /// preserves compatibility with pre-v0.8.4 unguarded semantic records.
+    pub privacy_cache_scope: Option<String>,
     /// Privacy placeholder signature used to prevent cross-mapping semantic hits.
     /// Empty string means no Privacy Guard placeholder mapping was involved.
     pub privacy_placeholder_signature: String,

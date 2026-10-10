@@ -701,6 +701,33 @@ impl CompositeGuardOrchestrator {
         event
             .attributes
             .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
+        if let (Some(policy_id), Some(policy_version)) =
+            (&context.privacy_policy_id, &context.privacy_policy_version)
+        {
+            event.policy = Some(PolicyRef {
+                policy_id: policy_id.clone(),
+                policy_version: policy_version.clone(),
+                policy_hash: context.privacy_policy_hash.clone(),
+                policy_type: Some("privacy".into()),
+            });
+        }
+        if let Some(inspected_text_parts) = context.privacy_inspected_text_parts {
+            event.attributes.insert(
+                "inspection_inspected_text_parts".into(),
+                Value::from(inspected_text_parts),
+            );
+        }
+        if let Some(uninspected_parts) = context.privacy_uninspected_parts {
+            event.attributes.insert(
+                "inspection_uninspected_parts".into(),
+                Value::from(uninspected_parts),
+            );
+        }
+        if let Some(complete) = context.privacy_inspection_complete {
+            event
+                .attributes
+                .insert("inspection_complete".into(), Value::Bool(complete));
+        }
         if let Some(reason) = &context.privacy_failure_reason {
             event.decision = Some(DecisionEvidence {
                 action: "continue_fail_open".into(),
@@ -794,6 +821,14 @@ impl CompositeGuardOrchestrator {
 pub struct GuardContext {
     pub privacy_mapping_id: Option<String>,
     pub privacy_tenant_id: Option<String>,
+    pub privacy_policy_id: Option<String>,
+    pub privacy_policy_version: Option<String>,
+    pub privacy_policy_hash: Option<String>,
+    /// Opaque digest binding effective Privacy Guard tenant/policy state for cache isolation.
+    pub privacy_cache_scope: Option<String>,
+    pub privacy_inspected_text_parts: Option<u64>,
+    pub privacy_uninspected_parts: Option<u64>,
+    pub privacy_inspection_complete: Option<bool>,
     /// Deterministic placeholder/entity signature for semantic cache isolation.
     /// Example: EMAIL:1|IP:1|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|OTHER:0
     pub privacy_placeholder_signature: Option<String>,
@@ -972,7 +1007,20 @@ mod tests {
         SecurityGuardBlockResponse, UsageGuardBlockResponse, UsageGuardMode,
         DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE, DEFAULT_USAGE_GUARD_BLOCK_MESSAGE,
     };
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Mutex};
+
+    #[derive(Clone, Default)]
+    struct RecordingEvidenceSink {
+        events: Arc<Mutex<Vec<EvidenceEvent>>>,
+    }
+
+    #[async_trait]
+    impl EvidenceSink for RecordingEvidenceSink {
+        async fn emit(&self, event: EvidenceEvent) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
 
     fn test_config(security_enabled: bool, privacy_enabled: bool, usage_enabled: bool) -> Config {
         let mut model_prices = HashMap::new();
@@ -1100,6 +1148,72 @@ mod tests {
             stream: None,
             extra: serde_json::Map::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn privacy_scan_evidence_captures_policy_and_inspection_coverage() {
+        let sink = RecordingEvidenceSink::default();
+        let events = Arc::clone(&sink.events);
+        let guard = CompositeGuardOrchestrator {
+            security: None,
+            security_block_response: SecurityGuardBlockResponse::Completion,
+            security_block_message: DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE.to_string(),
+            privacy: None,
+            usage: None,
+            usage_block_response: UsageGuardBlockResponse::Completion,
+            usage_block_message: DEFAULT_USAGE_GUARD_BLOCK_MESSAGE.to_string(),
+            evidence_sink: Arc::new(sink),
+            guard_fail_open: false,
+        };
+        let context = GuardContext {
+            privacy_tenant_id: Some("tenant-a".to_string()),
+            privacy_policy_id: Some("enterprise-default".to_string()),
+            privacy_policy_version: Some("3".to_string()),
+            privacy_policy_hash: Some("sha256:abc123".to_string()),
+            privacy_inspected_text_parts: Some(2),
+            privacy_uninspected_parts: Some(1),
+            privacy_inspection_complete: Some(true),
+            privacy_findings: vec![DataFinding {
+                kind: "email".to_string(),
+                count: 1,
+                action: Some("anonymize".to_string()),
+                detector_id: Some("corp-email".to_string()),
+            }],
+            privacy_action: Some("anonymize".to_string()),
+            privacy_mode: Some("anonymize".to_string()),
+            privacy_modified: true,
+            ..GuardContext::default()
+        };
+
+        guard
+            .emit_privacy_scan_event(
+                uuid::Uuid::new_v4(),
+                &context,
+                std::time::Duration::from_millis(7),
+            )
+            .await;
+
+        let events = events.lock().unwrap();
+        let event = events.first().expect("privacy evidence event");
+        let policy = event.policy.as_ref().expect("privacy policy reference");
+        assert_eq!(policy.policy_id, "enterprise-default");
+        assert_eq!(policy.policy_version, "3");
+        assert_eq!(policy.policy_hash.as_deref(), Some("sha256:abc123"));
+        assert_eq!(policy.policy_type.as_deref(), Some("privacy"));
+        assert_eq!(
+            event.attributes.get("inspection_inspected_text_parts"),
+            Some(&serde_json::json!(2))
+        );
+        assert_eq!(
+            event.attributes.get("inspection_uninspected_parts"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            event.attributes.get("inspection_complete"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(event.findings[0].detector_id.as_deref(), Some("corp-email"));
+        assert_eq!(event.findings[0].action.as_deref(), Some("anonymize"));
     }
 
     #[test]
