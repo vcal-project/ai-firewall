@@ -31,6 +31,30 @@ AI Cost Firewall is developed and maintained by VCAL Labs, Inc.
 
 ---
 
+# Quick Start
+
+Install **AI Cost Firewall, Redis, Qdrant, Prometheus, and Grafana** on Linux with Docker Engine and the Docker Compose plugin already installed:
+
+```bash
+curl -fsSL https://vcal-project.com/install-aif.sh | bash
+```
+
+The installer pulls the container images, starts the five-service stack, and automatically provisions three Grafana dashboards. Tested on Ubuntu and Rocky Linux 9/10 (x86_64).
+
+**Next, connect your LLM provider.** Edit `~/ai-firewall/configs/ai-firewall.conf` to set a valid OpenAI-compatible upstream endpoint and authentication (if required). Configure a compatible embedding endpoint/model to evaluate semantic caching, then restart the gateway:
+
+```bash
+cd ~/ai-firewall && docker compose restart firewall
+```
+
+Quick Start defaults to **Observe Mode**: once a working upstream is configured, requests continue to the provider while AIF measures potential cache reuse and cost savings without serving cached responses. Container health alone does not confirm provider connectivity.
+
+Open Grafana at `http://127.0.0.1:3000` on the installation host (or use an SSH tunnel for remote access). Its initial admin password is generated locally and stored in `~/ai-firewall/.env`.
+
+See the [Quick Start installer guide](deploy/quickstart/README.md) for prerequisites, configuration, and troubleshooting, or explore the [full documentation](https://ai-firewall.docs.vcal-project.com/).
+
+---
+
 # Why AI Cost Firewall?
 
 LLM applications frequently generate repeated or semantically similar prompts.
@@ -318,7 +342,9 @@ docs/architecture.md
 
 ---
 
-# Quick Start (Docker)
+# Manual Docker Compose installation
+
+For a one-command installation with preconfigured monitoring, use the [Quick Start installer](#quick-start--one-command) above. The steps below describe the existing repository-based deployment.
 
 ## Prerequisites
 
