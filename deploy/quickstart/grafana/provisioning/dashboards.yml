@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: 'AI Cost Firewall'
+    orgId: 1
+    folder: 'AI Cost Firewall'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards-json

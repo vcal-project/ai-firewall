@@ -1,0 +1,6 @@
+# Installer-generated secrets and runtime state
+.env
+configs/
+# Locally staged release candidate
+*.tar.gz
+*.tar.gz.sha256

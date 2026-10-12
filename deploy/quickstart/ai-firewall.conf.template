@@ -1,0 +1,294 @@
+config_version 1;
+listen_addr 0.0.0.0:8080;
+
+# Redis exact cache
+#
+# Local/dev example:
+redis_url redis://redis:6379;
+
+# Bound each Redis GET/SET operation, including time waiting for the shared
+# connection-manager mutex. This prevents a dead Redis connection from stalling
+# fail-open request processing indefinitely.
+redis_timeout_seconds 2;
+
+# AIF execution behavior.
+# enforce = normal production cache behavior; cache hits may satisfy requests.
+# observe = Evaluation Mode; uses isolated shadow cache state, always calls the
+#           upstream provider, and never lets Redis/Qdrant evaluation failures
+#           interrupt application traffic.
+# Default: enforce
+aif_enforcement_mode observe;
+
+# Production reminder:
+# Protect Redis with authentication and private networking.
+# Example with password:
+# redis_url redis://:your-redis-password@redis:6379;
+
+# Chat upstream provider
+# Default: openai_compatible
+# Supports OpenAI-compatible /v1/chat/completions endpoints.
+#
+# Controlled streaming is enabled by default. For requests with stream=true,
+# AI Cost Firewall consumes the upstream SSE response internally, reconstructs
+# a canonical completion, applies response controls and Privacy restoration,
+# records accounting/evidence, and only then commits an SSE response to the
+# client. Streamed and non-streamed requests share the normal cache pipeline.
+streaming_enabled true;
+# Maximum cumulative provider SSE bytes accepted for one controlled streaming request.
+max_stream_upstream_bytes 8M;
+upstream_provider openai_compatible;
+upstream_base_url https://api.openai.com;
+upstream_api_key replace-with-upstream-api-key;
+
+# Embedding provider
+# Default: openai_compatible
+# Supports OpenAI-compatible /v1/embeddings endpoints.
+embedding_provider openai_compatible;
+embedding_base_url https://api.openai.com;
+embedding_api_key replace-with-embedding-api-key;
+embedding_model text-embedding-3-small;
+
+# Qdrant semantic cache
+#
+# Local/dev example:
+qdrant_url http://qdrant:6334;
+
+# Production reminder:
+# Protect Qdrant with an API key and private networking.
+# Example:
+# qdrant_api_key your-qdrant-api-key;
+
+qdrant_collection aif_semantic_cache;
+# In observe mode the effective collection is automatically suffixed with _eval
+# (for example: aif_semantic_cache_eval).
+
+# Must match the dimension of the configured embedding_model.
+qdrant_vector_size 1536;
+
+# Backward-compatible default for both cache layers.
+cache_ttl_seconds 2592000;
+
+# Optional explicit lifecycle controls.
+# exact_cache_ttl_seconds 86400;
+# semantic_cache_retention_seconds 604800;
+
+# Exact cache controls.
+# In observe mode exact-cache keys use the isolated prefix chatcmpl:eval:v1:.
+# exact_cache_enabled=false disables Redis lookups and writes.
+# exact_cache_fail_open=true skips exact cache if Redis is unavailable.
+exact_cache_enabled true;
+exact_cache_fail_open true;
+exact_cache_store_enabled true;
+
+# Semantic cache controls.
+semantic_cache_enabled true;
+semantic_similarity_threshold 0.92;
+semantic_cache_fail_open true;
+semantic_cache_store_enabled true;
+
+# Higher threshold = stricter similarity (fewer semantic hits)
+# Lower threshold = more reuse (potentially less precise)
+
+# Semantic cache lifecycle behavior:
+# - Entries include inserted_at and expires_at metadata
+# - Expired entries are skipped during lookup
+# - Entries are NOT automatically deleted from Qdrant
+#
+# To clean up expired entries manually:
+# ai-firewall --prune-expired-semantic-cache
+
+# Timeout controls.
+# request_timeout_seconds is kept as a backward-compatible fallback.
+# Specific timeout values override it.
+request_timeout_seconds 120;
+upstream_timeout_seconds 120;
+# For stream=true, this also bounds the idle gap between provider SSE chunks.
+# Controlled provider generation has an independent 15-minute absolute ceiling.
+embedding_timeout_seconds 30;
+
+# Gateway protection controls.
+max_request_body_bytes 1048576;
+max_prompt_chars 65536;
+
+# Graceful shutdown drain window. Container/orchestrator termination grace
+# should be set longer than this value so AIF can withdraw readiness and finish
+# in-flight requests before the runtime sends SIGKILL.
+graceful_shutdown_timeout_seconds 30;
+
+# Per-request troubleshooting bypass.
+# When the configured header is sent with value true, 1, yes, or on,
+# AI Cost Firewall skips exact/semantic lookup and skips cache store.
+cache_bypass_header X-AIF-Cache-Bypass;
+
+# Metrics endpoint access control.
+# Default allows Prometheus to scrape /metrics without app authentication.
+metrics_auth_required false;
+# metrics_auth_token replace-with-prometheus-token;
+
+# Readiness dependency behavior.
+# These checks use dependency status known during startup/reload.
+
+# Redis is required for readiness even though exact-cache request processing
+# is configured to fail open. Set this to false when Redis outages should not
+# make the AI Firewall instance unready.
+readiness_requires_redis true;
+
+# Qdrant is not required for readiness because semantic_cache_fail_open=true.
+# Set readiness_requires_qdrant=true when semantic cache availability is mandatory.
+readiness_requires_qdrant false;
+
+readiness_requires_upstream false;
+
+# Model validation behavior.
+# By default, only models defined through model_price are accepted.
+# For local or custom OpenAI-compatible models, either add a model_price entry
+# or set allow_unknown_models_pass_through true.
+allow_unknown_models_pass_through false;
+
+# Chat-completion pricing (USD per 1M tokens)
+# model_price <model> <input_usd_per_1m_tokens> <output_usd_per_1m_tokens>;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+model_price gpt-4.1-mini-2025-04-14 0.30 1.20;
+
+# Embedding pricing (optional, used for net cost estimation only)
+embedding_price 0.020;
+
+# Security Guard integration
+# Disabled by default because VCAL Security Guard is an optional enterprise add-on.
+#
+# When enabled, AI Firewall sends request text to VCAL Security Guard before
+# Privacy Guard, cache lookup, or upstream forwarding. AI Firewall can also
+# scan assistant responses before Privacy Guard restoration.
+security_guard_enabled false;
+security_guard_url http://vcal-security-guard:8091;
+# security_guard_api_key your-security-guard-api-key;
+security_guard_timeout_seconds 3;
+
+# Client response for both request-side and response-side Security Guard
+# policy blocks.
+#
+# completion = return HTTP 200 with a safe OpenAI-compatible assistant message.
+#              For response-side blocks, the blocked assistant content is not
+#              returned to the caller and Privacy Guard restore is skipped.
+# error_json = return HTTP 403 with the existing structured Security Guard error.
+#
+# Default: completion
+security_guard_block_response completion;
+security_guard_block_message "This interaction cannot be completed because it was blocked by your organization's AI security policy.";
+
+# Privacy Guard integration
+# Disabled by default because VCAL Privacy Guard is an optional enterprise add-on.
+#
+# When enabled, AI Firewall can detect, redact, or anonymize sensitive text
+# before Redis, Qdrant, semantic-cache storage, or upstream LLM calls.
+privacy_guard_enabled false;
+privacy_guard_url http://vcal-privacy-guard:8090;
+# privacy_guard_api_key your-privacy-guard-api-key;
+privacy_guard_mode detect_only;
+privacy_guard_restore_enabled false;
+privacy_guard_timeout_seconds 3;
+
+# Usage Guard integration
+# Disabled by default because VCAL Usage Guard is an optional enterprise add-on.
+#
+# Usage Guard runs after Privacy Guard on the request path, so when Privacy Guard
+# anonymization is enabled the usage policy is evaluated against anonymized text.
+# It returns structured allow, warn, block, or escalate decisions before cache
+# lookup or upstream LLM forwarding. No local LLM is required by default.
+usage_guard_enabled false;
+usage_guard_url http://vcal-usage-guard:8095;
+# usage_guard_api_key your-usage-guard-api-key;
+usage_guard_mode detect_only;
+# usage_guard_tenant_id your-tenant-id;
+# usage_guard_policy_id business-use-only;
+usage_guard_timeout_seconds 3;
+
+# Client response when Usage Guard blocks or escalates a request.
+#
+# completion = return HTTP 200 with an OpenAI-compatible assistant message.
+#              No cache lookup, cache write, or upstream LLM call is performed.
+# error_json = return HTTP 403 with the structured usage_request_blocked error.
+#
+# Default: completion
+usage_guard_block_response completion;
+
+# User-facing assistant message used only when
+# usage_guard_block_response=completion.
+usage_guard_block_message "This request appears to fall outside your organization's approved AI usage policy and cannot be processed.";
+
+# Shared guard failure behavior.
+# true  = fail open if an enabled guard is unavailable
+# false = fail closed if an enabled guard is unavailable
+# Production-safe default is fail closed. Enable fail-open only as an explicit
+# availability-over-enforcement decision.
+guard_fail_open false;
+
+# Full enterprise guard profile:
+#
+# security_guard_enabled true;
+# security_guard_url http://vcal-security-guard:8091;
+# security_guard_api_key your-security-guard-api-key;
+# security_guard_timeout_seconds 3;
+# security_guard_block_response completion;
+# security_guard_block_message "This interaction cannot be completed because it was blocked by your organization's AI security policy.";
+#
+# privacy_guard_enabled true;
+# privacy_guard_url http://vcal-privacy-guard:8090;
+# privacy_guard_api_key your-privacy-guard-api-key;
+# privacy_guard_mode anonymize;
+# privacy_guard_restore_enabled false;
+# privacy_guard_timeout_seconds 3;
+#
+# usage_guard_enabled true;
+# usage_guard_url http://vcal-usage-guard:8095;
+# usage_guard_api_key your-usage-guard-api-key;
+# usage_guard_mode enforce;
+# usage_guard_tenant_id your-tenant-id;
+# usage_guard_policy_id business-use-only;
+# usage_guard_timeout_seconds 3;
+# usage_guard_block_response completion;
+# usage_guard_block_message "This request appears to fall outside your organization's approved AI usage policy and cannot be processed.";
+#
+# guard_fail_open false;
+#
+# Enterprise guard flow:
+# 1. Security Guard request scan
+# 2. Privacy Guard anonymize/redact
+# 3. Usage Guard request policy evaluation
+# 4. exact/semantic cache lookup or upstream LLM call
+# 5. Security Guard response scan
+# 6. Privacy Guard restore
+#
+# Current guard modules inspect plain string message content only. OpenAI-style
+# content-part arrays are preserved and forwarded, but text nested inside those
+# arrays is not yet scanned, anonymized, or classified by AIF guard modules.
+# Requests containing non-string message content are ineligible for semantic
+# cache; exact-cache identity still preserves the complete JSON content.
+
+# VCAL Audit integration
+#
+# Disabled by default. When enabled, AI Firewall sends structured
+# vcal.evidence.event schema v1.1 batches to VCAL Audit. Delivery is asynchronous:
+# LLM requests are not failed when Audit is temporarily unavailable.
+# Audit delivery is currently in-memory/best-effort. A process crash, full queue,
+# or retry exhaustion can result in evidence loss. Durable local spooling is a not currently enabled.
+#
+# audit_api_key must match VCAL_AUDIT_API_KEY in the Audit service.
+audit_enabled false;
+audit_url http://vcal-audit:8092;
+# audit_api_key replace-with-shared-audit-token;
+audit_producer_instance_id ai-firewall-01;
+audit_queue_capacity 10000;
+audit_batch_size 100;
+audit_flush_interval_ms 1000;
+audit_timeout_seconds 5;
+audit_retry_max_attempts 5;
+audit_retry_initial_backoff_ms 250;
+audit_retry_max_backoff_ms 5000;
+
+# When Audit is disabled, evidence remains available through tracing logs:
+# RUST_LOG=info,vcal_evidence=info
+
+# Backpressure limits
+max_inflight_requests 1000;
+max_inflight_upstream_requests 500;
