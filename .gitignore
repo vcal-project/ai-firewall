@@ -2,6 +2,9 @@
 /target/
 .cargo
 
+# Generated distribution artifacts
+dist/
+
 # Environment files
 .env
 .env.*
@@ -14,6 +17,10 @@ deploy/grafana/dashboards/*.json
 !deploy/grafana/dashboards/ai-cost-firewall-diagnostics.json
 !deploy/grafana/dashboards/ai-cost-firewall-overview.json
 !deploy/grafana/dashboards/ai-evaluation.json
+
+# Quick Start generated configuration
+/deploy/quickstart/.env
+/deploy/quickstart/configs/
 
 # Logs
 *.log
