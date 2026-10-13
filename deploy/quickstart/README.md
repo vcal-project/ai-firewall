@@ -1,6 +1,6 @@
 # AI Cost Firewall — Docker Quick Start
 
-A single noninteractive Linux installer for **AIF Core v0.8.4**, Redis, Qdrant, Prometheus, Grafana and the three AIF dashboards. Validated on an Ubuntu VM and Rocky Linux 9.8/10.2 VMs (SELinux Enforcing). Provider connectivity and real LLM traffic must be configured/tested separately.
+A single noninteractive Linux installer for **AIF Core v0.8.5**, Redis, Qdrant, Prometheus, Grafana and the three AIF dashboards. The v0.8.4 Quick Start was validated on Ubuntu and Rocky Linux 9.8/10.2 VMs (SELinux Enforcing); repeat a clean-VM smoke test for v0.8.5 before advertising this release. Provider connectivity and real LLM traffic must be configured/tested separately.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ Linux x86_64 (also accepts aarch64; not yet VM-tested), Docker Engine with acces
 
 ## Install
 
-After uploading `aif-quickstart-v0.8.4.tar.gz` and its `.sha256` file to the **v0.8.4 GitHub Release** and publishing an appropriate installer URL:
+After uploading `aif-quickstart-v0.8.5.tar.gz` and its `.sha256` file to the **v0.8.5 GitHub Release** and publishing an appropriate installer URL:
 
 ```bash
 curl -fsSL https://vcal-project.com/install-aif.sh | bash
@@ -68,4 +68,4 @@ From the AIF repository root:
 bash deploy/quickstart/build-release.sh
 ```
 
-This generates `dist/aif-quickstart-v0.8.4.tar.gz` and its `.sha256`. Review both before attaching them to the AIF GitHub release. The installer is served separately from the public repository/website.
+This generates `dist/aif-quickstart-v0.8.5.tar.gz` and its `.sha256`. Review both before attaching them to the AIF GitHub release. The installer is served separately from the public repository/website.

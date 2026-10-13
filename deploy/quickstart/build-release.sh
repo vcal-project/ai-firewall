@@ -3,7 +3,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 SRC="$ROOT/deploy/quickstart"
 DIST="$ROOT/dist"
-VERSION='v0.8.4'
+VERSION='v0.8.5'
 ARCHIVE="aif-quickstart-${VERSION}.tar.gz"
 mkdir -p "$DIST"
 files=(
@@ -16,6 +16,9 @@ files=(
 )
 for f in "${files[@]}"; do [[ -f "$SRC/$f" ]] || { echo "Missing: $f" >&2; exit 1; }; done
 bash -n "$SRC/install.sh"
+# Prevent publishing an archive whose installer or Compose default uses a different AIF release.
+grep -Fq "readonly AIF_VERSION='${VERSION}'" "$SRC/install.sh" || { echo 'Installer version mismatch' >&2; exit 1; }
+grep -Fq "vcalproject/ai-firewall:\${AIF_VERSION:-${VERSION}}" "$SRC/compose.yaml" || { echo 'Compose default version mismatch' >&2; exit 1; }
 python3 - "$SRC/ai-firewall.conf.template" <<'PY_CHECK'
 from pathlib import Path
 import sys,re

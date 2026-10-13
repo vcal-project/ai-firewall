@@ -36,7 +36,7 @@ services:
     restart: unless-stopped
 
   firewall:
-    image: vcalproject/ai-firewall:${AIF_VERSION:-v0.8.4}
+    image: vcalproject/ai-firewall:${AIF_VERSION:-v0.8.5}
     depends_on:
       redis:
         condition: service_healthy

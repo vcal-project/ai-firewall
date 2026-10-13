@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly AIF_VERSION='v0.8.4'
+readonly AIF_VERSION='v0.8.5'
 readonly RELEASE_BASE="https://github.com/vcal-project/ai-firewall/releases/download/${AIF_VERSION}"
 readonly ARCHIVE="aif-quickstart-${AIF_VERSION}.tar.gz"
 readonly INSTALL_DIR="${HOME:?HOME is required}/ai-firewall"
