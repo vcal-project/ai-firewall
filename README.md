@@ -9,11 +9,13 @@
 
 ## OpenAI-compatible control layer for AI cost, with optional privacy, security, usage-policy, audit, and compliance integrations
 
-AI Cost Firewall is a lightweight OpenAI-compatible gateway that reduces unnecessary LLM API calls through exact and semantic cache reuse.
+AI Cost Firewall (AIF) is a lightweight, self-hosted, OpenAI-compatible control layer for LLM traffic. It sits between applications and model
+providers to optimize costs, provide observability, and enable configurable policy enforcement.
 
-AI Cost Firewall can be deployed independently as a complete caching and cost-control gateway.
+AIF operates independently as a complete LLM gateway with exact and semantic caching, cost optimization, and observe/enforce modes.
 
-It can also integrate with separately licensed VCAL modules for privacy, security, usage-policy enforcement, audit, and compliance.
+It can also integrate with separately licensed VCAL modules for privacy protection, security enforcement, usage governance, auditing,
+and compliance.
 
 <p align="center">
   <img
