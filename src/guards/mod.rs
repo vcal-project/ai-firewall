@@ -37,6 +37,13 @@ pub struct CompositeGuardOrchestrator {
     guard_fail_open: bool,
 }
 
+fn usage_error_can_fail_open(err: &AppError) -> bool {
+    matches!(
+        err,
+        AppError::UsageGuardUnavailable { .. } | AppError::UsageGuardTimeout { .. }
+    )
+}
+
 fn security_policy_completion(
     response: &ChatCompletionResponse,
     trace_id: Uuid,
@@ -216,7 +223,7 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
             let started = Instant::now();
 
             match usage.scan_request(&guarded.request, trace_id).await {
-                Ok(Some(decision)) => {
+                Ok(decision) => {
                     let result = decision.decision_label().to_ascii_lowercase();
                     metrics::observe_guard_request("usage", "request", &result);
                     metrics::observe_guard_latency_seconds(
@@ -272,16 +279,6 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                         ));
                     }
                 }
-                Ok(None) => {
-                    metrics::observe_guard_request("usage", "request", "skipped");
-                    metrics::observe_guard_latency_seconds(
-                        "usage",
-                        "request",
-                        started.elapsed().as_secs_f64(),
-                    );
-                    self.emit_usage_skipped_event(trace_id, started.elapsed())
-                        .await;
-                }
                 Err(err) => {
                     metrics::observe_guard_request("usage", "request", "error");
                     metrics::observe_guard_latency_seconds(
@@ -289,15 +286,19 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                         "request",
                         started.elapsed().as_secs_f64(),
                     );
+
                     self.emit_usage_failure_event(trace_id, &err, started.elapsed())
                         .await;
 
-                    if self.guard_fail_open {
+                    // Fail-open is permitted only for operational failures.
+                    // Contract violations and policy enforcement errors must fail closed.
+                    if self.guard_fail_open && usage_error_can_fail_open(&err) {
                         tracing::warn!(
                             guard = "usage",
                             stage = "request",
+                            error_class = err.metrics_class(),
                             error = %err.message(),
-                            "Usage Guard request scan failed; guard_fail_open=true so request continues"
+                            "Usage Guard operational failure; request continues under fail-open policy"
                         );
                     } else {
                         return Err(err);
@@ -587,29 +588,6 @@ impl CompositeGuardOrchestrator {
         self.emit(event).await;
     }
 
-    async fn emit_usage_skipped_event(&self, trace_id: Uuid, elapsed: std::time::Duration) {
-        let mut event = EvidenceEvent::new(
-            trace_id,
-            EvidenceSource::AiFirewall,
-            EventCategory::Policy,
-            "guard.usage.request.scan",
-            EventOutcome::Skipped,
-        );
-        event
-            .attributes
-            .insert("guard".into(), Value::String("usage".into()));
-        event
-            .attributes
-            .insert("stage".into(), Value::String("request".into()));
-        event
-            .attributes
-            .insert("reason".into(), Value::String("no_string_content".into()));
-        event
-            .attributes
-            .insert("latency_ms".into(), Value::from(elapsed.as_millis() as u64));
-        self.emit(event).await;
-    }
-
     async fn emit_usage_failure_event(
         &self,
         trace_id: Uuid,
@@ -637,7 +615,7 @@ impl CompositeGuardOrchestrator {
             Value::String(error.metrics_class().into()),
         );
         event.decision = Some(DecisionEvidence {
-            action: if self.guard_fail_open {
+            action: if self.guard_fail_open && usage_error_can_fail_open(error) {
                 "continue_fail_open".into()
             } else {
                 "fail_request".into()
@@ -1325,6 +1303,23 @@ mod tests {
             .expect_err("Usage Guard outage must fail closed when configured");
 
         assert_eq!(error.metrics_class(), "usage_guard_unavailable");
+    }
+
+    #[test]
+    fn usage_guard_fail_open_eligibility_is_operational_only() {
+        assert!(usage_error_can_fail_open(
+            &AppError::usage_guard_unavailable("request", "service unavailable")
+        ));
+        assert!(usage_error_can_fail_open(&AppError::usage_guard_timeout(
+            "request",
+            "service timeout"
+        )));
+        assert!(!usage_error_can_fail_open(
+            &AppError::guard_contract_violation("invalid or unsupported content")
+        ));
+        assert!(!usage_error_can_fail_open(
+            &AppError::usage_request_blocked("denied", None, None)
+        ));
     }
 
     #[test]

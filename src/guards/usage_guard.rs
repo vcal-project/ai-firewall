@@ -35,7 +35,7 @@ struct UsageScanRequest<'a> {
 #[derive(Debug, Serialize)]
 struct UsageScanMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: &'a Value,
 }
 
 #[allow(dead_code)]
@@ -106,25 +106,20 @@ impl UsageGuardClient {
         &self,
         req: &ChatCompletionRequest,
         trace_id: Uuid,
-    ) -> Result<Option<UsageScanResponse>, AppError> {
+    ) -> Result<UsageScanResponse, AppError> {
         let messages = req
             .messages
             .iter()
-            .filter_map(|message| {
-                extract_text_content(&message.content).map(|content| UsageScanMessage {
-                    role: message.role.as_str(),
-                    content,
-                })
+            .map(|message| UsageScanMessage {
+                role: message.role.as_str(),
+                content: &message.content,
             })
             .collect::<Vec<_>>();
 
         if messages.is_empty() {
-            tracing::debug!(
-                guard = "usage",
-                stage = "request",
-                "Usage Guard scan skipped; no string content found"
-            );
-            return Ok(None);
+            return Err(AppError::guard_contract_violation(
+                "Usage Guard requires at least one message",
+            ));
         }
 
         let url = format!("{}{}", self.base_url, self.scan_path);
@@ -177,7 +172,7 @@ impl UsageGuardClient {
             ))
         })?;
 
-        Ok(Some(decision))
+        Ok(decision)
     }
 }
 
@@ -215,19 +210,20 @@ fn usage_guard_http_error(status: StatusCode, body: &str) -> AppError {
     let body = truncate_for_log(body, 512);
 
     match status {
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
-            AppError::guard_contract_violation(format!(
-                "VCAL Usage Guard rejected AI Firewall request scan payload with HTTP {status}: {body}"
-            ))
-        }
         StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => AppError::usage_guard_timeout(
             "request",
             format!("VCAL Usage Guard timed out during request scan with HTTP {status}: {body}"),
         ),
-        _ => AppError::usage_guard_unavailable(
+        status if status.is_client_error() => AppError::guard_contract_violation(format!(
+            "VCAL Usage Guard rejected AI Firewall request scan payload with HTTP {status}: {body}"
+        )),
+        status if status.is_server_error() => AppError::usage_guard_unavailable(
             "request",
             format!("VCAL Usage Guard returned HTTP {status} during request scan: {body}"),
         ),
+        _ => AppError::guard_contract_violation(format!(
+            "VCAL Usage Guard returned unexpected HTTP {status}: {body}"
+        )),
     }
 }
 
@@ -236,13 +232,6 @@ fn normalize_base_url(mut base_url: String) -> String {
         base_url.pop();
     }
     base_url
-}
-
-fn extract_text_content(value: &Value) -> Option<&str> {
-    match value {
-        Value::String(s) if !s.is_empty() => Some(s.as_str()),
-        _ => None,
-    }
 }
 
 fn truncate_for_log(value: &str, max_chars: usize) -> String {
@@ -307,8 +296,32 @@ mod tests {
     }
 
     #[test]
-    fn usage_guard_403_http_maps_to_unavailable_not_policy_block() {
-        let err = usage_guard_http_error(StatusCode::FORBIDDEN, "license or auth failure");
-        assert_eq!(err.metrics_class(), "usage_guard_unavailable");
+    fn usage_guard_client_failures_are_not_outages() {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ] {
+            let err = usage_guard_http_error(status, "request, identity or policy rejected");
+            assert_eq!(err.metrics_class(), "guard_contract_violation", "{status}");
+        }
+    }
+
+    #[test]
+    fn usage_guard_http_operational_failures_remain_outage_eligible() {
+        for status in [StatusCode::REQUEST_TIMEOUT, StatusCode::GATEWAY_TIMEOUT] {
+            let err = usage_guard_http_error(status, "timeout");
+            assert_eq!(err.metrics_class(), "usage_guard_timeout", "{status}");
+        }
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            let err = usage_guard_http_error(status, "unavailable");
+            assert_eq!(err.metrics_class(), "usage_guard_unavailable", "{status}");
+        }
     }
 }
