@@ -1,24 +1,29 @@
 # AI Cost Firewall — Quick Start
 
-AI Cost Firewall (AIF) is a self-hosted OpenAI-compatible gateway with exact caching (Redis/Valkey),
-semantic caching (Qdrant), and Prometheus/Grafana observability. Security, Privacy, Usage, and Audit modules
-are **optional** and are not needed to try core AIF.
+AI Cost Firewall (AIF) is a **self-hosted, OpenAI-compatible control point for production AI**. The
+open-source core uses **Redis exact caching** and **Qdrant semantic caching**, with Prometheus metrics
+and Grafana dashboards. It has **no software license fee**; separately licensed VCAL modules for privacy,
+security, organizational usage policy, Audit, and Compliance are optional.
 
-This guide gets a gateway running and verifies a request. For architecture and operational details, follow
-the links at the end rather than configuring everything on the first run.
+**Observe first, then enforce when the evidence supports it.** This guide takes you from installation
+to a first observed request. AIF runs in infrastructure you control; no VCAL-operated SaaS is in the
+request path.
 
-## Option A — One-command Linux installer
+## Option A — One-command Linux installer (Observe mode)
 
-On a supported Linux host with Docker Engine and the Docker Compose plugin installed:
+On Linux (x86_64 or ARM64), install Docker Engine and the Docker Compose plugin first. The installer also
+requires Python 3, curl, OpenSSL, tar, SHA-256 tools, POSIX ACL support, and internet access to GitHub and
+Docker Hub; it does **not** install Docker. See the [installer prerequisites](../deploy/quickstart/README.md).
 
 ```bash
 curl -fsSL https://vcal-project.com/install-aif.sh | bash
 ```
 
-The installer starts AIF, Redis, Qdrant, Prometheus, and Grafana and provisions dashboards. The tested
-platforms described by the project are Ubuntu and Rocky Linux 9/10 (x86_64). Review the [installer
-documentation](../deploy/quickstart/README.md) before running a remotely retrieved script, especially on a
-production host.
+The installer pulls versioned images for AIF, Redis, Qdrant, Prometheus, and Grafana, and provisions the
+**Overview, Diagnostics, and Evaluation** dashboards. The project reports tests on Ubuntu and Rocky Linux
+9/10 (x86_64); other supported architectures are not necessarily tested on those distributions. Review
+the [installer script](https://github.com/vcal-project/ai-firewall/blob/main/deploy/quickstart/install.sh)
+before running a remotely retrieved command, especially on a production host.
 
 Configure your upstream and embedding endpoint/model in `~/ai-firewall/configs/ai-firewall.conf`, then
 restart AIF:
@@ -28,12 +33,15 @@ cd ~/ai-firewall
 docker compose restart firewall
 ```
 
-The installer defaults to **Observe Mode**. A working gateway container does *not* prove that the configured
-upstream model is reachable. In Observe Mode, live requests still reach upstream; cache savings are
-hypothetical. Grafana is available on the host at `http://127.0.0.1:3000`; the locally generated admin
-password is stored in `~/ai-firewall/.env`.
+The installer starts in **Observe mode**. Requests allowed by enabled controls still reach the upstream
+model: AIF uses isolated evaluation caches to estimate **potential** avoided calls, tokens, and costs
+without serving cached responses. This mode does **not** change optional Guard policies.
 
-## Option B — Docker Compose from the repository
+A healthy AIF container does *not* prove that the configured upstream model is reachable. The installer
+binds AIF, Prometheus, and Grafana to local-only ports. Open Grafana at `http://127.0.0.1:3000` on the
+installation host (or through an SSH tunnel); its generated admin password is in `~/ai-firewall/.env`.
+
+## Option B — Docker Compose from the repository (Enforce mode by default)
 
 ### Prerequisites
 
@@ -58,9 +66,10 @@ docker compose pull
 docker compose up -d
 ```
 
-The root Compose stack runs AIF, Redis, Qdrant, Prometheus, and Grafana. The effective enforcement mode is
-determined by the config you deploy; the standard configuration's default is `enforce`. This differs from
-the one-command installer's Observe Mode default.
+The root Compose stack runs AIF, Redis, Qdrant, Prometheus, and Grafana. The actual mode follows
+`aif_enforcement_mode` in the deployed configuration; its normal runtime default is **Enforce mode**
+(`enforce`). Unlike the one-line installer, this path does not automatically switch AIF to Observe mode.
+To evaluate cache reuse before enforcement, explicitly configure `aif_enforcement_mode observe;`.
 
 ### Alternative example deployments
 
@@ -93,9 +102,10 @@ curl -sS http://localhost:8080/v1/chat/completions \
   -d '{"model":"YOUR_CHAT_MODEL","messages":[{"role":"user","content":"Explain Redis briefly."}]}'
 ```
 
-Repeat the same request. In `enforce`, an eligible second request may be served from exact cache. In
-`observe`, it still reaches upstream and only the isolated evaluation metrics record potential reuse.
-Cacheability, guard decisions, model parameters, and errors all affect this outcome.
+Repeat the same request. In **Enforce mode** (`enforce`), an eligible repeat may be served from Redis
+exact cache. In **Observe mode** (`observe`), the allowed request still reaches upstream and isolated
+evaluation metrics record **potential** reuse. Cache eligibility, guard decisions, model parameters, and
+errors all affect the outcome.
 
 To intentionally bypass cache for a request:
 
@@ -106,7 +116,8 @@ curl -sS http://localhost:8080/v1/chat/completions \
   -d '{"model":"YOUR_CHAT_MODEL","messages":[{"role":"user","content":"Do not cache this request."}]}'
 ```
 
-A bypass skips exact/semantic lookup **and** store, including shadow operations in Observe Mode.
+A bypass skips exact/semantic cache lookup **and** store, including isolated evaluation-cache operations
+in Observe mode.
 
 ## Check logs and dashboards
 
@@ -116,15 +127,17 @@ curl -sS http://localhost:8080/metrics | head
 ```
 
 The `/metrics` endpoint can be protected by configuration. Grafana dashboards show traffic, cache
-effectiveness, and net savings; [Metrics and Costs](metrics-and-costs.md) explains the distinction between
-actual and hypothetical savings.
+effectiveness, runtime diagnostics, and costs. **Potential Observe-mode savings** are kept separate from
+**actual Enforce-mode cache outcomes** (whose avoided costs are still estimates based on configured prices).
+See [Metrics and Costs](metrics-and-costs.md).
 
 ## Next steps
 
-- [Evaluation Mode](evaluation-mode.md) — assess cache opportunity without serving cached completions.
+- [Evaluation Mode](evaluation-mode.md) — assess potential cache savings without serving cached completions.
 - [How It Works](how-it-works.md) — understand cache keys and eligibility.
 - [Configuration Reference](config-reference.md) — tune providers, timeouts, cache lifetimes, and guards.
 - [Operations](operation.md) / [Troubleshooting](troubleshooting.md) — production probes and failure
   diagnosis.
 - [Deployment](deployment.md) — OpenShift/Kubernetes baseline and runtime security.
+- [AIF documentation portal](https://ai-firewall.docs.vcal-project.com/) — guided product and deployment documentation.
 - [Build/test from source](../README.md) — Rust workflow.
