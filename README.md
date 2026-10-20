@@ -4,12 +4,15 @@
 ![License](https://img.shields.io/github/license/vcal-project/ai-firewall)
 ![GitHub Release](https://img.shields.io/github/v/release/vcal-project/ai-firewall)
 ![Docker Pulls](https://img.shields.io/docker/pulls/vcalproject/ai-firewall)
+![Status](https://img.shields.io/badge/status-production--ready-brightgreen)
 
-**Self-hosted, OpenAI-compatible gateway for LLM cost optimization, observability, and optional policy controls.**
+**Control what reaches your AI models — and what doesn’t need to.**
 
-AI Cost Firewall (AIF) sits between AI applications and OpenAI-compatible model endpoints. It reduces repeated upstream calls through **exact caching (Redis)** and **semantic caching (Qdrant)**, tracks costs, and supports non-disruptive evaluation before enabling cache reuse.
+AI Cost Firewall (AIF) is a **self-hosted, OpenAI-compatible control point** in front of production AI workloads. It uses **Redis exact caching** and **Qdrant semantic caching** to identify repeated or similar requests, while providing metrics and structured evidence for cost and operational visibility.
 
-AIF runs independently as an open-source gateway. Optional **commercial VCAL modules** add privacy, security, organizational usage controls, auditing, and compliance capabilities.
+Start in **Observe mode** to estimate potential cache savings on real traffic without changing application responses. Switch to **Enforce mode** when the evidence supports serving eligible cache hits.
+
+The **AIF core gateway is open source and has no software license fee**. Optional VCAL modules add privacy, security, organizational usage-policy, Audit, and Compliance capabilities. No VCAL-operated SaaS is part of the request path.
 
 <p align="center">
   <img src="assets/ai-cost-firewall-overview.gif" alt="AI Cost Firewall and optional VCAL modules" width="900">
@@ -19,13 +22,13 @@ Developed and maintained by **VCAL Labs, Inc.** · [Documentation portal](https:
 
 ## Quick Start
 
-On Linux with Docker Engine and the Docker Compose plugin already installed:
+On Linux (x86_64 or ARM64), with Docker Engine and Docker Compose already installed:
 
 ```bash
 curl -fsSL https://vcal-project.com/install-aif.sh | bash
 ```
 
-The installer starts **AIF, Redis, Qdrant, Prometheus, and Grafana** and provisions monitoring dashboards. It has been tested on Ubuntu and Rocky Linux 9/10 (x86_64).
+The installer pulls versioned images for **AIF, Redis, Qdrant, Prometheus, and Grafana** and provisions the Overview, Diagnostics, and Evaluation dashboards. It also requires Python 3 and standard utilities; see the installer guide for the complete prerequisites. It has been tested on Ubuntu and Rocky Linux 9/10 (x86_64).
 
 1. Set a valid OpenAI-compatible upstream URL and authentication (if required) in `~/ai-firewall/configs/ai-firewall.conf`. Configure a compatible embedding endpoint/model for semantic-cache evaluation.
 2. Restart AIF:
@@ -33,22 +36,22 @@ The installer starts **AIF, Redis, Qdrant, Prometheus, and Grafana** and provisi
    ```bash
    cd ~/ai-firewall && docker compose restart firewall
    ```
-3. Open Grafana at `http://127.0.0.1:3000` **on the installation host** (or connect through an SSH tunnel). The generated admin password is stored in `~/ai-firewall/.env`.
+3. Open Grafana at `http://127.0.0.1:3000` **on the installation host** (or connect through an SSH tunnel). The installer binds AIF, Prometheus, and Grafana to local-only ports. The generated Grafana admin password is stored in `~/ai-firewall/.env`.
 
-**The one-line installer starts in Observe Mode.** Requests still reach the upstream model, while AIF measures potential cache and cost savings. Healthy containers do not by themselves prove provider connectivity.
+**The one-line installer starts in Observe mode.** Every request still reaches the upstream model; AIF evaluates potential cache reuse without serving cached responses. Healthy containers do not by themselves prove provider connectivity.
 
 Read the [installer prerequisites and troubleshooting](deploy/quickstart/README.md), or follow the [manual Docker Compose guide](docs/quickstart.md). Review a remote installation script before running it.
 
 ## Why AI Cost Firewall?
 
-Repeated and semantically similar LLM requests can waste tokens and incur avoidable provider latency. In **Enforce Mode**, AIF can serve eligible responses from cache instead of calling the upstream model.
+Repeated and semantically similar LLM requests can waste tokens and incur avoidable provider latency. In **Enforce mode**, AIF can serve eligible responses from cache instead of calling the upstream model.
 
 ```text
 Application → AI Cost Firewall → Redis exact cache → Qdrant semantic cache
                            └── on miss/bypass → OpenAI-compatible LLM
 ```
 
-In **Observe Mode**, AIF uses isolated shadow caches to estimate opportunities without substituting cached answers for the live upstream response.
+In **Observe mode**, AIF uses isolated evaluation caches to identify potential cache hits and estimate avoidable calls, tokens, and gross/net cost without substituting cached answers for live upstream responses.
 
 [How AIF works](docs/how-it-works.md) · [Architecture](docs/architecture.md)
 
@@ -56,42 +59,46 @@ In **Observe Mode**, AIF uses isolated shadow caches to estimate opportunities w
 
 - **Two-layer caching:** Redis exact cache and Qdrant semantic cache with configurable cache controls.
 - **OpenAI-compatible APIs:** chat completions, `GET /v1/models` proxying, and controlled SSE delivery for streaming chat completions.
-- **Observe / Enforce:** measure hypothetical savings using isolated evaluation state, or serve eligible cache hits in normal operation.
+- **Observe before Enforce:** measure potential savings with isolated evaluation caches, then serve eligible cache hits when you choose to enforce.
 - **Cost and operational visibility:** Prometheus metrics, Grafana dashboards, per-model cost estimates, cache diagnostics, and evidence events.
-- **Operational controls:** configuration validation, readiness/startup/liveness probes, fail-open settings, request limits, and graceful shutdown.
+- **Operational controls:** configuration validation, readiness/startup/liveness probes, configurable fail-open/fail-closed behavior, request limits, and graceful shutdown.
 - **Deployment flexibility:** Docker Compose examples and an OpenShift `restricted-v2` deployment baseline.
 
 **Controlled streaming is buffered:** AIF assembles and checks the full provider response before replaying it as SSE. It does **not** forward model tokens immediately as they arrive. [Details](docs/controlled-streaming.md).
 
-## Observe vs. Enforce
+## Observe mode vs. Enforce mode
 
 | Mode | Cache decision | Client response | Savings figures |
 |---|---|---|---|
-| `observe` | Isolated shadow exact/semantic caches | Live upstream response | **Estimated** opportunities; separate evaluation metrics |
-| `enforce` | Production exact/semantic caches | Eligible cache hit, otherwise upstream | **Realized** cache savings estimates |
+| `observe` | Isolated evaluation caches | Live upstream response | **Potential** cache hits, calls/tokens avoided, and estimated savings |
+| `enforce` | Production exact/semantic caches | Eligible cache hit, otherwise upstream | **Actual** cache outcomes with estimated avoided cost |
 
 ```conf
 # Installer default: observe; normal runtime default: enforce.
 aif_enforcement_mode observe;
 ```
 
-Observe Mode applies to **AIF cache optimization**, not to the enforcement settings of independently configured VCAL Guards. For assessment reproducibility, AIF provides the sanitized `GET /assessment-context` endpoint and a configuration identity metric.
+AIF Observe mode evaluates **caching only**. It does not change the configured policy or enforcement behavior of optional VCAL Guards. For assessment reproducibility, AIF provides the sanitized `GET /assessment-context` endpoint and a configuration identity metric.
 
 [Evaluation Mode](docs/evaluation-mode.md) · [Assessment Context](docs/assessment-context.md) · [Evaluation validation](EVALUATION_VALIDATION.md)
 
-## Optional VCAL Integrations
+## Optional VCAL modules
 
-AIF can orchestrate separately licensed modules. **None is required for the open-source AIF gateway.**
+AIF can orchestrate separately licensed VCAL modules. **None is required for the open-source AIF gateway.**
 
-| Module | Role |
+| Module | Function |
 |---|---|
-| VCAL Security Guard | Request/response security inspection and enforcement |
-| VCAL Privacy Guard | Sensitive-data detection, anonymization/redaction, and optional restoration |
-| VCAL Usage Guard | Organizational AI usage-policy decisions |
-| VCAL Audit | Structured evidence ingestion and trace reconstruction |
-| VCAL Compliance | Compliance/reporting workflows using Audit data |
+| Privacy Guard | Detect, redact, or anonymize sensitive data before upstream calls and optionally restore approved placeholders |
+| Security Guard | Detect and block prompt injection, jailbreak attempts, and other supported text-based LLM security risks |
+| Usage Guard | Allow, warn, or block requests under organizational AI usage policies |
+| Audit | Retain structured evidence and reconstruct request traces |
+| Compliance | Evaluate retained evidence and support governance reporting |
 
-Guards can be enabled individually or together. Content inspection coverage depends on the particular module and its adapter; do not assume that all Guards inspect every structured content shape. [Guard operation](docs/operation.md) · [Audit integration](docs/audit-integration.md).
+Guards can be enabled individually or together. Inspection coverage depends on each module and adapter; do not assume every Guard inspects every structured content shape. [Guard operation](docs/operation.md) · [Audit integration](docs/audit-integration.md).
+
+**VCAL Console** separates actual production outcomes from hypothetical Observe-mode results. It is included with an active annual **VCAL Production Support** subscription for AIF or an applicable VCAL module license; no separate Console license is required.
+
+**VCAL Semantic Cache Server** is a separate, standalone HTTP semantic-cache service for other applications and RAG pipelines. AIF uses Redis and Qdrant; **no native AIF adapter** for the Semantic Cache Server is currently available.
 
 ## API and Provider Compatibility
 
@@ -105,7 +112,7 @@ Current gateway routes include `POST /v1/chat/completions` and `GET /v1/models` 
 
 ## Dashboards and Evidence
 
-The Docker deployment includes Grafana dashboards for cost, cache effectiveness, and runtime diagnostics. Observe-mode metrics are **not** counted as actual production cache savings.
+The Docker deployment includes **Overview, Diagnostics, and Evaluation** Grafana dashboards for cost, cache effectiveness, runtime diagnostics, and potential savings. Observe-mode estimates are **not** counted as actual production cache savings.
 
 [![AIF Cost Savings Overview dashboard](assets/grafana/ai-firewall-overview-021.png)](assets/grafana/ai-firewall-overview-021.png)
 
@@ -116,6 +123,8 @@ AIF also emits structured evidence (`schema_version: 1.1`), with optional asynch
 [Metrics and Dashboards](docs/metrics-and-costs.md) · [Audit Integration](docs/audit-integration.md)
 
 ## Deployment and Configuration
+
+Run AIF on premises, in a private cloud, or in other infrastructure you control. Keep your OpenAI-compatible clients, providers, and operational tooling.
 
 | Start here | Description |
 |---|---|
@@ -148,13 +157,13 @@ Historical controlled tests with a **local simulated upstream** demonstrated cac
 | Topic | Guide |
 |---|---|
 | Architecture and request flow | [Architecture](docs/architecture.md) · [How It Works](docs/how-it-works.md) |
-| Observe Mode and assessments | [Evaluation Mode](docs/evaluation-mode.md) · [Assessment Context](docs/assessment-context.md) |
+| Observe mode and assessments | [Evaluation Mode](docs/evaluation-mode.md) · [Assessment Context](docs/assessment-context.md) |
 | Streaming and content | [Controlled Streaming](docs/controlled-streaming.md) · [Structured Content](docs/structured-content.md) |
 | Monitoring | [Metrics and Costs](docs/metrics-and-costs.md) |
 | Audit and evidence | [Audit Integration](docs/audit-integration.md) |
 | Questions and examples | [FAQ](docs/faq.md) · [Examples](deploy/examples/) |
 
-Browse the [full documentation portal](https://ai-firewall.docs.vcal-project.com/) for additional product guidance.
+Browse the [AIF documentation portal](https://ai-firewall.docs.vcal-project.com/) for deployment guides and additional product guidance.
 
 ## Build, Test, and Contribute
 
