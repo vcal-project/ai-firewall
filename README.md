@@ -3,6 +3,7 @@
 ![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![License](https://img.shields.io/github/license/vcal-project/ai-firewall)
 ![GitHub Release](https://img.shields.io/github/v/release/vcal-project/ai-firewall)
+![Docker Pulls](https://img.shields.io/docker/pulls/vcalproject/ai-firewall)
 
 **Self-hosted, OpenAI-compatible gateway for LLM cost optimization, observability, and optional policy controls.**
 
