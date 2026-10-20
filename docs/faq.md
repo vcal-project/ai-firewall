@@ -1,1467 +1,168 @@
 # AI Cost Firewall — FAQ
 
-This FAQ is for users browsing the `docs/` directory in the AI Cost Firewall GitHub repository. It gives quick answers for installation, configuration, caching, observability, troubleshooting, and optional VCAL Security Guard / VCAL Privacy Guard / VCAL Usage Guard integration and VCAL Audit evidence delivery.
+Concise answers to frequent questions. Detailed behavior belongs in the linked guide so that a single
+explanation remains authoritative.
 
-For full configuration details, see:
-
-```text
-docs/config-reference.md
-docs/provider-compatibility.md
-docs/operation.md
-docs/troubleshooting.md
-```
-
----
-
-## General
+## Product and providers
 
 ### What is AI Cost Firewall?
 
-AI Cost Firewall is an OpenAI-compatible gateway for reducing repeated LLM API calls, controlling cost, improving latency for repeated requests, and exposing operational visibility.
+A self-hosted OpenAI-compatible gateway that reduces repeated upstream calls using Redis/Valkey exact
+caching and Qdrant semantic caching. AIF also exposes metrics and optionally integrates separately licensed
+VCAL Guards and Audit. See [Architecture](architecture.md).
 
-It sits between applications and upstream LLM providers.
+### Does AIF support native Anthropic, Gemini, Mistral, or Cohere APIs?
 
-Typical flow:
+Not directly in this documented version. It expects OpenAI-compatible chat and embedding endpoints; such
+providers may be used through a compatible translation gateway such as LiteLLM or OpenRouter. Compatibility
+is not universal. See [Provider Compatibility](provider-compatibility.md).
 
-```text
-Application
-→ AI Cost Firewall
-→ optional Security Guard / Privacy Guard / Usage Guard orchestration
-→ cache lookup
-→ upstream LLM provider only when needed
-```
+### Can the chat model and embedding model run on different services?
 
-The firewall behaves similarly to:
+Yes. Configure their separate OpenAI-compatible base URLs and verify embedding dimensions. `GET /v1/models`
+proxies the configured **chat** upstream's model discovery; it does not enumerate a separate embedding
+service. See [Provider Compatibility](provider-compatibility.md).
 
-```text
-nginx for LLM APIs
-```
+### Does AIF authenticate incoming application users?
 
-but with LLM-specific controls such as exact cache, semantic cache, model pricing, token-cost metrics, request limits, and optional Security Guard / Privacy Guard / Usage Guard orchestration.
+The configured `upstream_api_key` authenticates AIF **to the provider**; it does not by itself authenticate
+incoming clients. Protect the AIF ingress through your network/reverse proxy/API gateway and decide on an
+appropriate cache scope for shared or user-specific responses. See [Architecture](architecture.md).
 
----
+### Is the standalone VCAL Semantic Cache Server an AIF backend?
 
-### What problem does AI Cost Firewall solve?
+No. AIF currently uses Qdrant for semantic cache; the separately developed VCAL Semantic Cache Server is not
+integrated as an AIF cache adapter.
 
-LLM applications often recompute the same or similar answers many times.
+## Caching and evaluation
 
-AI Cost Firewall helps reduce:
+### What is the difference between exact and semantic caching?
 
-- repeated upstream LLM calls
-- unnecessary token usage
-- latency for repeated questions
-- lack of visibility into cache behavior
-- lack of visibility into estimated cost savings
-- uncontrolled LLM traffic patterns during pilots and production evaluations
+Exact reuse requires matching normalized request identity. Semantic reuse uses embeddings and similarity
+plus candidate-validity checks. Cache eligibility can vary with tools, structured content, model settings,
+and guards. See [How It Works](how-it-works.md).
 
-Only cache misses are forwarded upstream.
+### Can I disable one cache, or allow lookup but disable store?
 
----
+Yes. Exact and semantic enable/store controls are separate. Cache failures have separate fail-open options.
+See [Configuration Reference](config-reference.md).
 
-### Which OpenAI-compatible routes are currently supported?
+### Can I bypass caching for one request?
 
-Currently supported OpenAI-compatible routes include:
+Yes. The default `X-AIF-Cache-Bypass: true` header skips both lookups and stores. This also skips
+shadow-cache work in Observe Mode. See [How It Works](how-it-works.md#per-request-bypass).
 
-```text
-POST /v1/chat/completions
-GET  /v1/models
-```
+### What do `enforce` and `observe` change?
 
-`/v1/models` is proxied to the configured chat/inference upstream for model discovery. It does not list models from a separately configured embedding endpoint. The API is OpenAI-compatible, so many existing SDKs and applications can point to AI Cost Firewall instead of calling the upstream provider directly.
+`enforce` may return eligible cached responses; `observe` always forwards the live request to the chat
+provider and records hypothetical reuse using isolated shadow cache state. Observe does **not** reduce live
+provider traffic or automatically change guard policy modes. See [Evaluation Mode](evaluation-mode.md).
 
----
+### What is Assessment Context?
 
-### Which providers are supported?
+`GET /assessment-context` returns sanitized effective configuration information and a deterministic hash.
+Combined with historical `aif_runtime_info` and bounded evaluation metrics, it supports reproducible
+external assessments. AIF itself does not persist assessment reports. See [Assessment
+Context](assessment-context.md).
 
-AI Cost Firewall supports practical OpenAI-compatible upstream and embedding providers, including:
+### Are streaming completions cacheable?
 
-- OpenAI
-- Ollama
-- LM Studio
-- vLLM
-- LiteLLM
-- OpenRouter
-- local OpenAI-compatible gateways
-- self-hosted OpenAI-compatible gateways
+Eligible streaming and non-streaming requests share cache identity. For `stream=true`, AIF assembles the
+provider response and applies controls **before** replaying SSE. It is not raw token-by-token pass-through.
+See [Controlled Streaming](controlled-streaming.md).
 
-AI Cost Firewall uses a flat OpenAI-compatible configuration model. It does not require provider-specific configuration blocks.
+### Are tool calls and structured message arrays cacheable?
 
-Example:
+Completion-affecting tool/format fields participate in exact identity. Non-string message content bypasses
+semantic caching. Supported text parts can be inspected by Privacy Guard, but do not assume equivalent
+coverage in every other module. See [Structured Content](structured-content.md).
 
-```conf
-upstream_provider openai_compatible;
-upstream_base_url https://api.openai.com;
-upstream_api_key sk-your-api-key;
+### Does AIF scan images or documents attached to a chat?
 
-embedding_provider openai_compatible;
-embedding_base_url https://api.openai.com;
-embedding_api_key sk-your-api-key;
-embedding_model text-embedding-3-small;
-```
+No general attachment processor is documented. Referenced files, opaque non-text payloads, and images are
+not fetched and inspected as documents by AIF. See [Structured Content](structured-content.md).
 
----
+## Configuration and operations
 
-### Can the chat provider and embedding provider differ?
+### Should `upstream_base_url` include `/v1/chat/completions`?
 
-Yes.
+No. Use the provider's compatible base URL; AIF appends the chat-completions route. The correct `/v1` prefix
+depends on the provider. See [Provider Compatibility](provider-compatibility.md).
 
-For example, you can use a cloud provider for chat completions and a local model server for embeddings:
+### What if a Qdrant collection has a different vector size?
 
-```conf
-upstream_base_url https://api.openai.com;
-embedding_base_url http://ollama:11434/v1;
-```
+Startup validation reports a mismatch. Verify the actual embedding dimension and use a matching collection;
+do not silently reuse vectors from a different model/dimension. See [Troubleshooting](troubleshooting.md).
 
-Or the opposite:
+### How do I validate the configuration or reload it?
 
-```conf
-upstream_base_url http://ollama:11434/v1;
-embedding_base_url https://api.openai.com;
-```
+AIF supports `--test-config`, masked `--print-config`, and nginx-style `SIGHUP` for reloadable settings.
+Listener, request-body limit, inflight-request limit, and graceful-shutdown timeout are restart-only
+settings. See [Operations](operation.md) and [Configuration Reference](config-reference.md).
 
-This is useful for:
+### What do `/healthz`, `/startupz`, and `/readyz` mean?
 
-- reducing embedding cost
-- keeping embeddings local
-- testing hybrid deployments
-- comparing local and cloud model behavior
+Liveness, successful initialization of configured required dependencies, and current readiness are distinct.
+In Observe Mode, optional evaluation cache failures do not block live upstream responses. See
+[Operations](operation.md).
 
----
+### What happens if Redis, Qdrant, embeddings, or a Guard fails?
 
-### What API key should be used for local providers?
+The behavior depends on the enabled path, `*_fail_open`/`guard_fail_open`, and readiness settings.
+Evaluation-only cache dependency failures are non-disruptive; unsupported recognized Privacy text structures
+are not the same as a transport failure. See [Operations](operation.md) and
+[Troubleshooting](troubleshooting.md).
 
-Local providers often do not require authentication.
+## Optional modules and evidence
 
-Accepted placeholder values:
+### Are VCAL Security, Privacy, Usage, or Audit required?
 
-```text
-dummy
-none
-null
--
-```
+No. AIF Core works without these separately licensed products. Guards can be independently enabled; optional
+VCAL Audit receives structured evidence. See [Architecture](architecture.md) and [Evidence and
+Audit](audit-integration.md).
 
-Example:
+### Which Guard handles what?
 
-```conf
-upstream_api_key dummy;
-embedding_api_key dummy;
-```
+Security Guard evaluates security rules; Privacy Guard inspects supported sensitive text and may
+anonymize/redact and later restore placeholders; Usage Guard applies organizational usage policies. Coverage
+for structured content is module-specific and must be checked for the deployed module/API versions. See
+[Structured Content](structured-content.md).
 
-When placeholder values are used, AI Cost Firewall does not forward upstream bearer authorization headers.
+### Does Privacy Guard protect shared cached entries?
 
----
+For supported requests with complete effective tenant and privacy policy identity, AIF scopes cache entries
+accordingly and stores pre-restoration placeholder responses. Missing effective policy identity or Privacy
+Guard transport fail-open bypasses caches. This is not a replacement for application authorization. See
+[Structured Content](structured-content.md).
 
-## Caching
+### Is evidence delivery to Audit durable?
 
-### How does caching work?
+Not end-to-end from AIF: the HTTP sender uses a bounded **in-memory** queue with retries. Persistent Audit
+storage begins after successful ingestion, and events can be dropped on queue overflow, exhausted retries,
+or premature shutdown. See [Evidence and Audit](audit-integration.md).
 
-AI Cost Firewall uses a two-layer cache strategy:
+## Metrics, troubleshooting, and releases
 
-1. exact cache
-2. semantic cache
+### How are savings calculated? Do Observe metrics reduce my bill?
 
-Typical request flow:
+Estimated provider spend and gross savings use configured model prices; embedding overhead reduces net
+savings. Observe records potential savings separately from actual Enforce-mode avoidance and does not reduce
+live upstream calls. See [Metrics and Costs](metrics-and-costs.md).
 
-```text
-Client
-→ AI Cost Firewall
-→ Redis / Valkey exact cache
-→ Qdrant semantic cache
-→ OpenAI-compatible upstream
-```
+### Why do my dashboards have zero values?
 
-In the default `enforce` mode, only cache misses reach the upstream provider. In v0.8.0 `observe` mode, AIF evaluates the same cache opportunities but still sends the live request upstream even when a shadow cache hit is found.
+Check that real traffic reaches AIF, that Prometheus scrapes its metrics endpoint, that the configured
+provider is reachable, that cache is eligible, and that you are looking at the correct Observe/Enforce
+series. See [Troubleshooting](troubleshooting.md).
 
----
+### Is AIF guaranteed to achieve the README benchmark rates?
 
-### What is Evaluation / Observe Mode?
+No. The supplied benchmarks were controlled local runs, often using a simulated upstream. They are not
+production capacity or savings guarantees. See [Benchmark report](../BENCHMARKS.md) and [Evaluation
+validation](../EVALUATION_VALIDATION.md).
 
-Evaluation Mode is an AIF-level caching/cost assessment mode introduced in v0.8.0.
+### Where should I start?
 
-```conf
-aif_enforcement_mode observe;
-```
-
-AIF remains in the live application path, uses isolated exact and semantic shadow cache state, records what it **would have done** under enforcement, and returns the real upstream response.
-
-Use it when you want to measure potential hit rate, avoidable provider calls/tokens, and estimated cost reduction without allowing cached responses to alter application behavior.
-
-The default remains:
-
-```conf
-aif_enforcement_mode enforce;
-```
-
----
-
-### What is Assessment Context in v0.8.3?
-
-AIF v0.8.3 exposes:
-
-```text
-GET /assessment-context
-```
-
-The endpoint returns an allow-listed snapshot of the current effective AIF configuration so an assessment/reporting layer can interpret a bounded Observe-mode period reproducibly.
-
-It includes the AIF version/schema context, enforcement mode, effective cache scope, cache/embedding settings, request-path limits, pricing assumptions, optional-module state, and a deterministic `configuration_hash`.
-
-It does not expose provider API keys, credentials, tenant identifiers, private license material, or other secret configuration values.
-
-AIF also publishes the active identity in Prometheus as:
-
-```text
-aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
-```
-
-An assessment tool can query that metric over an exact time window to verify that one runtime/configuration identity remained active throughout the period, then compare it with the current `/assessment-context` before freezing the assessment.
-
-AIF itself does not persist or finalize assessment reports.
-
----
-
-### Does observe mode reduce my real provider traffic or bill?
-
-No. Observe mode deliberately calls the live upstream provider even on would-have cache hits. The evaluation metrics estimate calls, tokens, and cost that could have been avoided under enforcement, but those savings are hypothetical during the observe period.
-
----
-
-### Does AIF observe mode put Security, Privacy, or Usage Guard into observe mode?
-
-No. `aif_enforcement_mode` controls AIF caching and cost optimization only. Security Guard, Privacy Guard, and Usage Guard continue to behave according to their existing enabled/mode/fail-open settings. Guard-specific `off / observe / enforce` modes are not part of AIF v0.8.0.
-
----
-
-### What is the exact cache?
-
-The exact cache stores responses for identical normalized requests.
-
-Typical flow:
-
-```text
-normalized request hash
-→ Redis / Valkey
-→ cached response
-```
-
-Exact cache is useful when applications repeat the same prompt and request parameters.
-
----
-
-### What is the semantic cache?
-
-The semantic cache stores embeddings of normalized prompt text in Qdrant.
-
-If a new prompt is semantically similar to a previously cached prompt, AI Cost Firewall may reuse the cached response even if the text is not identical.
-
-Typical flow:
-
-```text
-prompt embedding
-→ Qdrant similarity search
-→ cached response if similarity is high enough
-```
-
-The similarity threshold is configured with:
-
-```conf
-semantic_similarity_threshold 0.92;
-```
-
-Higher values are stricter and produce fewer semantic hits.
-
-Lower values increase reuse but may reduce precision.
-
----
-
-### Do I need both Redis and Qdrant?
-
-No.
-
-Minimum deployment:
-
-- AI Cost Firewall
-- Redis or Valkey
-
-Qdrant is required only when semantic caching is enabled.
-
----
-
-### Can semantic cache be disabled?
-
-Yes.
-
-```conf
-semantic_cache_enabled false;
-```
-
-When semantic cache is disabled:
-
-- embeddings are skipped
-- Qdrant is not required
-- exact cache can still be used
-
----
-
-### Can exact cache be disabled?
-
-Yes.
-
-```conf
-exact_cache_enabled false;
-```
-
-This is useful for debugging, semantic-cache-only testing, or upstream pass-through evaluations.
-
----
-
-### Can cache storage be disabled while lookup remains enabled?
-
-Yes, if your version includes explicit store controls.
-
-Examples:
-
-```conf
-exact_cache_store_enabled false;
-semantic_cache_store_enabled false;
-```
-
-This is useful when you want to test cache lookup behavior without adding new entries.
-
----
-
-### Can I bypass cache for one request?
-
-Yes.
-
-By default:
-
-```http
-X-AIF-Cache-Bypass: true
-```
-
-This skips exact lookup, semantic lookup, and cache storage for that request. In `observe`, bypass also means no shadow lookup and no shadow store, so explicitly non-cacheable traffic is not counted as an evaluation opportunity.
-
-The bypass header name can be configured:
-
-```conf
-cache_bypass_header X-AIF-Cache-Bypass;
-```
-
----
-
-### Are streaming responses cached?
-
-Yes, when the response is otherwise cache-eligible.
-
-Controlled streaming uses the same exact and semantic cache pipeline as non-streaming requests. Cache identity excludes transport-only fields such as `stream` and client `stream_options`, so an eligible completion can be reused across JSON and SSE delivery.
-
-On a streaming cache miss, AI Cost Firewall consumes provider SSE internally, assembles the canonical completion, applies response controls, stores the eligible pre-Privacy-restore response, restores Privacy placeholders when needed, and then replays approved SSE to the client.
-
-Requests containing `tools`, `response_format`, or non-string message content remain ineligible for semantic reuse for reasons unrelated to streaming.
-
----
-
-### Are tool-calling and structured outputs cached?
-
-Exact cache can still be used when the request is otherwise eligible. v0.8.2 includes preserved OpenAI-compatible request/message extension fields in exact-cache identity, so requests with different tool schemas, tool choices, tool-call IDs, response formats, reasoning/provider extensions, or other flattened fields do not incorrectly share one exact entry.
-
-Semantic cache is more conservative and is skipped for requests containing `tools`, `response_format`, or non-string message content. These shapes depend on exact structure, execution context, or non-text inputs and are not ordinary semantic-reuse candidates.
-
----
-
-## Configuration
-
-### What configuration style does AI Cost Firewall use?
-
-AI Cost Firewall uses nginx-style directives:
-
-```conf
-directive value;
-```
-
-Example:
-
-```conf
-listen_addr 0.0.0.0:8080;
-```
-
-Directives are case-sensitive and must end with a semicolon.
-
----
-
-### What is the provider configuration model?
-
-AI Cost Firewall uses flat OpenAI-compatible provider configuration.
-
-Use `upstream_*` directives for chat completions:
-
-```conf
-upstream_provider openai_compatible;
-upstream_base_url https://api.openai.com;
-upstream_api_key sk-your-api-key;
-```
-
-Use `embedding_*` directives for semantic-cache embeddings:
-
-```conf
-embedding_provider openai_compatible;
-embedding_base_url https://api.openai.com;
-embedding_api_key sk-your-api-key;
-embedding_model text-embedding-3-small;
-```
-
-Provider-specific configuration blocks are not required.
-
----
-
-### Should the base URL include `/v1/chat/completions`?
-
-No.
-
-Configure either the provider root URL or the `/v1` base path.
-
-Correct examples:
-
-```conf
-upstream_base_url https://api.openai.com;
-upstream_base_url http://ollama:11434/v1;
-```
-
-Wrong example:
-
-```conf
-upstream_base_url http://ollama:11434/v1/chat/completions;
-```
-
-AI Cost Firewall appends OpenAI-compatible endpoint paths internally.
-
----
-
-### Which Qdrant port should be used?
-
-AI Cost Firewall uses Qdrant gRPC on:
-
-```text
-6334
-```
-
-Qdrant REST usually runs on:
-
-```text
-6333
-```
-
-Example:
-
-```conf
-qdrant_url http://qdrant:6334;
-```
-
----
-
-### Why does startup fail with vector-size mismatch?
-
-The embedding dimension must match:
-
-```conf
-qdrant_vector_size
-```
-
-Examples:
-
-| Embedding Model | Vector Size |
-|---|---:|
-| `text-embedding-3-small` | 1536 |
-| `nomic-embed-text` | 768 |
-
-A mismatch may produce an error similar to:
-
-```text
-existing collection vector size does not match qdrant_vector_size
-```
-
-Fix it by either:
-
-- setting `qdrant_vector_size` to the embedding model dimension
-- using a different Qdrant collection
-- recreating the collection if it was created with the wrong vector size
-
----
-
-### Can configuration be validated before startup?
-
-Yes.
-
-AI Cost Firewall supports validation similar to:
-
-```text
-nginx -t
-```
-
-Example:
-
-```bash
-cargo run -- --config configs/ai-firewall.conf --test-config
-```
-
-Expected output:
-
-```text
-configuration OK
-```
-
-Static validation checks include:
-
-- syntax
-- required directives
-- semantic cache configuration
-- request-size parsing
-- selected runtime controls
-- model-pricing configuration shape
-
-Static validation does not contact runtime dependencies.
-
----
-
-### Can the loaded configuration be inspected?
-
-Yes.
-
-Example:
-
-```bash
-cargo run -- --config configs/ai-firewall.conf --print-config
-```
-
-Sensitive values are masked automatically.
-
----
-
-### Can configuration be reloaded without restart?
-
-Yes.
-
-AI Cost Firewall supports nginx-style reloads using `SIGHUP`.
-
-Docker Compose example:
-
-```bash
-docker compose kill -s HUP ai-firewall
-```
-
-Binary deployment example:
-
-```bash
-kill -HUP $(pgrep ai-firewall)
-```
-
-Some settings may still require process or container restart depending on how the deployment injects configuration and environment variables.
-
-In v0.8.3, AIF explicitly rejects SIGHUP reloads that attempt to change restart-only settings such as `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, or `graceful_shutdown_timeout_seconds`. Restart the process/container for those changes. The previous valid runtime remains active after a rejected reload.
-
----
-
-### Do containers need to be recreated after config or environment changes?
-
-Often, yes.
-
-If you change files mounted into the container, a `SIGHUP` reload may be enough for reloadable configuration.
-
-If you change Docker Compose environment variables, image tags, networks, mounted files, or service definitions, recreate the affected containers:
-
-```bash
-docker compose up -d --force-recreate ai-firewall
-```
-
-For dependency changes such as Redis, Qdrant, Prometheus, or VCAL Privacy Guard, recreate the affected services as needed.
-
----
-
-## Cost and savings
-
-### How are cost savings calculated?
-
-Cost savings are calculated for cached chat-completion responses.
-
-Inputs include:
-
-- prompt tokens
-- completion tokens
-- configured `model_price`
-- optional `embedding_price`
-
-Example:
-
-```conf
-model_price gpt-4o-mini-2024-07-18 0.15 0.60;
-embedding_price 0.020;
-```
-
-The `model_price` values are USD per 1M tokens.
-
----
-
-### What is gross vs net savings?
-
-Gross savings are avoided chat-completion costs.
-
-Metric:
-
-```text
-aif_gross_saved_micro_usd_total
-```
-
-Embedding overhead is the cost of generating embeddings for semantic lookup.
-
-Metric:
-
-```text
-aif_embedding_overhead_micro_usd_total
-```
-
-Net savings are gross savings minus embedding overhead.
-
-Metric:
-
-```text
-aif_net_saved_micro_usd_total
-```
-
----
-
-### Why do cost metrics show zero?
-
-The most common reason is that `model_price` does not exactly match the upstream model name.
-
-Example upstream model:
-
-```text
-gpt-4o-mini-2024-07-18
-```
-
-Matching configuration:
-
-```conf
-model_price gpt-4o-mini-2024-07-18 0.15 0.60;
-```
-
-If the model name differs, AI Cost Firewall may allow or reject the request depending on:
-
-```conf
-allow_unknown_models_pass_through false;
-```
-
-When unknown models are not allowed, requests using unconfigured models are rejected.
-
----
-
-## Observability
-
-### What metrics are exposed?
-
-Prometheus metrics are available at:
-
-```text
-/metrics
-```
-
-Example metrics include:
-
-```text
-aif_requests_total
-aif_cache_exact_hits
-aif_cache_semantic_hits
-aif_cache_misses
-aif_upstream_calls_total
-aif_model_cost_micro_usd_total
-aif_gross_saved_micro_usd_total
-aif_embedding_overhead_micro_usd_total
-aif_net_saved_micro_usd_total
-aif_runtime_info{version,config_schema,configuration_hash}
-```
-
-Depending on the version and enabled features, AI Cost Firewall may also export:
-
-- semantic diagnostics
-- runtime health metrics
-- timeout metrics
-- embedding metrics
-- cache bypass metrics
-- guard orchestration metrics
-
----
-
-### Can metrics be protected?
-
-Yes, if metrics authentication is enabled in your version.
-
-Example:
-
-```conf
-metrics_auth_required true;
-metrics_auth_token your-token;
-```
-
-When enabled, `/metrics` requires a bearer token.
-
----
-
-### How do I check health, readiness, and version?
-
-Use:
-
-```bash
-curl -s http://localhost:8080/healthz
-curl -s http://localhost:8080/startupz
-curl -s http://localhost:8080/readyz
-curl -s http://localhost:8080/version
-curl -s http://localhost:8080/assessment-context
-```
-
-Use `/healthz` to check whether the process is alive.
-
-Use `/startupz` as the strict orchestrator startup check for required cache backends that must have initialized in the current process.
-
-Use `/readyz` to check whether the instance should currently receive traffic under the configured readiness/fail-open policy.
-
-Use `/version` to confirm the running release, compatibility model, current AIF enforcement mode, effective cache scope, and the supported Assessment Context schema. In v0.8.0 and later this is also the authoritative way to distinguish production (`enforce`) from evaluation (`observe`) cache scope.
-
-In v0.8.3, use `/assessment-context` to inspect the sanitized effective configuration and `configuration_hash` used for assessment/runtime identity.
-
----
-
-## Request limits and timeouts
-
-### Can request body size be limited?
-
-Yes.
-
-Example:
-
-```conf
-max_request_body_bytes 1M;
-```
-
-This protects the gateway from unexpectedly large request bodies.
-
----
-
-### Can prompt size be limited?
-
-Yes, if your version includes prompt-length controls.
-
-Example:
-
-```conf
-max_prompt_chars 20000;
-```
-
-This helps prevent oversized prompts from reaching cache lookup, embedding generation, or upstream providers.
-
----
-
-### Can upstream and embedding timeouts be configured separately?
-
-Yes, if your version includes separate timeout controls.
-
-Examples:
-
-```conf
-upstream_timeout_seconds 120;
-embedding_timeout_seconds 30;
-```
-
-Older configurations may still use:
-
-```conf
-request_timeout_seconds 120;
-```
-
-for compatibility.
-
----
-
-### Is VCAL Audit required?
-
-No. AI Cost Firewall remains usable as a standalone caching and cost-control gateway.
-
-VCAL Audit is an optional commercial evidence receiver for retained event storage, trace reconstruction, NDJSON export, and hash-chain verification.
-
----
-
-### Is Audit delivery guaranteed?
-
-No. Producer-side delivery is best-effort.
-
-The AI Firewall sender uses a bounded in-memory queue. An undelivered batch can be dropped after retry exhaustion, when the queue is full, or if the process terminates before queued events are flushed.
-
-Deployments requiring guaranteed producer-side delivery need a future disk-backed spool or durable broker.
-
----
-
-### Are streaming requests supported?
-
-Yes. AI Cost Firewall supports controlled OpenAI-compatible chat-completion streaming with:
-
-```json
-{"stream": true}
-```
-
-Controlled streaming does not forward provider chunks directly to the client. AI Cost Firewall fully consumes and assembles provider SSE, runs complete-response controls and Privacy restoration, and only then replays an approved OpenAI-compatible SSE response.
-
-The key guarantee is that no generated response content leaves AI Cost Firewall before the complete response has been approved.
-
-Streaming is enabled by default and can be controlled with:
-
-```conf
-streaming_enabled true;
-max_stream_upstream_bytes 8M;
-upstream_timeout_seconds 120;
-```
-
-`max_stream_upstream_bytes` is a cumulative upstream SSE byte limit, not an instantaneous buffer-occupancy limit. For controlled streams, `upstream_timeout_seconds` also limits the idle gap between provider body chunks, and a separate 15-minute absolute generation ceiling prevents indefinite drip-feed generation.
-
-Set `streaming_enabled false` if a deployment must reject `stream=true` requests.
-
----
-
-## VCAL Security Guard
-
-### What is VCAL Security Guard?
-
-VCAL Security Guard is an optional enterprise security module that can be integrated with AI Firewall.
-
-It uses deterministic, auditable rules to detect text-based LLM security risks such as prompt injection, jailbreak attempts, system-prompt extraction attempts, unsafe tool-use instructions, data-exfiltration attempts, and common cyber-abuse patterns.
-
-It is a rule-based first control layer. It should not be described as complete prompt-injection or universal jailbreak prevention.
-
----
-
-### Is VCAL Security Guard required to use AI Firewall?
-
-No. AI Firewall can run without VCAL Security Guard.
-
----
-
-### How does VCAL Security Guard work with AI Firewall?
-
-When enabled, AI Firewall can call Security Guard before cache lookup or upstream forwarding.
-
-If the request is blocked, AI Firewall returns a structured error such as:
-
-```json
-{
-  "error": {
-    "code": 403,
-    "guard": "security",
-    "type": "security_request_blocked",
-    "stage": "request",
-    "rule_id": "VSG-PA-003"
-  }
-}
-```
-
-Security Guard can also scan assistant responses before Privacy Guard restore and before the response is returned to the client.
-
----
-
-### What Security Guard settings are used by AI Firewall?
-
-```conf
-security_guard_enabled true;
-security_guard_url http://vcal-security-guard:8091;
-security_guard_api_key your-shared-api-key;
-security_guard_timeout_seconds 3;
-guard_fail_open false;
-```
-
-For production-like enforcement tests, Security Guard should normally use:
-
-```text
-VCAL_SECURITY_GUARD_DEFAULT_MODE=enforce
-```
-
----
-## VCAL Privacy Guard
-
-### What is VCAL Privacy Guard?
-
-VCAL Privacy Guard is an optional privacy-protection module that can be integrated with AI Cost Firewall.
-
-It can detect, redact, anonymize, and restore sensitive values in LLM traffic before requests are sent to an upstream provider.
-
-Examples of sensitive values include:
-
-- emails
-- IP addresses
-- phone numbers
-- API keys
-- bearer tokens
-- JWTs
-- private keys
-- credit-card-like values
-- URL tokens
-- custom sensitive patterns
-
----
-
-### Is VCAL Privacy Guard required to use AI Cost Firewall?
-
-No.
-
-AI Cost Firewall can run without VCAL Privacy Guard.
-
-VCAL Privacy Guard is useful for deployments that need stronger privacy controls, anonymization, redaction, or sensitive-data handling before prompts reach an upstream LLM provider.
-
----
-
-### How does VCAL Privacy Guard work with AI Cost Firewall?
-
-When enabled, AI Cost Firewall can call VCAL Privacy Guard before forwarding a request upstream.
-
-Example original prompt:
-
-```text
-Analyze login from 185.23.10.5 by john@example.com
-```
-
-Example prompt sent upstream:
-
-```text
-Analyze login from [IP_1] by [EMAIL_1]
-```
-
-If response restoration is enabled, AI Cost Firewall can restore placeholders in the final assistant response before returning it to the client.
-
-Example upstream response:
-
-```text
-[EMAIL_1] logged in from [IP_1]
-```
-
-Example final restored response:
-
-```text
-john@example.com logged in from 185.23.10.5
-```
-
----
-
-### What Privacy Guard settings are used by AI Cost Firewall?
-
-Typical settings include:
-
-```conf
-privacy_guard_enabled true;
-privacy_guard_url http://vcal-privacy-guard:8090;
-privacy_guard_api_key your-shared-api-key;
-privacy_guard_mode anonymize;
-privacy_guard_restore_enabled true;
-privacy_guard_timeout_seconds 10;
-guard_fail_open false;
-```
-
-Common environment variables include:
-
-```text
-AIF_PRIVACY_GUARD_ENABLED=true
-AIF_PRIVACY_GUARD_URL=http://vcal-privacy-guard:8090
-AIF_PRIVACY_GUARD_API_KEY=your-shared-api-key
-AIF_PRIVACY_GUARD_MODE=anonymize
-AIF_PRIVACY_GUARD_RESTORE_ENABLED=true
-AIF_GUARD_FAIL_OPEN=false
-```
-
-Use matching API keys on both sides.
-
----
-
-### Which Privacy Guard mode should I use?
-
-Common modes are:
-
-```text
-detect_only
-redact
-anonymize
-```
-
-Use `detect_only` to identify sensitive data without changing text.
-
-Use `redact` to remove or mask sensitive values.
-
-Use `anonymize` to replace sensitive values with reversible placeholders such as:
-
-```text
-[EMAIL_1]
-[IP_1]
-```
-
-For AI Firewall orchestration with response restoration, `anonymize` is usually the most useful mode.
-
----
-
-### What happens if VCAL Privacy Guard is unavailable?
-
-This depends on:
-
-```conf
-guard_fail_open
-```
-
-Fail-open behavior allows the request to continue if the guard is unavailable.
-
-Fail-closed behavior rejects the request if the guard is unavailable.
-
-For privacy-sensitive deployments, fail-closed behavior is recommended:
-
-```conf
-guard_fail_open false;
-```
-
-This prevents unprocessed sensitive data from being sent upstream when the privacy guard cannot process the request.
-
----
-
-### Does VCAL Privacy Guard replace application security controls?
-
-No.
-
-VCAL Privacy Guard is an additional privacy and data-protection layer. It does not replace:
-
-- application authorization
-- identity and access management
-- data classification
-- audit logging
-- encryption
-- network security
-- compliance review
-
-Use it as part of a broader security and governance model.
-
----
-
-### Does Privacy Guard affect semantic cache safety?
-
-It can improve privacy posture because sensitive values can be replaced before upstream calls and cache operations.
-
-For example:
-
-```text
-john@example.com
-```
-
-can become:
-
-```text
-[EMAIL_1]
-```
-
-This helps avoid storing or forwarding raw sensitive values. With Privacy Guard enabled, exact and semantic cache identity is isolated by an opaque tenant-and-effective-policy scope (policy ID, version, and hash). Restored personal information is never written to cache; restoration uses the current request mapping. If the effective policy identity is incomplete or Privacy Guard fails open, AIF bypasses cache lookup and storage for that request.
-
-Deployments should still review cache-retention settings, access controls, metrics exposure, logs, and backup/snapshot handling.
-
----
-
-## VCAL Usage Guard
-
-### What is VCAL Usage Guard?
-
-VCAL Usage Guard is an optional enterprise policy module that evaluates whether AI requests are permitted under organizational usage rules before they reach cache or an upstream LLM.
-
-It is distinct from Security Guard and Privacy Guard:
-
-- Security Guard asks whether content is malicious or unsafe.
-- Privacy Guard protects sensitive data.
-- Usage Guard asks whether the interaction is allowed under organizational policy.
-
----
-
-### Is VCAL Usage Guard required to use AI Cost Firewall?
-
-No. AI Cost Firewall can run without VCAL Usage Guard.
-
----
-
-### How does VCAL Usage Guard work with AI Cost Firewall?
-
-When enabled, AI Firewall calls Usage Guard after Privacy Guard and before exact cache, semantic cache, or upstream processing.
-
-If Privacy Guard anonymization is enabled, Usage Guard evaluates the anonymized request.
-
-Usage Guard can return `allow`, `warn`, `block`, or `escalate` decisions. `allow` and `warn` continue. `block` and `escalate` stop processing and AI Firewall returns a structured HTTP 403 error such as:
-
-```json
-{
-  "error": {
-    "code": 403,
-    "guard": "usage",
-    "type": "usage_request_blocked",
-    "stage": "request",
-    "rule_id": "VUG-PER-001",
-    "category": "personal_travel"
-  }
-}
-```
-
----
-
-### What Usage Guard settings are used by AI Firewall?
-
-```conf
-usage_guard_enabled true;
-usage_guard_url http://vcal-usage-guard:8095;
-usage_guard_api_key your-shared-api-key;
-usage_guard_mode enforce;
-usage_guard_tenant_id your-tenant-id;
-usage_guard_policy_id business-use-only;
-usage_guard_timeout_seconds 3;
-guard_fail_open false;
-```
-
-The tenant and policy identifiers are optional.
-
----
-
-### What context does AI Firewall currently send to Usage Guard?
-
-AI Firewall sends the request trace ID, optional configured tenant ID, optional configured policy ID, selected Usage Guard mode, request direction, and string chat-message content.
-
-Per-request department, role, application, or user identity context is not currently propagated by the AI Firewall adapter.
-
----
-
-### What happens if VCAL Usage Guard is unavailable?
-
-Operational failures follow `guard_fail_open`.
-
-With:
-
-```conf
-guard_fail_open false;
-```
-
-the request fails closed.
-
-With fail-open enabled, transport or service failures may allow the request to continue. Intentional Usage Guard `block` and `escalate` decisions are enforcement outcomes and are not converted into fail-open allows.
-
----
-
-## Full Guard Mode
-
-### Can AI Firewall use Security Guard, Privacy Guard, and Usage Guard together?
-
-Yes. AI Firewall can orchestrate all three modules in a single request/response flow:
-
-```text
-Client
-→ AI Firewall
-→ Security Guard request scan
-→ Privacy Guard anonymize/redact
-→ Usage Guard policy evaluation
-→ exact/semantic cache or upstream LLM
-→ Security Guard response scan
-→ Privacy Guard restore
-→ Client
-```
-
-This lets the firewall block malicious prompts first, anonymize sensitive text before policy/cache/upstream processing, and then enforce organizational usage policy before the request reaches Redis, Qdrant, or the upstream LLM.
-
----
-
-### What happens to streaming requests when guards are enabled?
-
-Controlled streaming uses the same guard order as the JSON path.
-
-Request-side Security Guard, Privacy Guard, and Usage Guard processing occurs before cache lookup or the upstream call. On a cache miss, provider SSE is assembled internally. Security Guard then scans the complete response, eligible cache storage occurs using the normal pre-Privacy-restore semantics, and Privacy Guard restoration runs before the approved result is replayed as SSE.
-
-Privacy flows that create anonymization mappings no longer need to reject streaming solely because restoration is required.
-
----
-
-### What happens if a request contains images or other non-text content?
-
-The parsing/proxy layer accepts OpenAI-style array/object message content and preserves it for upstream forwarding. The full JSON content remains part of exact-cache identity.
-
-Requests containing non-string message content bypass semantic cache, preventing image/file/audio structures or base64 data from entering the text embedding path.
-
-Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned. Client-extracted OCR text, captions, or metadata can be inspected when sent as supported text content.
-
----
-### What happens if Redis, Qdrant, or embeddings fail during observe mode?
-
-Evaluation-only cache infrastructure is non-blocking in `observe`. The live request continues to the upstream provider, AIF remains ready solely with respect to those optional evaluation dependencies, and `aif_evaluation_errors_total` records the failure. Redis exact-cache and Qdrant semantic evaluation are expected to resume after the dependency recovers.
-
-Static configuration errors are different: invalid configuration is still rejected.
-
----
-
-## Troubleshooting
-
-### Why do I get `upstream_not_found`?
-
-Usually this means the provider returned:
-
-```text
-404
-```
-
-The most common cause is a wrong base URL.
-
-Correct:
-
-```conf
-upstream_base_url http://ollama:11434/v1;
-```
-
-Wrong:
-
-```conf
-upstream_base_url http://ollama:11434/v1/chat/completions;
-```
-
-AI Cost Firewall appends endpoint paths internally.
-
----
-
-### Why do I get `upstream_tls_error`?
-
-TLS verification failed.
-
-Typical causes:
-
-- self-signed certificate
-- hostname mismatch
-- invalid SAN
-- corporate TLS interception
-- proxy or gateway TLS rewriting
-
-For trusted local networks, local providers often work more reliably using:
-
-```text
-http://
-```
-
-For production, prefer properly configured TLS.
-
----
-
-### Why is semantic cache not producing hits?
-
-Common causes:
-
-- prompts are not similar enough
-- threshold is too strict
-- semantic cache is disabled
-- embeddings are unavailable
-- Qdrant is unavailable
-- entries expired
-- request contains `tools`, `response_format`, or non-string message content
-- request parameters changed enough to prevent safe reuse
-
-Inspect metrics such as:
-
-```text
-aif_cache_semantic_hits
-aif_semantic_candidates_checked_total
-aif_semantic_threshold_results_total
-```
-
-Typical starting threshold:
-
-```conf
-semantic_similarity_threshold 0.92;
-```
-
----
-
-### Why are requests still reaching upstream providers?
-
-Common causes:
-
-- first request is not cached yet
-- prompt changed
-- request parameters changed
-- semantic similarity is below threshold
-- cache bypass header is set
-- exact cache is disabled
-- semantic cache is disabled
-- request contains `tools`, `response_format`, or non-string message content, making semantic reuse ineligible
-- cache entry expired
-
-Important request fields include:
-
-- model
-- messages
-- temperature
-- top_p
-- max_tokens
-- tools
-- response format
-
----
-
-### Why can’t the firewall connect to Redis or Qdrant in Docker Compose?
-
-Inside Docker Compose:
-
-```text
-localhost
-```
-
-refers to the container itself.
-
-Use Docker service names instead.
-
-Correct:
-
-```conf
-redis_url redis://redis:6379;
-qdrant_url http://qdrant:6334;
-```
-
-Wrong:
-
-```conf
-redis_url redis://127.0.0.1:6379;
-qdrant_url http://127.0.0.1:6334;
-```
-
----
-
-### Why is the container unhealthy even though logs look normal?
-
-Check the healthcheck command in Docker Compose.
-
-Common causes:
-
-- healthcheck points to the wrong port
-- healthcheck uses `localhost` from the wrong container context
-- `/readyz` fails because Redis, Qdrant, upstream, or embeddings are unavailable
-- service needs more startup time
-- container image does not include the tool used by the healthcheck, such as `curl`
-
-Check:
-
-```bash
-docker compose ps
-docker compose logs ai-firewall
-curl -s http://localhost:8080/healthz
-curl -s http://localhost:8080/readyz
-```
-
----
-
-## Operations
-
-### What happens during graceful shutdown?
-
-Shutdown sequence:
-
-1. readiness is disabled
-2. new requests are rejected
-3. in-flight requests continue
-4. process exits after the configured timeout
-
-Configured by:
-
-```conf
-graceful_shutdown_timeout_seconds 10;
-```
-
----
-
-### What deployment examples are included?
-
-Ready-to-run Docker examples are available under:
-
-```text
-deploy/examples/
-```
-
-An OpenShift-specific `restricted-v2` baseline is also provided under:
-
-```text
-deploy/openshift/
-```
-
-The OpenShift manifests are additive; the AIF image remains a generic OCI image and Docker Compose remains supported.
-
-Common patterns include:
-
-```text
-openai-cloud/
-local-ollama/
-hybrid-openai-local-embeddings/
-openrouter/
-local-full-stack/
-```
-
-Each example may include:
-
-- Docker Compose deployment
-- minimal configuration
-- example requests
-- expected behavior
-- expected metrics
-
----
-
-### Is AI Cost Firewall production-ready?
-
-AI Cost Firewall is suitable for pilots, demos, controlled evaluations, and early production-style deployments where operators can validate behavior, dependencies, limits, and observability before broader rollout.
-
-The project includes:
-
-- Rust async runtime
-- OpenAI-compatible gateway behavior
-- Redis / Valkey exact cache
-- Qdrant semantic cache
-- Prometheus metrics
-- Grafana dashboards
-- health, startup, and readiness endpoints
-- version reporting
-- graceful shutdown
-- configuration validation
-- configuration reload
-- runtime diagnostics
-
-For production use, review and harden:
-
-- authentication and authorization around exposed services
-- Redis and Qdrant network access
-- metrics exposure
-- TLS and mTLS requirements
-- timeout and request-size limits
-- cache-retention policy
-- backup and snapshot handling
-- log handling for sensitive data
-- Privacy Guard fail-open/fail-closed behavior if enabled
-
----
-
-## Where can I learn more?
-
-Documentation:
-
-```text
-docs/
-```
-
-Important documents:
-
-```text
-docs/quickstart.md
-docs/config-reference.md
-docs/provider-compatibility.md
-docs/operation.md
-docs/troubleshooting.md
-```
-
-Source code:
-
-```text
-https://github.com/vcal-project/ai-firewall
-```
+[Quick Start](quickstart.md) → [Configuration Reference](config-reference.md) → [Operations](operation.md).
+For version changes, use [Upgrading](upgrading.md) and the [GitHub
+releases](https://github.com/vcal-project/ai-firewall/releases).

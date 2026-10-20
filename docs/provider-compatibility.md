@@ -7,7 +7,7 @@ This document describes tested provider patterns, compatibility notes, operation
 
 ---
 
-# Compatibility Philosophy
+## Compatibility Philosophy
 
 AI Cost Firewall does not implement provider-specific configuration blocks.
 
@@ -36,7 +36,7 @@ The upstream provider and embedding provider may use different endpoints.
 
 ---
 
-# Supported Provider Patterns
+## Supported Provider Patterns
 
 | Provider | Status | Typical Use |
 |---|---|---|
@@ -49,11 +49,11 @@ The upstream provider and embedding provider may use different endpoints.
 
 ---
 
-# Base URL Configuration
+## Base URL Configuration
 
 AI Cost Firewall expects provider base URLs, not full endpoint paths.
 
-## Correct
+### Correct
 
 ```text
 upstream_base_url https://api.openai.com;
@@ -65,7 +65,7 @@ or:
 upstream_base_url http://ollama:11434/v1;
 ```
 
-## Wrong
+### Wrong
 
 ```text
 upstream_base_url http://ollama:11434/v1/chat/completions;
@@ -75,9 +75,9 @@ AI Cost Firewall automatically appends OpenAI-compatible endpoint paths internal
 
 ---
 
-# Authentication Behavior
+## Authentication Behavior
 
-## Providers Requiring Authentication
+### Providers Requiring Authentication
 
 Typical cloud providers:
 
@@ -92,7 +92,7 @@ upstream_api_key sk-your-key;
 
 ---
 
-## Local Providers Without Authentication
+### Local Providers Without Authentication
 
 Typical local deployments:
 
@@ -118,26 +118,26 @@ null
 
 ---
 
-# OpenAI
+## OpenAI
 
-## Status
+### Status
 
 Fully tested reference implementation.
 
-## Recommended Usage
+### Recommended Usage
 
 - cloud chat completions
 - cloud embeddings
 - hybrid cloud deployments
 
-## Example
+### Example
 
 ```text
 upstream_base_url https://api.openai.com;
 embedding_base_url https://api.openai.com;
 ```
 
-## Recommended Embedding Model
+### Recommended Embedding Model
 
 ```text
 text-embedding-3-small
@@ -149,7 +149,7 @@ Typical vector size:
 1536
 ```
 
-## Notes
+### Notes
 
 - strict model validation recommended
 - ideal reference deployment for first evaluation
@@ -157,26 +157,26 @@ Typical vector size:
 
 ---
 
-# Ollama
+## Ollama
 
-## Status
+### Status
 
 Supported.
 
-## Typical Usage
+### Typical Usage
 
 - fully local deployments
 - local embeddings
 - air-gapped evaluation
 - low-cost development environments
 
-## Recommended Base URL
+### Recommended Base URL
 
 ```text
 http://ollama:11434/v1
 ```
 
-## Typical Models
+### Typical Models
 
 Chat:
 
@@ -190,13 +190,13 @@ Embeddings:
 nomic-embed-text
 ```
 
-## Typical Vector Size
+### Typical Vector Size
 
 ```text
 768
 ```
 
-## Required Step
+### Required Step
 
 Pull models manually:
 
@@ -211,7 +211,7 @@ Restart firewall afterward:
 docker compose restart firewall
 ```
 
-## Notes
+### Notes
 
 - HTTP is usually sufficient inside Docker networks
 - startup failures may occur if embedding model is unavailable
@@ -219,25 +219,25 @@ docker compose restart firewall
 
 ---
 
-# LM Studio
+## LM Studio
 
-## Status
+### Status
 
 Supported.
 
-## Typical Usage
+### Typical Usage
 
 - local desktop evaluation
 - development environments
 - lightweight testing
 
-## Example Base URL
+### Example Base URL
 
 ```text
 http://host.docker.internal:1234/v1
 ```
 
-## Notes
+### Notes
 
 - verify OpenAI-compatible mode is enabled
 - verify embeddings endpoint support
@@ -246,25 +246,25 @@ http://host.docker.internal:1234/v1
 
 ---
 
-# vLLM
+## vLLM
 
-## Status
+### Status
 
 Supported.
 
-## Typical Usage
+### Typical Usage
 
 - GPU-backed inference servers
 - self-hosted production inference
 - high-throughput deployments
 
-## Example Base URL
+### Example Base URL
 
 ```text
 http://vllm:8000/v1
 ```
 
-## Model discovery
+### Model discovery
 
 AIF v0.8.2 proxies:
 
@@ -274,7 +274,7 @@ GET /v1/models
 
 to the configured chat/inference vLLM endpoint. This is useful for clients such as Open WebUI that perform OpenAI-compatible model discovery through the gateway.
 
-## Separate chat and embedding services
+### Separate chat and embedding services
 
 Chat and embeddings may be served by separate vLLM Services:
 
@@ -285,7 +285,7 @@ embedding_base_url http://vllm-embeddings:8000/v1;
 
 For a Nomic embedding service, determine the exact served model ID from the embedding server and verify the returned embedding length before setting `qdrant_vector_size`. Do not assume a fixed dimension solely from the Nomic family name or from an Ollama example.
 
-## Notes
+### Notes
 
 - tune request timeouts for large models
 - verify embeddings support separately from chat inference
@@ -295,26 +295,26 @@ For a Nomic embedding service, determine the exact served model ID from the embe
 
 ---
 
-# LiteLLM
+## LiteLLM
 
-## Status
+### Status
 
 Supported.
 
-## Typical Usage
+### Typical Usage
 
 - provider aggregation
 - routing layer
 - centralized API gateway
 - multi-provider environments
 
-## Example Base URL
+### Example Base URL
 
 ```text
 http://litellm:4000/v1
 ```
 
-## Notes
+### Notes
 
 - useful as an upstream aggregation layer
 - provider-specific model names may vary
@@ -323,31 +323,31 @@ http://litellm:4000/v1
 
 ---
 
-# OpenRouter
+## OpenRouter
 
-## Status
+### Status
 
 Supported.
 
-## Typical Usage
+### Typical Usage
 
 - multi-provider routing
 - rapid cloud evaluation
 - model experimentation
 
-## Example Base URL
+### Example Base URL
 
 ```text
 https://openrouter.ai/api/v1
 ```
 
-## Recommended Setting
+### Recommended Setting
 
 ```text
 allow_unknown_models_pass_through true;
 ```
 
-## Notes
+### Notes
 
 OpenRouter model names may vary by provider and model family:
 
@@ -363,7 +363,7 @@ Strict model validation may reject unknown names unless explicitly configured.
 
 ---
 
-# Hybrid Provider Patterns
+## Hybrid Provider Patterns
 
 AI Cost Firewall supports separate upstream and embedding providers.
 
@@ -385,11 +385,11 @@ This is useful for:
 
 ---
 
-# Embedding Compatibility
+## Embedding Compatibility
 
 Semantic cache correctness depends heavily on embedding compatibility.
 
-## Important Requirements
+### Important Requirements
 
 The configured vector size must match the actual embedding vector returned by the serving endpoint. Model-family defaults are useful examples but should not replace a runtime check when the server supports configurable or model-specific dimensions.
 
@@ -400,19 +400,19 @@ Examples:
 | text-embedding-3-small | 1536 |
 | nomic-embed-text (common Ollama configuration) | 768 |
 
-## Common Error
+### Common Error
 
 ```text
 existing collection vector size does not match qdrant_vector_size
 ```
 
-## Recommended Practice
+### Recommended Practice
 
 Use separate Qdrant collections for different embedding models.
 
 ---
 
-# Semantic Cache Considerations
+## Semantic Cache Considerations
 
 Semantic cache quality depends on:
 
@@ -439,7 +439,7 @@ Higher thresholds:
 
 ---
 
-# Guard Orchestration and Provider Compatibility
+## Guard Orchestration and Provider Compatibility
 
 VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard operate at the AI Firewall layer and are independent of the selected OpenAI-compatible upstream provider.
 
@@ -450,7 +450,7 @@ Privacy Guard inspects supported string and structured text-content arrays; Secu
 AI Cost Firewall supports both ordinary JSON chat completions and controlled OpenAI-compatible SSE delivery. Optional guards use the same complete-response control pipeline for both delivery modes.
 
 ---
-# Evaluation Mode and Provider Capacity
+## Evaluation Mode and Provider Capacity
 
 Provider compatibility requirements do not change in AIF v0.8.0 Evaluation Mode, but provider traffic behavior does.
 
@@ -466,7 +466,7 @@ For `stream=true`, the upstream must still provide compatible SSE in observe mod
 
 ---
 
-# Streaming Compatibility
+## Streaming Compatibility
 
 AI Cost Firewall supports controlled chat-completion streaming for providers that expose an OpenAI-compatible SSE response to `stream=true` requests.
 
@@ -498,7 +498,7 @@ Provider-specific SSE framing extensions that are not represented in the canonic
 
 ---
 
-# Timeout Recommendations
+## Timeout Recommendations
 
 Recommended starting point:
 
@@ -525,9 +525,9 @@ aif_upstream_timeouts_total
 
 ---
 
-# TLS Recommendations
+## TLS Recommendations
 
-## Cloud Providers
+### Cloud Providers
 
 Use HTTPS:
 
@@ -544,7 +544,7 @@ This encrypts:
 
 ---
 
-## Local Providers
+### Local Providers
 
 Inside trusted Docker networks:
 
@@ -556,7 +556,7 @@ is usually sufficient and simpler operationally.
 
 ---
 
-# Startup Validation Behavior
+## Startup Validation Behavior
 
 When semantic cache is enabled:
 
@@ -575,7 +575,7 @@ Startup validation is intentionally strict to prevent silent misconfiguration an
 
 ---
 
-# Recommended Deployment Examples
+## Recommended Deployment Examples
 
 See:
 
@@ -603,9 +603,9 @@ Each example includes:
 
 ---
 
-# Operational Recommendations
+## Operational Recommendations
 
-## Best First Evaluation Path
+### Best First Evaluation Path
 
 For a production traffic assessment with minimal cache-related behavioral change, use `aif_enforcement_mode observe;`. Keep in mind that guard modules still enforce according to their own configuration, and the upstream provider continues to receive the full live request volume.
 
@@ -619,7 +619,7 @@ Fastest path to validation.
 
 ---
 
-## Best Fully Local Deployment
+### Best Fully Local Deployment
 
 Recommended:
 
@@ -637,7 +637,7 @@ Includes:
 
 ---
 
-## Best Hybrid Pattern
+### Best Hybrid Pattern
 
 Recommended:
 
@@ -653,7 +653,7 @@ Useful for:
 
 ---
 
-# Troubleshooting
+## Troubleshooting
 
 See:
 

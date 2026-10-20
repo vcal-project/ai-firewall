@@ -1,6 +1,6 @@
 # Production deployment notes
 
-AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules. v0.8.3 keeps the v0.8 Evaluation Mode model (`enforce` or non-disruptive `observe`), retains the v0.8.2 deployment hardening, and adds Assessment Context/runtime identity for reproducible Observe-mode assessment.
+AI Cost Firewall is designed to run as a single stateless application process with external Redis/Qdrant and optional VCAL modules. The deployment model supports `enforce` and non-disruptive `observe` modes, container runtime hardening, and Assessment Context/runtime identity for reproducible Observe-mode assessments.
 
 The AIF image is not OpenShift-specific. The normal `docker-compose.yml` deployment remains supported, while OpenShift manifests are isolated under `deploy/openshift/`.
 

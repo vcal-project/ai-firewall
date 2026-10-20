@@ -1,1334 +1,195 @@
+# AI Cost Firewall — Operations
 
-# Operational Behavior
+This is the runtime operations guide for AIF deployments. See [Quick Start](quickstart.md) for first
+installation, [Configuration Reference](config-reference.md) for all directives,
+[Troubleshooting](troubleshooting.md) for symptom-based diagnostics, and [Deployment](deployment.md) for
+production/OpenShift manifests.
 
-This document describes how AI Cost Firewall behaves during startup, runtime operation, graceful shutdown, configuration reloads, semantic cache activity, and operational troubleshooting.
+## Operating model
 
-AI Cost Firewall is designed to behave predictably in production environments and pilot deployments.
-
----
-
-# Runtime Overview
-
-AI Cost Firewall provides:
-
-- configurable exact cache and semantic cache orchestration
-- AIF `enforce` / `observe` execution mode with isolated evaluation cache state
-- explicit readiness, liveness, and dependency-aware readiness behavior
-- graceful shutdown with request draining
-- nginx-style hot reload using `SIGHUP`
-- startup dependency validation
-- OpenAI-compatible provider diagnostics
-- Prometheus metrics and Grafana dashboards
-- semantic cache lifecycle control
-- separate upstream and embedding timeout controls
-- structured runtime error classification
-- per-request cache bypass support
-- request body and prompt-size protection
-- optional VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard orchestration
-- configurable guard fail-open/fail-closed behavior
-- structured evidence lifecycle events
-- optional buffered evidence delivery to VCAL Audit
-
----
-
-# Runtime Architecture
-
-```text
-Client Applications
-        │
-        ▼
-AI Cost Firewall
-        │
-        ├── VCAL Security Guard (optional)
-        ├── VCAL Privacy Guard (optional)
-        ├── VCAL Usage Guard (optional)
-        ├── VCAL Audit (optional evidence delivery)
-        ├── Redis (exact cache)
-        ├── Qdrant (semantic cache)
-        │
-        ▼
-OpenAI-compatible provider
-```
-
----
-
-# AIF Enforcement Mode
-
-The runtime mode is selected with:
+AIF routes OpenAI-compatible chat requests through optional guards and exact/semantic caches to a configured
+upstream. Supported mode settings are:
 
 ```conf
 aif_enforcement_mode enforce;
+# or: aif_enforcement_mode observe;
 ```
 
-or:
+Under `enforce`, eligible cache hits may avoid upstream traffic. Under `observe`, all live requests still
+reach the upstream while separate Redis/Qdrant shadow state measures potential reuse. **Observe is not a
+Guard observe mode.** See [Evaluation Mode](evaluation-mode.md).
 
-```conf
-aif_enforcement_mode observe;
-```
+## Startup and dependency validation
 
-`enforce` is the default production behavior. `observe` keeps AIF in the live path but never substitutes a cached response for the upstream response. Exact and semantic decisions are evaluated using isolated shadow state.
+On startup, AIF checks configuration validity, cache/embedding completeness, and applicable dependency
+initialization. Semantic caching requires an embedding model with a vector dimension matching the Qdrant
+collection. A mismatch is a startup configuration problem, not a cache miss.
 
-Operationally, observe mode has three important properties:
-
-1. every eligible live request still reaches the upstream provider;
-2. evaluation cache failures are non-blocking and recorded through evaluation telemetry;
-3. production cache-hit and savings metrics are not incremented by shadow hits.
-
-Guard modules are outside this mode switch and continue to follow their existing configuration.
-
----
-
-# Startup Behavior
-
-Runtime dependencies are initialized during normal startup.
-
-## Runtime Dependencies
-
-Redis is used for the exact cache.
-
-Example:
-
-```conf
-redis_url redis://redis:6379;
-```
-
-Exact cache behavior is configurable:
+Relevant settings include:
 
 ```conf
 exact_cache_enabled true;
 exact_cache_fail_open true;
-```
-
-When `exact_cache_enabled` is `false`, Redis exact-cache lookup and storage are skipped.
-
-When `exact_cache_fail_open` is `true`, Redis initialization or runtime Redis errors can fail open depending on readiness policy. Requests can continue upstream, but `/readyz` may still report unavailable if `readiness_requires_redis` is enabled.
-
-When semantic cache is enabled:
-
-```conf
 semantic_cache_enabled true;
-```
-
-Qdrant is used for semantic cache storage.
-
-Example:
-
-```conf
-qdrant_url http://qdrant:6334;
-```
-
----
-
-# Startup Validation
-
-During startup, AI Cost Firewall validates:
-
-- Redis connectivity when exact cache is enabled and required
-- Qdrant connectivity when semantic cache is enabled and required
-- semantic cache configuration completeness
-- embedding configuration
-- Qdrant collection vector size compatibility
-- provider configuration
-- request body and prompt-size configuration
-- model validation settings
-
-Startup fails fast on invalid configuration to avoid silent runtime errors. In `enforce`, dependency behavior may also be affected by fail-open and readiness settings. In `observe`, Redis/Qdrant/embedding failures used only for evaluation do not prevent the live gateway from starting or serving requests, although static configuration validity is still enforced.
-
----
-
-# Vector Size Validation
-
-If the configured Qdrant collection already exists, AI Cost Firewall validates:
-
-```conf
-qdrant_vector_size 1536;
-```
-
-against the actual Qdrant collection vector size.
-
-Example startup error:
-
-```text
-Qdrant collection 'aif_semantic_cache' has vector size 768, but config requires 1536
-```
-
----
-
-# exact_cache_fail_open Behavior
-
-`exact_cache_fail_open` controls runtime Redis/exact-cache failure behavior.
-
-Example:
-
-```conf
-exact_cache_fail_open true;
-```
-
-When enabled:
-
-- Redis lookup failures behave like cache misses
-- Redis store failures do not fail the request
-- requests continue upstream
-
-Readiness can still report Redis as unavailable when:
-
-```conf
-readiness_requires_redis true;
-```
-
----
-
-# semantic_cache_fail_open Behavior
-
-`semantic_cache_fail_open` affects runtime semantic lookup behavior.
-
-Example:
-
-```conf
 semantic_cache_fail_open true;
-```
-
-When enabled:
-
-- runtime semantic lookup failures are treated as cache skips
-- requests continue upstream normally
-
-It does not bypass invalid configuration validation. Dependency startup behavior depends on the configured fail-open and readiness settings.
-
----
-
-# Startup Behavior Summary
-
-Unless a row explicitly mentions `observe`, the cache dependency rows below describe normal `enforce` behavior.
-
-| Condition | Behavior |
-|---|---|
-| `aif_enforcement_mode observe` + evaluation Redis/Qdrant unavailable | AIF can continue serving live traffic; evaluation error telemetry records the failure |
-| Redis unavailable + exact cache enabled + fail-open disabled | startup fails |
-| Redis unavailable + exact cache enabled + fail-open enabled | startup may continue; readiness depends on `readiness_requires_redis` |
-| Exact cache disabled | Redis exact-cache path skipped |
-| Semantic cache enabled and Qdrant unavailable | startup fails unless semantic fail-open/runtime behavior is configured to tolerate it |
-| Vector size mismatch | startup fails |
-| Runtime exact-cache failure + fail-open enabled | continue upstream |
-| Runtime exact-cache failure + fail-open disabled | request may fail |
-| Runtime semantic lookup failure + fail-open enabled | continue upstream |
-| Runtime semantic lookup failure + fail-open disabled | request fails |
-
----
-
-# Guard Runtime Behavior
-
-AI Firewall can orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard.
-
-Recommended full enterprise order:
-
-```text
-Security Guard request scan
-→ Privacy Guard scan/anonymize/redact
-→ Usage Guard policy evaluation
-→ exact/semantic cache lookup or upstream LLM
-→ Security Guard response scan
-→ Privacy Guard restore
-```
-
-## guard_fail_open Behavior
-
-`guard_fail_open` controls what happens when an enabled guard is unavailable, times out, or returns an invalid response contract.
-
-```conf
-guard_fail_open false;
-```
-
-For deployments where any guard is an enforcement control, fail-closed is recommended.
-
-## Security Guard Blocks
-
-When Security Guard blocks a request, AI Firewall returns a structured error such as:
-
-```json
-{
-  "error": {
-    "code": 403,
-    "guard": "security",
-    "type": "security_request_blocked",
-    "stage": "request",
-    "rule_id": "VSG-PA-003"
-  }
-}
-```
-
-Security Guard request-side blocks happen before Privacy Guard, Usage Guard, cache lookup, or upstream forwarding.
-
-## Privacy Guard Restore
-
-When Privacy Guard runs in `anonymize` mode, AI Firewall stores the returned `mapping_id` for the current request flow and calls `/v1/restore` on assistant output when restoration is enabled and a mapping exists. Cached responses retain placeholders, not restored personal information. Privacy-aware cache scope isolates tenant and effective policy identity (ID/version/hash); missing policy identity or Privacy Guard fail-open bypasses cache lookup and storage.
-
-## Usage Guard Decisions
-
-Usage Guard runs on request text after Privacy Guard and before cache/upstream processing.
-
-`allow` and `warn` decisions continue through the request path. `block` and `escalate` decisions stop processing and return a structured Usage Guard HTTP 403 response.
-
-Operational Usage Guard failures follow `guard_fail_open`; intentional policy blocks do not fail open.
-
----
-# Health, Startup & Readiness Endpoints
-
-AI Cost Firewall exposes three operational probe endpoints.
-
----
-
-## `/healthz` — Liveness
-
-Indicates whether the process itself is alive.
-
-Example:
-
-```bash
-curl http://localhost:8080/healthz
-```
-
-Behavior:
-
-- returns `200 OK` while the process is running
-- does not depend on downstream providers
-- suitable for container liveness probes
-
----
-
-## `/startupz` — Startup
-
-Intended for Kubernetes/OpenShift `startupProbe` use.
-
-Example:
-
-```bash
-curl http://localhost:8080/startupz
-```
-
-Behavior:
-
-- returns `200 OK` when startup requirements for the current process are satisfied
-- returns `503 Service Unavailable` during shutdown
-- when exact cache is enabled and `readiness_requires_redis true`, requires Redis to have initialized in the current process
-- when semantic cache is enabled and `readiness_requires_qdrant true`, requires Qdrant to have initialized in the current process
-- deliberately remains stricter than Observe-mode `/readyz` so an orchestrator can restart a process that fell back to a startup-time no-op cache before a required backend became available
-
----
-
-## `/readyz` — Readiness
-
-Indicates whether the firewall is currently ready to serve traffic.
-
-Example:
-
-```bash
-curl http://localhost:8080/readyz
-```
-
-Behavior:
-
-- returns `200 OK` during normal operation
-- returns `503 Service Unavailable` during graceful shutdown
-- can return `503 Service Unavailable` when a configured dependency is unavailable
-- suitable for load balancers and orchestration systems
-
-Readiness can be configured with:
-
-```conf
 readiness_requires_redis true;
 readiness_requires_qdrant false;
 readiness_requires_upstream false;
 ```
 
-This allows deployments to choose whether readiness should fail when Redis, Qdrant, or the upstream provider is unavailable. In `observe`, Redis and Qdrant are evaluation-only dependencies and do not make `/readyz` fail solely because they are unavailable.
+A cache marked required for startup/readiness has stricter initialization semantics than an optional
+fail-open cache. In Observe Mode, failures in Redis/Qdrant/embeddings used **only for evaluation** do not
+interrupt live inference and are recorded in evaluation error telemetry. Static invalid configuration can
+still prevent startup.
 
----
+### Probe endpoints
 
-# Probe Summary
+| Endpoint | Purpose | Typical orchestration use |
+|---|---|---|
+| `GET /healthz` | Process liveness, independent of downstream services | `livenessProbe` |
+| `GET /startupz` | Process completed required cache initialization | `startupProbe` |
+| `GET /readyz` | Current ability to serve traffic under configured dependency policy | `readinessProbe` |
 
-| State | `/healthz` | `/startupz` | `/readyz` |
-|---|---:|---:|---:|
-| Normal operation | 200 | 200 | 200 |
-| Graceful shutdown | 200 | 503 | 503 |
-| Required Redis failed to initialize | 200 | 503 | mode/policy dependent |
-| Required Qdrant failed to initialize | 200 | 503 | mode/policy dependent |
-| Required upstream unavailable | 200 | 200 | 503 |
-| Observe mode + optional evaluation Redis/Qdrant unavailable | 200 | 200 | 200 |
-| Process stopped | unavailable | unavailable | unavailable |
-
-`/startupz` currently applies the strict initialization check to enabled Redis/Qdrant caches that are marked required for readiness; it does not add a separate upstream startup requirement.
-
----
-
-# Audit Delivery Runtime Behavior
-
-When `audit_enabled` is true, AI Firewall initializes a bounded buffered HTTP evidence sink during startup.
-
-The sender:
-
-1. accepts evidence events from request processing
-2. stores them in an in-memory queue
-3. forms batches by size or flush interval
-4. posts batches to VCAL Audit
-5. retries failed deliveries using the configured backoff
-
-Audit delivery is deliberately decoupled from the client request path. A temporary Audit failure does not normally fail the LLM request.
-
-## Failure behavior
-
-The following conditions can cause evidence loss:
-
-- the bounded queue is full
-- VCAL Audit remains unavailable after retry exhaustion
-- AI Firewall terminates before queued events are flushed
-
-Delivery failures and dropped batches are logged and exposed through delivery metrics where implemented.
-
-## Shutdown
-
-Graceful shutdown should be used so the sender has an opportunity to flush queued evidence. The current memory-backed design is still best effort and is not equivalent to a durable disk spool.
-
-# Graceful Shutdown
-
-AI Cost Firewall supports graceful shutdown using:
-
-- `SIGTERM`
-- `SIGINT`
-
-Useful for:
-
-- Docker
-- Docker Compose
-- Kubernetes
-- systemd
-- cloud orchestrators
-
----
-
-# Shutdown Sequence
-
-1. Shutdown signal received
-2. Readiness disabled
-3. `/readyz` begins returning `503`
-4. New requests rejected
-5. In-flight requests continue
-6. Process exits after timeout
-
-Example:
-
-```conf
-graceful_shutdown_timeout_seconds 10;
+```bash
+curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/startupz
+curl -i http://localhost:8080/readyz
 ```
 
----
+Normal responses are 200 (`OK`, `started`, `ready` respectively). During graceful shutdown `/startupz` and
+`/readyz` return 503. `/startupz` is intentionally strict when enabled Redis/Qdrant backends were declared
+required for readiness and failed to initialize in the current process. `/readyz` remains healthy when an
+**optional evaluation-only** backend is down in Observe Mode. A required upstream can cause `/readyz` to
+fail without independently blocking `/startupz`.
 
-# Shutdown Response
+Do not treat a healthy probe as a complete chat/embedding connectivity test: verify a real model request
+separately.
 
-Requests received during shutdown return:
+## Configuration validation and reload
 
-```json
-{
-  "error": {
-    "code": 503,
-    "message": "server is shutting down",
-    "type": "service_unavailable"
-  }
-}
+### Validate and inspect before deployment
+
+```bash
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf --test-config
+
+docker compose run --rm firewall \
+  --config /configs/ai-firewall.conf --print-config
 ```
 
----
+Expected static validation output: `configuration OK`. `--test-config` checks syntax and required values
+**without contacting Redis, Qdrant, or upstream services**; `--print-config` masks secrets. You can also run
+the binary with `--config configs/ai-firewall.conf --test-config`.
 
-# Shutdown Metrics
-
-```text
-aif_inflight_requests
-aif_shutdown_in_progress
-aif_shutdown_rejections_total
-```
-
----
-
-# Assessment Context and Runtime Identity
-
-AIF v0.8.3 exposes a read-only, allow-listed effective configuration snapshot at:
-
-```text
-GET /assessment-context
-```
-
-The response is intended for assessment/reporting systems and includes a deterministic `configuration_hash`. Sensitive values such as API keys and credentials are not included.
-
-The active identity is also exported through Prometheus:
-
-```text
-aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
-```
-
-For an exact assessment period, a consumer can query historical `aif_runtime_info` samples and require one version/configuration identity across the period. The current `/assessment-context` can then be matched to that identity before an external assessment layer freezes its snapshot.
-
-When a supported hot reload changes the effective configuration identity, AIF replaces the current `aif_runtime_info` label set. Prometheus may continue to retain the old label set historically.
-
-Assessment Context does not affect readiness, cache behavior, guard behavior, upstream routing, or request accounting.
-
----
-
-# Configuration Reload
-
-AI Cost Firewall supports nginx-style configuration reload using `SIGHUP`.
-
-Reload behavior:
-
-1. reload configuration file
-2. validate configuration
-3. rebuild runtime dependencies
-4. atomically swap runtime state
-5. continue serving traffic
-
----
-
-# Reload Commands
-
-## Docker Compose
+### SIGHUP reload
 
 ```bash
 docker compose kill -s HUP firewall
+# binary/systemd deployment: send SIGHUP to the AIF process
 ```
 
----
+Reload validates the replacement configuration and rebuilds eligible runtime dependencies before swapping
+the active runtime. A failed reload leaves the prior valid runtime active. Reload is not automatic file
+watching.
 
-## Binary Deployment
+Changes to `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, and
+`graceful_shutdown_timeout_seconds` require a **process restart** and are rejected as reload-only changes. A
+successful reload that changes effective safe configuration identity updates `aif_runtime_info`; see
+[Assessment Context](assessment-context.md).
 
-```bash
-kill -HUP $(pgrep ai-firewall)
-```
+Container environments may also require a recreate, rather than just a restart, when changing environment
+variables, mounted Secrets, or Compose settings. Plan this according to your deployment method.
 
----
+## Failure policies and request protection
 
-# Expected Reload Logs
-
-```text
-received SIGHUP, reloading config
-config and runtime successfully reloaded
-```
-
----
-
-# Important Reload Notes
-
-- reload is not automatic file watching
-- invalid reload configuration does not replace the active runtime
-- traffic continues during successful reload
-- runtime dependencies are revalidated during reload
-- v0.8.3 rejects reloads that change restart-only fields: `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, or `graceful_shutdown_timeout_seconds`
-- restart the process/container to apply a restart-only field change
-
----
-
-# Static Configuration Validation
-
-Validate configuration without starting the firewall.
-
-## Docker Compose
-
-```bash
-docker compose run --rm firewall \
-  --config /configs/ai-firewall.conf \
-  --test-config
-```
-
----
-
-## Binary Deployment
-
-```bash
-cargo run -- --config configs/ai-firewall.conf --test-config
-```
-
-Expected output:
-
-```text
-configuration OK
-```
-
----
-
-# What --test-config Validates
-
-Static validation checks:
-
-- syntax
-- required directives
-- configuration structure
-- semantic cache completeness
-- request-size parsing
-- model validation settings
-
-It does not contact:
-
-- Redis
-- Qdrant
-- embedding providers
-- upstream LLM providers
-
----
-
-# Print Loaded Configuration
-
-Inspect the resolved runtime configuration:
-
-```bash
-docker compose run --rm firewall \
-  --config /configs/ai-firewall.conf \
-  --print-config
-```
-
-Secrets are automatically masked.
-
-Example:
-
-```text
-upstream_api_key = sk-y...-key
-embedding_api_key = sk-y...-key
-```
-
----
-# Request Limits and Cache Bypass
-
-AI Cost Firewall can reject oversized requests before forwarding them upstream.
-
-```conf
-max_request_body_bytes 1048576;
-max_prompt_chars 200000;
-```
-
-`max_request_body_bytes` limits the full HTTP request body.
-
-`max_prompt_chars` limits the total chat message content after parsing.
-
-Oversized requests are rejected as validation or payload-size errors and are not forwarded upstream.
-
-Per-request cache bypass can be enabled with:
-
-```conf
-cache_bypass_header X-AIF-Cache-Bypass;
-```
-
-Example request header:
-
-```http
-X-AIF-Cache-Bypass: true
-```
-
-Accepted truthy values:
-
-```text
-true
-1
-yes
-on
-```
-
-When cache bypass is enabled for a request:
-
-- exact cache lookup is skipped
-- semantic cache lookup is skipped
-- exact cache storage is skipped
-- semantic cache storage is skipped
-- the request is counted by `aif_cache_bypass_requests_total`
-
----
-
-
-# Upstream Timeout Behavior
-
-Requests to upstream providers are limited by:
-
-```conf
-request_timeout_seconds 120;
-upstream_timeout_seconds 120;
-embedding_timeout_seconds 30;
-```
-
-where `request_timeout_seconds` remains a fallback.
-
-When exceeded:
-
-- upstream request is aborted
-- request classified as `upstream_timeout`
-- timeout metrics incremented
-
----
-
-# Timeout Metrics
-
-```text
-aif_upstream_timeouts_total
-aif_upstream_request_duration_seconds
-```
-
-Embedding provider timeout metrics:
-
-```text
-aif_embedding_timeouts_total
-aif_embedding_request_duration_seconds
-```
-
----
-
-# Controlled Streaming Runtime Behavior
-
-Controlled streaming is enabled by default:
-
-```conf
-streaming_enabled true;
-max_stream_upstream_bytes 8M;
-upstream_timeout_seconds 120;
-```
-
-For `stream=true`, AI Cost Firewall does not commit provider chunks directly to the client. It holds the upstream permit while consuming provider SSE, reconstructs the canonical response, applies response controls, performs eligible cache storage and Privacy restoration, records accounting/evidence, and only then prepares the downstream SSE payload.
-
-Operational consequences:
-
-- JSON and SSE delivery share the same cache identity and can reuse eligible cached completions across transport modes
-- response Security Guard scanning and Privacy restoration are applied before controlled SSE delivery
-- downstream time-to-first-byte occurs after generation and approval, not at the provider's first token
-- `max_stream_upstream_bytes` provides a hard per-request bound on cumulative provider SSE bytes
-- an upstream body/assembly failure, idle timeout, absolute generation timeout, or cumulative-byte-limit failure returns an HTTP error before model content is committed
-- successful replay is OpenAI-compatible SSE but not byte-for-byte provider framing
-
-For capacity planning, controlled-streaming requests may hold an upstream concurrency slot for the full provider generation/assembly period. `upstream_timeout_seconds` bounds provider-body idle time, and a 15-minute absolute generation ceiling bounds drip-feed behavior. `max_stream_upstream_bytes` is a cumulative provider-response limit rather than a direct memory-sizing control; peak memory also depends on assembler state and the approved downstream SSE payload.
-
----
-
-# OpenAI-Compatible Provider Diagnostics
-
-AIF v0.8.2 exposes `GET /v1/models` and transparently proxies it to the configured chat/inference upstream. This route does not execute guards or cache lookup/store and does not increment the chat-inference upstream-call counter used for cache-savings accounting. It does increment the general request counter and normal error/dependency telemetry on failures.
-
-Use it to verify discovery through the gateway:
-
-```bash
-curl -s http://localhost:8080/v1/models | jq
-```
-
-For deployments with a separate embedding service, query that service directly when determining the embedding model ID and vector dimension; AIF's `/v1/models` route represents the chat upstream only.
-
-AI Cost Firewall classifies common provider failures explicitly.
-
-Common runtime classes:
-
-```text
-upstream_authentication_error
-upstream_not_found
-upstream_rate_limited
-upstream_timeout
-upstream_tls_error
-upstream_dns_error
-upstream_connect_error
-```
-
----
-
-# Common Provider Causes
-
-| Error Class | Typical Cause |
-|---|---|
-| `upstream_authentication_error` | Invalid API key |
-| `upstream_not_found` | Wrong base URL |
-| `upstream_rate_limited` | Provider quota exceeded |
-| `upstream_timeout` | Slow provider |
-| `upstream_tls_error` | Certificate validation issue |
-| `upstream_dns_error` | Hostname resolution failure |
-| `upstream_connect_error` | Provider unreachable |
-
----
-
-# Local Provider Authentication
-
-Local providers often do not require real API keys.
-
-Accepted placeholders:
-
-```text
-dummy
-none
-null
--
-```
-
-Example:
-
-```conf
-upstream_api_key dummy;
-embedding_api_key dummy;
-```
-
----
-
-# Observe-mode Cache Runtime Flow
-
-Observe mode mirrors the state transitions that enforcement would have made while keeping the live response path unchanged:
-
-| Evaluation result | Live behavior | Evaluation state |
+| Failure or condition | Enforce path | Observe path |
 |---|---|---|
-| exact hit | upstream still called | semantic lookup/store skipped for the simulated decision |
-| exact miss + semantic hit | upstream still called | shadow exact cache may be warmed from the semantic result |
-| exact + semantic miss | upstream called | eligible live upstream response stored in shadow exact and semantic state |
-| cache bypass | upstream called | no shadow lookup/store |
+| Redis exact lookup/store failure | Skip or fail according to `exact_cache_fail_open` | Evaluation error; continue live upstream |
+| Qdrant/embedding semantic lookup failure | Skip or fail according to `semantic_cache_fail_open` | Evaluation error; continue live upstream |
+| Cache-bypass header | Forward upstream, no cache lookup/store | Forward upstream, no shadow lookup/store |
+| Guard transport/contract failure | `guard_fail_open` policy determines operational failure handling | AIF Observe does **not** override Guard failure policy |
+| Recognized unsupported Privacy text structure | Privacy inspection contract handling; do not assume fail-open passthrough | Same applicable Privacy safety contract |
 
-Evaluation Redis/Qdrant/embedding failures increment `aif_evaluation_errors_total` and do not fail the live request. After Redis or Qdrant recovers, AIF resumes using the evaluation cache path; the Redis exact-cache connection manager is rebuilt after failed or timed-out operations so a forced Redis restart does not permanently disable shadow exact caching.
+Guard evaluation order is Security (request), Privacy (request), Usage (request), response Security, and
+Privacy restore. AIF caches pre-restoration responses and uses mappings from the current request. For
+guard-specific structured-content coverage and cache scoping see [Structured
+Content](structured-content.md).
 
-Potential avoided-call/token/cost accounting for a shadow hit uses the actual live upstream response observed on that request.
+### Limits and upstream timeouts
 
----
+Use `max_request_body_bytes` for total body size and `max_prompt_chars` for parsed prompt characters.
+`request_timeout_seconds`, `upstream_timeout_seconds`, and `embedding_timeout_seconds` govern distinct
+operations; use the [Configuration Reference](config-reference.md) for defaults and fallback rules. Keep
+client, load balancer, and upstream timeouts mutually consistent.
 
-# Semantic Cache Runtime Flow
+Controlled `stream=true` requests buffer/assemble the provider response until response controls approve it.
+`max_stream_upstream_bytes` is a **cumulative** upstream SSE limit; `upstream_timeout_seconds` additionally
+bounds the idle gap between provider chunks, with a 15-minute absolute generation ceiling described in
+[Controlled Streaming](controlled-streaming.md). This trades token-level immediacy for pre-delivery policy
+controls.
 
-Semantic cache lookup flow:
+## Graceful shutdown and concurrency
 
-1. check per-request cache bypass header
-2. normalize request
-3. generate embedding
-4. query Qdrant
-5. filter expired entries
-6. evaluate similarity threshold
-7. return reusable cached response
-8. fallback upstream on miss
+On `SIGTERM`/`SIGINT`, AIF disables readiness, rejects new requests with a service-unavailable response,
+gives in-flight requests time to drain, then exits. Configure `graceful_shutdown_timeout_seconds` for
+expected request duration, especially if controlled streaming can take longer.
 
-When the configured cache bypass header is present with a truthy value, exact lookup, semantic lookup, and cache storage are skipped for that request.
+Monitor `aif_inflight_requests`, `aif_shutdown_in_progress`, and `aif_shutdown_rejections_total`. The
+container image includes a stop signal and supports numeric non-root execution; the [OpenShift
+baseline](../deploy/openshift/) is designed for restricted execution.
 
----
+## Cache lifecycle and verification
 
-# Semantic Candidate Requirements
+Semantic entries have `inserted_at` and `expires_at`. Expiry is checked at lookup independently of eventual
+physical deletion. `semantic_cache_retention_seconds` controls the eligible lifetime; clean up expired
+collection entries operationally as described by the configured deployment tools.
 
-A semantic candidate is reusable only if:
+When diagnosing cache behavior, first check whether requests are eligible (especially structured content,
+tools, and bypass), then exact/semantic store controls, model and scope identity, embedding dimension,
+threshold, expiry, and backend errors. Do not clear a production collection to solve a dimension mismatch
+without assessing the data impact. See [How It Works](how-it-works.md) and
+[Troubleshooting](troubleshooting.md).
+
+## Metrics, logs, and evidence
+
+```bash
+curl -sS http://localhost:8080/metrics
+docker compose logs --tail=200 firewall
+```
+
+Metrics may require authentication when `metrics_auth_required` is configured. The built-in Grafana
+dashboards cover request rate, cache outcomes, gross and net cost estimates, semantic diagnostics, pressure,
+and high-level guard outcomes. Evaluation savings are **not** real savings and are exported separately. See
+[Metrics and Costs](metrics-and-costs.md).
+
+To enable structured evidence logs, the repository documents:
 
 ```text
-similarity_score >= semantic_similarity_threshold
-AND
-expires_at > now
-AND
-cached response payload is valid
+RUST_LOG=info,vcal_evidence=info
 ```
 
----
+Each request trace has one terminal lifecycle event. Optional VCAL Audit delivery uses an in-memory
+queue/batches/retries and is **best effort**: client requests typically succeed even when Audit delivery
+fails. Event loss is possible after queue saturation, retry exhaustion, or termination before flush. See
+[Evidence and Audit](audit-integration.md).
 
-# Semantic Cache Lifecycle
-
-Semantic cache entries include:
-
-- `inserted_at`
-- `expires_at`
-
-Expiration derives from:
-
-```conf
-semantic_cache_retention_seconds 604800;
-```
-
-Expired entries:
-
-- are skipped during lookup
-- are not reused
-- may remain stored until pruned
-
-Semantic correctness does not depend on cleanup.
-
-Cache writes can be controlled independently:
-
-```conf
-exact_cache_store_enabled true;
-semantic_cache_store_enabled true;
-```
-
-When store controls are disabled, existing cache entries may still be read, but new upstream responses are not written to the corresponding cache layer.
-
----
-
-# Semantic Cache Cleanup
-
-Prune expired semantic entries:
-
-## Docker Compose
+### Assessment Context
 
 ```bash
-docker compose run --rm firewall \
-  --config /configs/ai-firewall.conf \
-  --prune-expired-semantic-cache
+curl -sS http://localhost:8080/assessment-context
 ```
 
----
-
-## Binary Deployment
-
-```bash
-ai-firewall \
-  --config configs/ai-firewall.conf \
-  --prune-expired-semantic-cache
-```
-
-The command removes entries where:
-
-```text
-expires_at <= now
-```
-
----
-
-# Qdrant Verification
-
-Inspect collection count:
-
-```bash
-curl -s http://127.0.0.1:6333/collections/aif_semantic_cache/points/count \
-  -H "Content-Type: application/json" \
-  -d '{"exact": true}'
-```
-
-Notes:
-
-- AI Cost Firewall uses Qdrant gRPC on `6334`
-- manual inspection typically uses REST API on `6333`
-
----
-
-# Guard Metrics
-
-Guard orchestration exposes additional metrics:
-
-```text
-aif_guard_requests_total
-aif_guard_latency_seconds
-aif_security_blocks_total
-aif_privacy_restore_skipped_total
-aif_usage_blocks_total
-```
-
-Useful checks:
-
-```bash
-curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total|aif_privacy_restore_skipped_total|aif_usage_blocks_total'
-```
-
----
-# Metrics
-
-Metrics endpoint:
-
-```text
-http://localhost:8080/metrics
-```
-
-Metrics access can be controlled with:
-
-```conf
-metrics_auth_required false;
-# metrics_auth_token replace-with-prometheus-token;
-```
-
-When `metrics_auth_required` is enabled, `/metrics` requires:
-
-```http
-Authorization: Bearer <metrics_auth_token>
-```
-
----
-
-# Core Runtime Metrics
-
-```text
-aif_inflight_requests
-aif_shutdown_in_progress
-aif_shutdown_rejections_total
-aif_readiness_state
-aif_runtime_info{version,config_schema,configuration_hash}
-```
-
-`aif_runtime_info` identifies the active AIF version/configuration identity and is intended for historical configuration-stability checks over bounded assessment periods.
-
----
-
-# Cache Metrics
-
-```text
-aif_cache_hits_total{cache_type="exact"}
-aif_cache_hits_total{cache_type="semantic"}
-aif_cache_misses
-aif_cache_bypass_requests_total
-```
-
----
-
-# Upstream Metrics
-
-```text
-aif_upstream_request_duration_seconds
-aif_upstream_timeouts_total
-aif_upstream_calls_total
-```
-
----
-
-# Controlled Streaming Metrics
-
-```text
-aif_stream_requests_total
-aif_stream_completed_total
-aif_stream_errors_total
-aif_stream_aborted_total
-aif_stream_upstream_errors_total
-aif_stream_upstream_chunks_total
-aif_stream_upstream_bytes_total
-aif_stream_upstream_time_to_first_byte_seconds
-aif_stream_generation_duration_seconds
-aif_stream_client_time_to_first_byte_seconds
-aif_stream_upstream_response_bytes
-aif_stream_client_buffer_bytes
-aif_stream_duration_seconds
-```
-
-Use upstream TTFB and generation duration to understand provider behavior. Use client TTFB to measure the user-visible delay introduced by the controlled-generation/approval barrier. `aif_stream_upstream_response_bytes` records total upstream SSE size per controlled request, while `aif_stream_client_buffer_bytes` records the approved downstream SSE payload size.
-
----
-
-# Evaluation Metrics
-
-```text
-aif_enforcement_mode_info{mode="observe"}
-aif_evaluation_requests_total
-aif_evaluation_cache_outcomes_total{cache_type,result}
-aif_evaluation_upstream_calls_avoided_total{cache_type}
-aif_evaluation_tokens_avoided_total{model,cache_type}
-aif_evaluation_gross_saved_micro_usd_total{model,cache_type}
-aif_evaluation_net_saved_micro_usd_total{model,cache_type}
-aif_evaluation_shadow_store_total{cache_type,result}
-aif_evaluation_errors_total{component,operation}
-```
-
-These counters describe hypothetical enforcement outcomes. They are intentionally separate from production `aif_cache_*`, saved-token, and savings counters.
-
----
-
-# Semantic Diagnostics Metrics
-
-```text
-aif_semantic_candidates_checked_total
-aif_semantic_threshold_results_total
-aif_semantic_expired_entries_skipped_total
-aif_semantic_lookup_duration_seconds
-aif_semantic_store_total
-aif_semantic_store_errors_total
-```
-
-Useful for tuning:
-
-- semantic thresholds
-- retention windows
-- embedding performance
-- Qdrant behavior
-
----
-
-# Cost Metrics
-
-```text
-aif_model_cost_micro_usd_total
-aif_gross_saved_micro_usd_total
-aif_embedding_overhead_micro_usd_total
-aif_net_saved_micro_usd_total
-```
-
-These metrics help distinguish:
-
-- gross chat savings
-- embedding overhead
-- net savings
-
----
-
-# Logging
-
-AI Cost Firewall logs to stdout/stderr by default.
-
----
-
-# Docker Compose Logs
-
-```bash
-docker compose logs -f firewall
-```
-
-Save logs:
-
-```bash
-docker compose logs firewall > firewall.log
-```
-
----
-
-# Binary Logs
-
-```bash
-./ai-firewall --config configs/ai-firewall.conf > logs.txt 2>&1
-```
-
-Append:
-
-```bash
-./ai-firewall --config configs/ai-firewall.conf >> logs.txt 2>&1
-```
-
-View and save simultaneously:
-
-```bash
-./ai-firewall --config configs/ai-firewall.conf 2>&1 | tee logs.txt
-```
-
----
-
-# systemd Logs
-
-```bash
-journalctl -u ai-firewall -f
-```
-
-Export:
-
-```bash
-journalctl -u ai-firewall > logs.txt
-```
-
----
-
-# Guard Operational Checks
-
-When guard modules are enabled, useful health checks include:
-
-```bash
-curl http://localhost:8091/healthz
-curl http://localhost:8091/readyz
-curl http://localhost:8090/healthz
-curl http://localhost:8090/readyz
-curl http://localhost:8095/healthz
-curl http://localhost:8095/readyz
-```
-
-Typical full-stack metrics checks:
-
-```bash
-curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_security_blocks_total|aif_usage_blocks_total'
-curl -s http://localhost:8091/metrics | grep vcal_security
-curl -s http://localhost:8090/metrics | grep vcal_privacy
-curl -s http://localhost:8095/metrics | grep vcal_usage
-```
-
----
-# Maintenance Recommendations
-
-Recommended operational tasks:
-
-- review semantic retention windows
-- monitor Qdrant collection growth
-- periodically prune expired semantic entries
-- inspect Grafana dashboards
-- monitor timeout metrics
-- verify provider latency
-- review cache hit rates
-
----
-
-# Operational Troubleshooting
-
----
-
-# Low Cache Hit Rate
-
-Inspect:
-
-```text
-aif_cache_hits_total{cache_type="exact"}
-aif_cache_hits_total{cache_type="semantic"}
-aif_cache_misses
-aif_cache_bypass_requests_total
-```
-
-Possible causes:
-
-- threshold too high
-- prompts insufficiently similar
-- semantic cache disabled
-- entries expired too quickly
-
----
-
-# Frequent Upstream Timeouts
-
-Inspect:
-
-```text
-aif_upstream_timeouts_total
-```
-
-Possible actions:
-
-- increase timeout
-- reduce prompt size
-- use faster models
-- inspect provider latency
-
----
-
-# Cache Bypass Requests Show Zero
-
-Inspect:
-
-```bash
-curl -s http://localhost:8080/metrics | grep aif_cache_bypass_requests_total
-```
-
-Send a bypass request:
-
-```bash
-curl -s http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer demo-key" \
-  -H "X-AIF-Cache-Bypass: true" \
-  -d '{"model":"gpt-4o-mini-2024-07-18","messages":[{"role":"user","content":"Bypass test"}],"temperature":0}'
-```
-
-If the metric increments after the next Prometheus scrape, the Grafana panel should show bypass traffic.
-
----
-
-# Frequent Embedding Failures
-
-Inspect:
-
-```text
-aif_embedding_timeouts_total
-aif_embedding_request_duration_seconds
-```
-
-Possible causes:
-
-- embedding provider unavailable
-- wrong embedding URL
-- local embedding model missing
-- embedding provider overloaded
-
----
-
-# Validation Errors
-
-Inspect:
-
-```text
-aif_errors_total{class="validation_error"}
-```
-
-Possible causes:
-
-- unsupported model
-- malformed JSON
-- request too large
-- invalid request format
-
----
-
-# Qdrant Startup Failures
-
-Verify:
-
-```conf
-qdrant_url http://qdrant:6334;
-```
-
-Docker Compose service names:
-
-```conf
-redis_url redis://redis:6379;
-qdrant_url http://qdrant:6334;
-```
-
-Local binary example:
-
-```conf
-redis_url redis://127.0.0.1:6379;
-qdrant_url http://127.0.0.1:6334;
-```
-
----
-
-# Docker Container Shows Unhealthy but Logs Show Ready
-
-If the runtime image does not include `curl`, a Dockerfile or Compose healthcheck that calls `curl` inside the container will fail even when AI Cost Firewall is running correctly.
-
-Check the healthcheck failure:
-
-```bash
-docker inspect ai-firewall --format '{{json .State.Health}}' | jq
-```
-
-Verify the app from the host:
-
-```bash
-curl http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/readyz
-```
-
-Prefer host-level, Prometheus, Grafana, load-balancer, or Kubernetes probes instead of installing extra tools only for container-internal healthchecks.
-
----
-
-# Wrong Upstream Base URL
-
-Correct:
-
-```conf
-upstream_base_url http://ollama:11434/v1;
-```
-
-Wrong:
-
-```conf
-upstream_base_url http://ollama:11434/v1/chat/completions;
-```
-
-AI Cost Firewall automatically appends OpenAI-compatible endpoint paths.
-
----
-
-# Additional Documentation
-
-See also:
-
-- `docs/quickstart.md`
-- `docs/config-reference.md`
-- `docs/provider-compatibility.md`
-- `docs/troubleshooting.md`
-- `docs/metrics-and-costs.md`
-
----
-
-# Non-text and Content-part Messages
-
-AIF preserves OpenAI-style non-string message content at the parsing/proxy layer and includes it in exact-cache identity. Requests containing non-string message content bypass semantic cache.
-
-Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned.
-
----
-# Operational Notes
-
-- reload happens only via `SIGHUP`
-- `--test-config` performs static validation only
-- runtime dependencies initialize during startup and reload
-- Redis is required only when exact cache is enabled and the deployment treats Redis as required
-- Qdrant is required only when semantic cache is enabled and the deployment treats Qdrant as required
-- `exact_cache_fail_open` affects runtime Redis/exact-cache failure behavior
-- `semantic_cache_fail_open` affects normal `enforce` runtime semantic lookup behavior
-- `observe` makes evaluation Redis/Qdrant/embedding failures non-blocking regardless of production cache fail-open settings
-- evaluation cache state is isolated from production cache state and is not automatically promoted on mode change
-- `request_timeout_seconds` is a backward-compatible fallback
-- `upstream_timeout_seconds` controls chat-completion upstream calls
-- `embedding_timeout_seconds` controls embedding provider calls
-- upstream, embedding, or guard requests exceeding timeout are aborted
+The endpoint returns an allow-listed, sanitized effective configuration and deterministic identity.
+`aif_runtime_info` provides historical version/config identity; retain Prometheus samples for the assessment
+window. AIF does not persist external assessment reports. See [Assessment Context](assessment-context.md).
+
+## Operator checklist
+
+1. Confirm running image/tag and the expected `aif_enforcement_mode` with `/version`.
+2. Validate startup/readiness probes and make a known good live chat request.
+3. Verify Prometheus scrape and Grafana data; distinguish production from evaluation metrics.
+4. Check Redis/Qdrant readiness policy, Qdrant dimension, embedding path, and cache eligibility.
+5. Confirm ingress authentication boundary and keep credentials out of Git and logs.
+6. If optional guards are enabled, test a known allow and known block case under the configured failure policy.
+7. If Audit is enabled, test receipt of evidence and alert on dropped/retried batches.
+8. On upgrade, compare configuration and follow [Upgrading](upgrading.md); use [Troubleshooting](troubleshooting.md) for failures.

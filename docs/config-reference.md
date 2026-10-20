@@ -23,7 +23,7 @@ Configuration directives are:
 
 ---
 
-# Configuration Philosophy
+## Configuration Philosophy
 
 AI Cost Firewall intentionally uses a flat OpenAI-compatible configuration model.
 
@@ -40,7 +40,7 @@ No provider-specific configuration blocks are required.
 
 ---
 
-# Configuration Sections
+## Configuration Sections
 
 The configuration is logically divided into:
 
@@ -66,7 +66,7 @@ The configuration is logically divided into:
 
 ---
 
-# Minimal Configuration Example
+## Minimal Configuration Example
 
 ```conf
 listen_addr 0.0.0.0:8080;
@@ -149,7 +149,7 @@ embedding_price 0.020;
 
 ---
 
-# Deployment Examples
+## Deployment Examples
 
 Docker/Compose examples remain under `deploy/examples/`. v0.8.2 also provides an OpenShift-specific baseline under `deploy/openshift/`. The OpenShift manifests do not change the generic OCI image or the normal Docker Compose configuration path.
 
@@ -171,11 +171,11 @@ Available deployment patterns:
 
 ---
 
-# OpenAI-Compatible Provider Model
+## OpenAI-Compatible Provider Model
 
 AI Cost Firewall supports OpenAI-compatible APIs through a flat provider abstraction.
 
-## Chat Provider
+### Chat Provider
 
 ```conf
 upstream_provider openai_compatible;
@@ -183,7 +183,7 @@ upstream_base_url <base-url>;
 upstream_api_key <key>;
 ```
 
-## Embedding Provider
+### Embedding Provider
 
 ```conf
 embedding_provider openai_compatible;
@@ -195,7 +195,7 @@ The upstream provider and embedding provider may use different endpoints.
 
 ---
 
-# Base URL Rules
+## Base URL Rules
 
 The provider URL may be:
 
@@ -206,7 +206,7 @@ For the chat upstream, AIF constructs both `/v1/chat/completions` and `/v1/model
 
 ---
 
-# Correct Examples
+## Correct Examples
 
 ```text
 https://api.openai.com
@@ -219,7 +219,7 @@ http://litellm:4000/v1
 
 ---
 
-# Wrong Examples
+## Wrong Examples
 
 Do not configure full endpoint paths.
 
@@ -239,7 +239,7 @@ AI Cost Firewall appends OpenAI-compatible endpoint paths internally.
 
 ---
 
-# Placeholder API Keys
+## Placeholder API Keys
 
 Local providers may not require authentication.
 
@@ -269,11 +269,11 @@ headers are not sent upstream.
 
 ---
 
-# Core Settings
+## Core Settings
 
 ---
 
-## listen_addr
+### listen_addr
 
 HTTP server listen address.
 
@@ -292,7 +292,7 @@ Typical values:
 
 ---
 
-## aif_enforcement_mode
+### aif_enforcement_mode
 
 Controls whether AI Cost Firewall applies cache decisions to live traffic or evaluates them without substituting cached responses.
 
@@ -327,7 +327,7 @@ This setting controls **AI Cost Firewall caching and cost optimization only**. I
 
 ---
 
-## redis_url
+### redis_url
 
 Redis-compatible connection string.
 
@@ -349,13 +349,13 @@ Redis-compatible systems:
 
 ---
 
-# Upstream Provider Settings
+## Upstream Provider Settings
 
 These directives configure the chat-completion provider.
 
 ---
 
-## upstream_provider
+### upstream_provider
 
 Currently supported:
 
@@ -365,7 +365,7 @@ upstream_provider openai_compatible;
 
 ---
 
-## upstream_base_url
+### upstream_base_url
 
 Base URL of the chat provider.
 
@@ -383,7 +383,7 @@ upstream_base_url http://ollama:11434/v1;
 
 ---
 
-## upstream_api_key
+### upstream_api_key
 
 API key used for upstream authentication.
 
@@ -401,11 +401,11 @@ upstream_api_key dummy;
 
 ---
 
-# Controlled Streaming Settings
+## Controlled Streaming Settings
 
 Controlled streaming accepts OpenAI-compatible provider SSE internally, reconstructs the complete response, applies response controls, and only then replays approved SSE to the client.
 
-## streaming_enabled
+### streaming_enabled
 
 Controls whether clients may submit chat-completion requests with `stream=true`.
 
@@ -429,7 +429,7 @@ Environment variable:
 AIF_STREAMING_ENABLED=true
 ```
 
-## max_stream_upstream_bytes
+### max_stream_upstream_bytes
 
 Maximum **cumulative provider SSE bytes accepted** for one controlled streaming request before canonical assembly and response controls.
 
@@ -461,13 +461,13 @@ Operationally, controlled streaming uses a commit barrier: no generated response
 
 ---
 
-# Embedding Provider Settings
+## Embedding Provider Settings
 
 Required when semantic caching is enabled.
 
 ---
 
-## embedding_provider
+### embedding_provider
 
 Currently supported:
 
@@ -477,7 +477,7 @@ embedding_provider openai_compatible;
 
 ---
 
-## embedding_base_url
+### embedding_base_url
 
 Base URL of the embedding provider.
 
@@ -495,7 +495,7 @@ embedding_base_url http://ollama:11434/v1;
 
 ---
 
-## embedding_api_key
+### embedding_api_key
 
 API key used for embedding requests.
 
@@ -507,7 +507,7 @@ embedding_api_key sk-your-key;
 
 ---
 
-## embedding_model
+### embedding_model
 
 Embedding model used for semantic vectors.
 
@@ -526,13 +526,13 @@ Typical models:
 
 ---
 
-# Qdrant Settings
+## Qdrant Settings
 
 These directives configure semantic cache storage.
 
 ---
 
-## qdrant_url
+### qdrant_url
 
 Qdrant endpoint.
 
@@ -551,7 +551,7 @@ AI Cost Firewall uses gRPC internally.
 
 ---
 
-## qdrant_api_key
+### qdrant_api_key
 
 Optional Qdrant authentication.
 
@@ -563,7 +563,7 @@ qdrant_api_key your-qdrant-key;
 
 ---
 
-## qdrant_collection
+### qdrant_collection
 
 Collection used for semantic cache.
 
@@ -575,7 +575,7 @@ qdrant_collection aif_semantic_cache;
 
 ---
 
-## qdrant_vector_size
+### qdrant_vector_size
 
 Embedding vector dimension.
 
@@ -595,7 +595,7 @@ dimension.
 
 ---
 
-# Vector Size Validation
+## Vector Size Validation
 
 For self-hosted embedding servers, including Nomic models behind vLLM, verify the actual returned vector length with a test `/v1/embeddings` request before enabling semantic cache. Do not assume the dimension solely from a model-family name or another runtime's default.
 
@@ -615,11 +615,11 @@ existing collection vector size does not match qdrant_vector_size
 
 ---
 
-# Cache Settings
+## Cache Settings
 
 ---
 
-## cache_ttl_seconds
+### cache_ttl_seconds
 
 Backward-compatible default TTL.
 
@@ -640,7 +640,7 @@ Typical values:
 
 ---
 
-## exact_cache_ttl_seconds
+### exact_cache_ttl_seconds
 
 TTL for Redis exact cache entries.
 
@@ -660,7 +660,7 @@ exact_cache_ttl_seconds 86400;
 
 ---
 
-## semantic_cache_retention_seconds
+### semantic_cache_retention_seconds
 
 Retention window for semantic cache entries.
 
@@ -683,7 +683,7 @@ Expired entries:
 
 ---
 
-# Semantic Cache Cleanup
+## Semantic Cache Cleanup
 
 Remove expired semantic entries:
 
@@ -703,11 +703,11 @@ Recommended during maintenance windows.
 
 ---
 
-# Exact Cache Settings
+## Exact Cache Settings
 
 ---
 
-## exact_cache_enabled
+### exact_cache_enabled
 
 Enable Redis-backed exact cache lookup and storage.
 
@@ -731,7 +731,7 @@ When disabled:
 
 ---
 
-## exact_cache_fail_open
+### exact_cache_fail_open
 
 Controls runtime Redis/exact-cache failure behavior.
 
@@ -755,7 +755,7 @@ This setting controls normal `enforce` runtime request behavior. In `observe`, e
 
 ---
 
-## exact_cache_store_enabled
+### exact_cache_store_enabled
 
 Controls whether successful upstream responses are stored in exact cache.
 
@@ -774,11 +774,11 @@ Useful for read-only cache testing and debugging.
 
 ---
 
-# Semantic Cache Settings
+## Semantic Cache Settings
 
 ---
 
-## semantic_cache_enabled
+### semantic_cache_enabled
 
 Enable semantic caching.
 
@@ -802,7 +802,7 @@ When disabled:
 
 ---
 
-## semantic_cache_fail_open
+### semantic_cache_fail_open
 
 Controls runtime semantic lookup behavior.
 
@@ -821,7 +821,7 @@ In normal `enforce` mode this does not bypass startup validation. In `observe`, 
 
 ---
 
-## semantic_cache_store_enabled
+### semantic_cache_store_enabled
 
 Controls whether successful upstream responses are stored in semantic cache.
 
@@ -841,7 +841,7 @@ Useful for read-only semantic-cache testing and debugging.
 
 ---
 
-## semantic_similarity_threshold
+### semantic_similarity_threshold
 
 Similarity threshold for semantic reuse.
 
@@ -871,11 +871,11 @@ Higher values:
 
 ---
 
-# Request Limits
+## Request Limits
 
 ---
 
-## max_request_body_bytes
+### max_request_body_bytes
 
 Maximum allowed HTTP request body size.
 
@@ -902,7 +902,7 @@ Behavior:
 
 ---
 
-## max_prompt_chars
+### max_prompt_chars
 
 Maximum total prompt size across chat message content, measured in characters.
 
@@ -922,7 +922,7 @@ Behavior:
 
 ---
 
-## request_timeout_seconds
+### request_timeout_seconds
 
 Backward-compatible fallback timeout used when more specific timeout values are not configured.
 
@@ -947,7 +947,7 @@ Prefer configuring `upstream_timeout_seconds` and `embedding_timeout_seconds` ex
 
 ---
 
-## upstream_timeout_seconds
+### upstream_timeout_seconds
 
 Timeout for chat-completion upstream calls. For controlled `stream=true` requests, the same value also limits the idle gap between provider SSE body chunks after response headers have been received.
 
@@ -963,7 +963,7 @@ Controlled streaming also enforces a separate 15-minute absolute provider-genera
 
 ---
 
-## embedding_timeout_seconds
+### embedding_timeout_seconds
 
 Timeout for embedding provider calls.
 
@@ -977,11 +977,11 @@ If omitted, `request_timeout_seconds` is used as the fallback.
 
 ---
 
-# Per-request Cache Controls
+## Per-request Cache Controls
 
 ---
 
-## cache_bypass_header
+### cache_bypass_header
 
 Header used to bypass cache lookup and cache storage for a single request.
 
@@ -1027,7 +1027,7 @@ aif_cache_bypass_requests_total
 
 ---
 
-# Guard Orchestration
+## Guard Orchestration
 
 AI Firewall can optionally orchestrate VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard. The modules can be enabled independently or in combination.
 
@@ -1042,7 +1042,7 @@ Security Guard request scan
 → Privacy Guard restore
 ```
 
-## security_guard_enabled
+### security_guard_enabled
 
 Enable VCAL Security Guard orchestration.
 
@@ -1052,7 +1052,7 @@ security_guard_enabled true;
 
 Default: `false`.
 
-## security_guard_url
+### security_guard_url
 
 Base URL for VCAL Security Guard.
 
@@ -1062,7 +1062,7 @@ security_guard_url http://vcal-security-guard:8091;
 
 Do not include `/v1/scan`; AI Firewall appends the endpoint internally.
 
-## security_guard_api_key
+### security_guard_api_key
 
 Service-to-service API key for VCAL Security Guard.
 
@@ -1070,7 +1070,7 @@ Service-to-service API key for VCAL Security Guard.
 security_guard_api_key your-security-guard-key;
 ```
 
-## security_guard_timeout_seconds
+### security_guard_timeout_seconds
 
 Timeout for Security Guard calls.
 
@@ -1078,7 +1078,7 @@ Timeout for Security Guard calls.
 security_guard_timeout_seconds 3;
 ```
 
-## privacy_guard_enabled
+### privacy_guard_enabled
 
 Enable VCAL Privacy Guard orchestration.
 
@@ -1088,7 +1088,7 @@ privacy_guard_enabled true;
 
 Default: `false`.
 
-## privacy_guard_url
+### privacy_guard_url
 
 Base URL for VCAL Privacy Guard.
 
@@ -1098,7 +1098,7 @@ privacy_guard_url http://vcal-privacy-guard:8090;
 
 Do not include `/v1/scan` or `/v1/restore`; AI Firewall appends endpoints internally.
 
-## privacy_guard_api_key
+### privacy_guard_api_key
 
 Service-to-service API key for VCAL Privacy Guard.
 
@@ -1106,7 +1106,7 @@ Service-to-service API key for VCAL Privacy Guard.
 privacy_guard_api_key your-privacy-guard-key;
 ```
 
-## privacy_guard_mode
+### privacy_guard_mode
 
 Privacy Guard scan mode.
 
@@ -1116,7 +1116,7 @@ privacy_guard_mode anonymize;
 
 Common values are `detect_only`, `redact`, and `anonymize`. Privacy Guard processes supported structured text-content arrays as well as plain strings. Recognized unsupported text-bearing shapes are rejected independently of `guard_fail_open`; referenced document attachments are not inspected. Effective tenant and policy identity (ID/version/hash) scopes exact and semantic cache reuse. If identity is incomplete, cache lookup and store are bypassed.
 
-## privacy_guard_restore_enabled
+### privacy_guard_restore_enabled
 
 Enable placeholder restoration on assistant responses.
 
@@ -1124,7 +1124,7 @@ Enable placeholder restoration on assistant responses.
 privacy_guard_restore_enabled true;
 ```
 
-## privacy_guard_timeout_seconds
+### privacy_guard_timeout_seconds
 
 Timeout for Privacy Guard scan and restore calls.
 
@@ -1132,7 +1132,7 @@ Timeout for Privacy Guard scan and restore calls.
 privacy_guard_timeout_seconds 3;
 ```
 
-## usage_guard_enabled
+### usage_guard_enabled
 
 Enable VCAL Usage Guard request-side policy orchestration.
 
@@ -1142,7 +1142,7 @@ usage_guard_enabled true;
 
 Default: `false`.
 
-## usage_guard_url
+### usage_guard_url
 
 Base URL for VCAL Usage Guard.
 
@@ -1152,7 +1152,7 @@ usage_guard_url http://vcal-usage-guard:8095;
 
 Do not include `/v1/scan`; AI Firewall appends the endpoint internally.
 
-## usage_guard_api_key
+### usage_guard_api_key
 
 Service-to-service API key for VCAL Usage Guard.
 
@@ -1160,7 +1160,7 @@ Service-to-service API key for VCAL Usage Guard.
 usage_guard_api_key your-usage-guard-key;
 ```
 
-## usage_guard_mode
+### usage_guard_mode
 
 Usage Guard policy mode sent with each request scan.
 
@@ -1179,7 +1179,7 @@ escalate
 
 Default: `detect_only`.
 
-## usage_guard_tenant_id
+### usage_guard_tenant_id
 
 Optional tenant identifier passed to Usage Guard.
 
@@ -1187,7 +1187,7 @@ Optional tenant identifier passed to Usage Guard.
 usage_guard_tenant_id your-tenant-id;
 ```
 
-## usage_guard_policy_id
+### usage_guard_policy_id
 
 Optional Usage Guard policy identifier.
 
@@ -1195,7 +1195,7 @@ Optional Usage Guard policy identifier.
 usage_guard_policy_id business-use-only;
 ```
 
-## usage_guard_timeout_seconds
+### usage_guard_timeout_seconds
 
 Timeout for Usage Guard request scans.
 
@@ -1205,7 +1205,7 @@ usage_guard_timeout_seconds 3;
 
 Default: `10`.
 
-## guard_fail_open
+### guard_fail_open
 
 Controls what AI Firewall does when an enabled guard is unavailable, times out, or returns an invalid contract.
 
@@ -1217,7 +1217,7 @@ For deployments where Security Guard, Privacy Guard, or Usage Guard is an enforc
 
 `guard_fail_open` applies to operational guard failures such as transport errors, timeouts, or invalid responses. It does not override an intentional Security Guard block or a Usage Guard `block`/`escalate` decision.
 
-## Full enterprise example
+### Full enterprise example
 
 ```conf
 security_guard_enabled true;
@@ -1250,7 +1250,7 @@ VCAL_SECURITY_GUARD_DEFAULT_MODE=enforce
 ```
 
 ---
-# Model Validation
+## Model Validation
 
 By default:
 
@@ -1265,7 +1265,7 @@ model_price gpt-4o-mini-2024-07-18 0.15 0.60;
 
 ---
 
-## allow_unknown_models_pass_through
+### allow_unknown_models_pass_through
 
 Optional proxy-style mode.
 
@@ -1288,13 +1288,13 @@ Useful for:
 
 ---
 
-# Model Pricing
+## Model Pricing
 
 Cost tracking depends on configured model pricing.
 
 ---
 
-## model_price
+### model_price
 
 Syntax:
 
@@ -1312,7 +1312,7 @@ The configured model name must match the upstream response exactly.
 
 ---
 
-## embedding_price
+### embedding_price
 
 Embedding pricing used for net savings estimation.
 
@@ -1329,7 +1329,7 @@ Used for:
 
 ---
 
-# Assessment Context and Configuration Identity
+## Assessment Context and Configuration Identity
 
 AIF v0.8.3 does not add a new configuration directive for Assessment Context. The read-only:
 
@@ -1349,11 +1349,11 @@ Secret-only changes do not change this public configuration identity. Configurat
 
 ---
 
-# Graceful Shutdown
+## Graceful Shutdown
 
 ---
 
-## graceful_shutdown_timeout_seconds
+### graceful_shutdown_timeout_seconds
 
 Controls graceful shutdown timeout.
 
@@ -1377,7 +1377,7 @@ Behavior:
 
 ---
 
-# Configuration Validation
+## Configuration Validation
 
 AI Cost Firewall provides static validation similar to:
 
@@ -1387,7 +1387,7 @@ nginx -t
 
 ---
 
-# Validate Configuration
+## Validate Configuration
 
 Docker Compose:
 
@@ -1429,7 +1429,7 @@ Static validation does not contact:
 
 ---
 
-# Print Loaded Configuration
+## Print Loaded Configuration
 
 Inspect the resolved runtime configuration:
 
@@ -1448,7 +1448,7 @@ embedding_api_key = sk-y...-key
 
 ---
 
-# Runtime Dependency Validation
+## Runtime Dependency Validation
 
 During startup and reload, AI Cost Firewall validates static configuration and constructs the configured runtime dependencies.
 
@@ -1471,11 +1471,11 @@ AIF v0.8.2 additionally exposes `/startupz`. When an enabled Redis/Qdrant cache 
 
 ---
 
-# Readiness Dependency Behavior
+## Readiness Dependency Behavior
 
 The `/readyz` endpoint can be configured to require specific runtime dependencies.
 
-## readiness_requires_redis
+### readiness_requires_redis
 
 Controls whether `/readyz` fails when Redis is unavailable.
 
@@ -1489,7 +1489,7 @@ Useful when Redis/exact cache is considered required for serving production traf
 
 ---
 
-## readiness_requires_qdrant
+### readiness_requires_qdrant
 
 Controls whether `/readyz` fails when Qdrant is unavailable.
 
@@ -1503,7 +1503,7 @@ This can remain `false` when semantic cache is configured to fail open.
 
 ---
 
-## readiness_requires_upstream
+### readiness_requires_upstream
 
 Controls whether `/readyz` fails when the upstream provider is unavailable.
 
@@ -1521,7 +1521,7 @@ This Observe-mode readiness exemption does not override `/startupz` when an enab
 
 ---
 
-# Environment Variables
+## Environment Variables
 
 AI Cost Firewall supports environment-based configuration.
 
@@ -1572,7 +1572,7 @@ AIF_GUARD_FAIL_OPEN=false
 
 ---
 
-# Metrics & Observability
+## Metrics & Observability
 
 Metrics endpoint:
 
@@ -1582,7 +1582,7 @@ Metrics endpoint:
 
 ---
 
-## metrics_auth_required
+### metrics_auth_required
 
 Controls whether `/metrics` requires bearer-token authentication.
 
@@ -1609,7 +1609,7 @@ metrics_auth_token your-prometheus-token;
 
 ---
 
-## metrics_auth_token
+### metrics_auth_token
 
 Bearer token required when `metrics_auth_required` is enabled.
 
@@ -1710,7 +1710,7 @@ aif_usage_blocks_total
 
 ---
 
-# Security Recommendations
+## Security Recommendations
 
 Configuration files may contain sensitive credentials.
 
@@ -1729,7 +1729,7 @@ chmod 600 configs/ai-firewall.conf
 
 ---
 
-# Recommended Related Documents
+## Recommended Related Documents
 
 See also:
 

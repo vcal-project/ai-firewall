@@ -11,7 +11,7 @@ AI Cost Firewall supports OpenAI-compatible chat and embedding APIs through a si
 AI Firewall can also orchestrate optional VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard modules. Guard modules are disabled by default and are not required for standalone caching deployments.
 
 ---
-# Validate Configuration First
+## Validate Configuration First
 
 Before debugging runtime behavior, validate the configuration:
 
@@ -54,7 +54,7 @@ The `/version` endpoint returns release metadata, including the AI Cost Firewall
 
 ---
 
-# Basic Diagnostic Commands
+## Basic Diagnostic Commands
 
 Use these commands before deeper debugging:
 
@@ -80,9 +80,9 @@ These commands confirm:
 
 ---
 
-# Firewall Does Not Start
+## Firewall Does Not Start
 
-## Symptoms
+### Symptoms
 
 ```text
 container exits immediately
@@ -94,7 +94,7 @@ or:
 configuration error: ...
 ```
 
-## Common Causes
+### Common Causes
 
 - missing required config fields
 - invalid upstream URL
@@ -104,27 +104,27 @@ configuration error: ...
 - unsupported request-size or prompt-size value
 - unsupported timeout value
 
-## Example Errors
+### Example Errors
 
-### Missing embedding configuration
+#### Missing embedding configuration
 
 ```text
 configuration error: semantic_cache_enabled=true requires: embedding_model, qdrant_url
 ```
 
-### Invalid request size
+#### Invalid request size
 
 ```text
 configuration error: invalid AIF_MAX_REQUEST_BODY_BYTES value 'abc'
 ```
 
-### No allowed models configured
+#### No allowed models configured
 
 ```text
 configuration error: no allowed models configured
 ```
 
-## Recommended Checks
+### Recommended Checks
 
 ```bash
 docker compose logs firewall
@@ -140,9 +140,9 @@ docker compose run --rm firewall \
 
 ---
 
-# Redis Connection Failures
+## Redis Connection Failures
 
-## Symptoms
+### Symptoms
 
 ```text
 failed to connect to redis
@@ -154,7 +154,7 @@ or:
 connection refused
 ```
 
-## Common Causes
+### Common Causes
 
 - Redis container not running
 - wrong Redis hostname
@@ -162,7 +162,7 @@ connection refused
 - firewall running outside Docker network
 - exact cache enabled while Redis is unavailable
 
-## Recommended Checks
+### Recommended Checks
 
 Verify Redis:
 
@@ -182,7 +182,7 @@ Check Redis logs:
 docker compose logs redis
 ```
 
-## Typical Configuration
+### Typical Configuration
 
 ```conf
 redis_url redis://redis:6379;
@@ -194,7 +194,7 @@ When `exact_cache_fail_open` is enabled, runtime Redis lookup/store failures beh
 
 ---
 
-# Evaluation Mode Diagnostics
+## Evaluation Mode Diagnostics
 
 First confirm the active mode:
 
@@ -226,15 +226,15 @@ Do not use production cache-hit or production savings counters as proof of Evalu
 
 ---
 
-# Exact Cache Disabled or Not Producing Hits
+## Exact Cache Disabled or Not Producing Hits
 
-## Symptoms
+### Symptoms
 
 - repeated identical requests still go upstream
 - exact hit panels stay flat
 - only semantic hits or misses increase
 
-## Common Causes
+### Common Causes
 
 - exact cache disabled
 - exact cache store disabled
@@ -242,7 +242,7 @@ Do not use production cache-hit or production savings counters as proof of Evalu
 - requests differ after normalization
 - cache TTL too short
 
-## Recommended Checks
+### Recommended Checks
 
 Inspect configuration:
 
@@ -268,15 +268,15 @@ aif_cache_misses_total
 
 ---
 
-# Exact Cache Fail-Open Behavior
+## Exact Cache Fail-Open Behavior
 
-## Symptoms
+### Symptoms
 
 Requests continue successfully even though Redis lookup or store errors appear in logs.
 
 Or, when fail-open is disabled, Redis-related errors may fail the request.
 
-## Cause
+### Cause
 
 AI Cost Firewall can be configured to fail open for runtime exact-cache failures.
 
@@ -296,9 +296,9 @@ When disabled:
 
 ---
 
-# Qdrant Connection Failures
+## Qdrant Connection Failures
 
-## Symptoms
+### Symptoms
 
 ```text
 failed to initialize qdrant
@@ -310,14 +310,14 @@ or:
 connection refused
 ```
 
-## Common Causes
+### Common Causes
 
 - Qdrant container not running
 - wrong Qdrant port
 - using HTTP REST port instead of gRPC port in AI Firewall config
 - incorrect hostname
 
-## Recommended Checks
+### Recommended Checks
 
 Check Qdrant:
 
@@ -346,15 +346,15 @@ docker compose logs qdrant
 
 ---
 
-# Qdrant Vector Size Mismatch
+## Qdrant Vector Size Mismatch
 
-## Symptoms
+### Symptoms
 
 ```text
 existing collection vector size does not match qdrant_vector_size
 ```
 
-## Cause
+### Cause
 
 The configured embedding model dimension differs from the existing Qdrant collection dimension.
 
@@ -363,15 +363,15 @@ Example:
 - OpenAI `text-embedding-3-small` → 1536
 - Ollama `nomic-embed-text` → 768
 
-## Solutions
+### Solutions
 
-### Option 1 — Use matching vector size
+#### Option 1 — Use matching vector size
 
 ```conf
 qdrant_vector_size 1536;
 ```
 
-### Option 2 — Remove old collection
+#### Option 2 — Remove old collection
 
 ```bash
 curl -X DELETE http://localhost:6333/collections/aif_semantic_cache
@@ -381,9 +381,9 @@ Then restart the firewall.
 
 ---
 
-# TLS / Certificate Errors
+## TLS / Certificate Errors
 
-## Symptoms
+### Symptoms
 
 ```text
 502 Bad Gateway
@@ -395,7 +395,7 @@ or:
 upstream_tls_error
 ```
 
-## Common Causes
+### Common Causes
 
 - self-signed certificates
 - hostname mismatch
@@ -403,13 +403,13 @@ upstream_tls_error
 - missing SAN entries
 - local HTTPS provider without trusted CA
 
-## Example
+### Example
 
 ```text
 certificate verify failed
 ```
 
-## Recommended Checks
+### Recommended Checks
 
 Test upstream directly:
 
@@ -423,7 +423,7 @@ Inspect certificate:
 openssl s_client -connect host:443
 ```
 
-## Notes
+### Notes
 
 Local providers such as Ollama usually work more reliably over:
 
@@ -435,9 +435,9 @@ inside trusted local networks.
 
 ---
 
-# Wrong Upstream Base URL
+## Wrong Upstream Base URL
 
-## Symptoms
+### Symptoms
 
 ```text
 404
@@ -449,17 +449,17 @@ or:
 upstream_not_found
 ```
 
-## Cause
+### Cause
 
 Using a full endpoint path instead of a provider base URL.
 
-## Wrong
+### Wrong
 
 ```conf
 upstream_base_url http://ollama:11434/v1/chat/completions;
 ```
 
-## Correct
+### Correct
 
 ```conf
 upstream_base_url http://ollama:11434/v1;
@@ -469,9 +469,9 @@ AI Cost Firewall automatically appends OpenAI-compatible endpoint paths.
 
 ---
 
-# Embedding Provider Failures
+## Embedding Provider Failures
 
-## Symptoms
+### Symptoms
 
 ```text
 semantic lookup failed
@@ -483,7 +483,7 @@ or:
 embedding request failed
 ```
 
-## Common Causes
+### Common Causes
 
 - embedding model not available
 - wrong embedding endpoint
@@ -491,7 +491,7 @@ embedding request failed
 - local embedding model not pulled
 - embedding provider timeout too low
 
-## Ollama Example
+### Ollama Example
 
 Pull embedding model:
 
@@ -505,7 +505,7 @@ Restart firewall:
 docker compose restart firewall
 ```
 
-## Timeout Configuration
+### Timeout Configuration
 
 ```conf
 embedding_timeout_seconds 30;
@@ -515,15 +515,15 @@ If omitted, `request_timeout_seconds` is used as the fallback.
 
 ---
 
-# Semantic Cache Fail-Open Behavior
+## Semantic Cache Fail-Open Behavior
 
-## Symptoms
+### Symptoms
 
 Requests continue successfully even though semantic cache lookup, embedding, or semantic store errors appear in logs.
 
 Or, when fail-open is disabled, requests fail with semantic cache or embedding-related errors.
 
-## Cause
+### Cause
 
 AI Cost Firewall can be configured to fail open for runtime semantic cache failures.
 
@@ -543,13 +543,13 @@ semantic_cache_fail_open false;
 
 runtime semantic cache failures may return an error instead of silently falling back to the upstream path.
 
-## Important Distinction
+### Important Distinction
 
 `semantic_cache_fail_open` applies to runtime semantic cache operations.
 
 It does not bypass startup dependency validation. If semantic cache is enabled, Qdrant must be reachable during startup, and the configured `qdrant_vector_size` must match the existing collection or the embedding model dimension.
 
-## Recommended Checks
+### Recommended Checks
 
 Check semantic-related logs:
 
@@ -571,14 +571,14 @@ curl -s http://localhost:8080/metrics | grep semantic
 
 ---
 
-# Semantic Cache Not Producing Hits
+## Semantic Cache Not Producing Hits
 
-## Symptoms
+### Symptoms
 
 - exact cache works
 - semantic cache rarely hits
 
-## Common Causes
+### Common Causes
 
 - threshold too high
 - prompts too different
@@ -588,7 +588,7 @@ curl -s http://localhost:8080/metrics | grep semantic
 - semantic cache disabled
 - entries expired too quickly
 
-## Recommended Checks
+### Recommended Checks
 
 Inspect configuration:
 
@@ -615,7 +615,7 @@ aif_semantic_store_total
 aif_semantic_store_errors_total
 ```
 
-## Recommended Thresholds
+### Recommended Thresholds
 
 Typical starting point:
 
@@ -635,20 +635,20 @@ Higher threshold:
 
 ---
 
-# Cache Bypass Requests/sec Shows 0
+## Cache Bypass Requests/sec Shows 0
 
-## Symptoms
+### Symptoms
 
 The Grafana Overview panel for cache bypass remains at zero.
 
-## Common Causes
+### Common Causes
 
 - no requests were sent with the bypass header
 - the bypass metric is not present in the running binary
 - Prometheus has not scraped the new metric yet
 - the dashboard is connected to an old container/image
 
-## Recommended Checks
+### Recommended Checks
 
 Check whether the metric exists:
 
@@ -672,7 +672,7 @@ Check the metric again:
 curl -s http://localhost:8080/metrics | grep aif_cache_bypass_requests_total
 ```
 
-## Configuration
+### Configuration
 
 Default:
 
@@ -698,9 +698,9 @@ When bypass is enabled for a request:
 
 ---
 
-# Security Guard Blocks or Errors
+## Security Guard Blocks or Errors
 
-## Symptoms
+### Symptoms
 
 Requests return `HTTP 403` or an error type similar to:
 
@@ -711,7 +711,7 @@ security_guard_unavailable
 security_guard_timeout
 ```
 
-## Common Causes
+### Common Causes
 
 - Security Guard detected prompt injection, jailbreak, or system-prompt extraction text
 - Security Guard is running in `enforce` mode
@@ -720,7 +720,7 @@ security_guard_timeout
 - wrong `security_guard_url`
 - Security Guard default mode is still `detect_only` when blocking was expected
 
-## Recommended Checks
+### Recommended Checks
 
 ```conf
 security_guard_enabled true;
@@ -742,9 +742,9 @@ curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_se
 
 ---
 
-# Usage Guard Blocks or Errors
+## Usage Guard Blocks or Errors
 
-## Symptoms
+### Symptoms
 
 Requests return `HTTP 403`, `HTTP 502`, or `HTTP 504`, with error types such as:
 
@@ -754,7 +754,7 @@ usage_guard_unavailable
 usage_guard_timeout
 ```
 
-## Common Causes
+### Common Causes
 
 - Usage Guard intentionally returned `block` or `escalate`
 - request category is disallowed by the selected organizational policy
@@ -764,7 +764,7 @@ usage_guard_timeout
 - wrong or missing `usage_guard_policy_id`
 - Usage Guard returned an invalid response contract
 
-## Recommended Checks
+### Recommended Checks
 
 ```conf
 usage_guard_enabled true;
@@ -788,9 +788,9 @@ A Usage Guard policy block is an intentional enforcement outcome and does not be
 
 ---
 
-# Privacy Guard Restore or Anonymization Errors
+## Privacy Guard Restore or Anonymization Errors
 
-## Symptoms
+### Symptoms
 
 Requests return errors similar to:
 
@@ -803,7 +803,7 @@ guard_contract_violation
 
 or final responses contain placeholders such as `[EMAIL_1]` or `[IP_1]`.
 
-## Common Causes
+### Common Causes
 
 - Privacy Guard unavailable and `guard_fail_open false`
 - API key mismatch between AI Firewall and Privacy Guard
@@ -813,7 +813,7 @@ or final responses contain placeholders such as `[EMAIL_1]` or `[IP_1]`.
 - response was blocked by Security Guard before restore
 - non-text content was expected to be scanned or restored
 
-## Recommended Checks
+### Recommended Checks
 
 ```conf
 privacy_guard_enabled true;
@@ -834,9 +834,9 @@ curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_pr
 
 ---
 
-# Controlled Streaming Problems
+## Controlled Streaming Problems
 
-## `stream=true` returns HTTP 422
+### `stream=true` returns HTTP 422
 
 Check whether controlled streaming is disabled:
 
@@ -852,7 +852,7 @@ streaming_enabled true;
 
 A deliberately disabled deployment rejects `stream=true`; ordinary JSON requests remain available.
 
-## `stream=true` returns an upstream/502-style error before SSE begins
+### `stream=true` returns an upstream/502-style error before SSE begins
 
 Controlled streaming does not expose partial provider output. AI Cost Firewall first consumes and assembles the provider stream. A malformed, truncated, failed, oversized, idle, or over-duration stream therefore returns a normal HTTP error before downstream `text/event-stream` is committed.
 
@@ -865,7 +865,7 @@ curl -s http://localhost:8080/metrics | grep -E \
 
 Also check AIF logs and Audit evidence for `upstream.stream.failed`.
 
-## Provider stream exceeds the cumulative byte limit
+### Provider stream exceeds the cumulative byte limit
 
 Review:
 
@@ -875,7 +875,7 @@ max_stream_upstream_bytes 8M;
 
 Increase it only when expected provider responses justify accepting a larger total SSE response. The limit must be greater than zero. It counts cumulative provider SSE bytes received during the request; it is not a peak-memory-buffer limit.
 
-## Controlled stream times out after provider headers
+### Controlled stream times out after provider headers
 
 If a provider returns SSE headers and then stops producing body chunks, AI Cost Firewall fails the request after the configured idle interval:
 
@@ -885,11 +885,11 @@ upstream_timeout_seconds 120;
 
 The same timeout resets whenever a provider body chunk is received. Check `aif_upstream_timeouts_total`, `aif_stream_upstream_errors_total`, `aif_stream_errors_total`, logs, and `upstream.stream.failed` evidence. No partial generated content is committed to the client.
 
-## Provider keeps sending data but never finishes
+### Provider keeps sending data but never finishes
 
 Controlled streaming has a separate 15-minute absolute provider-generation ceiling. This closes the drip-feed case where chunks arrive frequently enough to avoid the idle timeout but the stream never terminates. The request fails before downstream SSE commit and releases the upstream concurrency permit.
 
-## Streaming feels less immediate than raw provider SSE
+### Streaming feels less immediate than raw provider SSE
 
 This is expected. Controlled streaming prioritizes response-control guarantees over token-by-token immediacy. The client receives SSE only after upstream generation, canonical assembly, response Security Guard processing, cache-store processing, Privacy restoration, and accounting are complete.
 
@@ -903,25 +903,25 @@ aif_stream_client_time_to_first_byte_seconds
 
 ---
 
-# Non-text / Content-part Behavior
+## Non-text / Content-part Behavior
 
 OpenAI-style non-string message content is accepted and preserved by the parsing/proxy layer, and the full JSON shape remains part of exact-cache identity.
 
 Requests containing non-string message content deliberately bypass semantic lookup/store. This prevents image/file/audio structures and base64 data from entering the text embedding path.
 
-Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned.
+Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard have module/version-specific structured-content contracts; do not assume nested array text is inspected without validating the deployed integration. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned.
 
 Extract text before sending it through AI Firewall if you need text-oriented guard protection for non-text assets.
 
 ---
-# Grafana Dashboards Are Empty
+## Grafana Dashboards Are Empty
 
-## Symptoms
+### Symptoms
 
 - dashboards load
 - graphs remain empty
 
-## Common Causes
+### Common Causes
 
 - no traffic generated
 - Prometheus cannot scrape firewall
@@ -929,7 +929,7 @@ Extract text before sending it through AI Firewall if you need text-oriented gua
 - wrong provisioning paths
 - Grafana is still using a persistent old dashboard definition
 
-## Recommended Checks
+### Recommended Checks
 
 Verify metrics:
 
@@ -956,7 +956,7 @@ Verify Grafana provisioning:
 docker compose logs grafana
 ```
 
-## Generate Demo Traffic
+### Generate Demo Traffic
 
 Run repeated requests:
 
@@ -970,9 +970,9 @@ done
 
 ---
 
-# Metrics Endpoint Returns 401 or 403
+## Metrics Endpoint Returns 401 or 403
 
-## Symptoms
+### Symptoms
 
 ```text
 /metrics returns unauthorized
@@ -980,7 +980,7 @@ done
 
 or Prometheus target is down after enabling metrics authentication.
 
-## Cause
+### Cause
 
 Metrics endpoint access control is enabled.
 
@@ -989,7 +989,7 @@ metrics_auth_required true;
 metrics_auth_token your-prometheus-token;
 ```
 
-## Recommended Checks
+### Recommended Checks
 
 Query with bearer token:
 
@@ -1006,16 +1006,16 @@ metrics_auth_required false;
 
 ---
 
-# Cost or Savings Metrics Look Unexpected
+## Cost or Savings Metrics Look Unexpected
 
-## Symptoms
+### Symptoms
 
 - net savings are lower than expected
 - semantic cache hits occur but savings look small
 - embedding overhead is visible even when chat savings are low
 - dashboard savings panels appear unrealistic during short demos
 
-## Cause
+### Cause
 
 AI Cost Firewall separates:
 
@@ -1025,7 +1025,7 @@ AI Cost Firewall separates:
 
 Semantic cache lookup may require embedding generation. This means semantic cache can save chat-completion cost while still adding embedding overhead.
 
-## Recommended Checks
+### Recommended Checks
 
 Inspect cost metrics:
 
@@ -1053,9 +1053,9 @@ Check whether traffic is realistic:
 
 ---
 
-# Health Checks Fail
+## Health Checks Fail
 
-## `/healthz` Fails
+### `/healthz` Fails
 
 Indicates the process itself is unhealthy or not running.
 
@@ -1067,7 +1067,7 @@ docker compose logs firewall
 
 ---
 
-## `/startupz` Fails
+### `/startupz` Fails
 
 `/startupz` is stricter than normal readiness for enabled cache backends marked required for readiness. A failure commonly means Redis or Qdrant was not initialized successfully in this process.
 
@@ -1082,7 +1082,7 @@ If the dependency became available only after AIF started, restart the AIF proce
 
 ---
 
-## `/readyz` Fails
+### `/readyz` Fails
 
 Indicates the process is alive but not ready to serve traffic.
 
@@ -1108,9 +1108,9 @@ This allows deployments to decide which dependency failures should remove the fi
 
 ---
 
-# Upstream Timeouts
+## Upstream Timeouts
 
-## Symptoms
+### Symptoms
 
 ```text
 upstream_timeout
@@ -1122,14 +1122,14 @@ or:
 aif_upstream_timeouts_total increasing
 ```
 
-## Common Causes
+### Common Causes
 
 - provider overloaded
 - slow local models
 - large prompts
 - insufficient timeout
 
-## Recommended Checks
+### Recommended Checks
 
 Configure split timeouts:
 
@@ -1150,9 +1150,9 @@ aif_embedding_request_duration_seconds
 
 ---
 
-# Large Requests or Prompts Rejected
+## Large Requests or Prompts Rejected
 
-## Symptoms
+### Symptoms
 
 ```json
 {
@@ -1164,11 +1164,11 @@ aif_embedding_request_duration_seconds
 
 or a validation error for prompt size.
 
-## Cause
+### Cause
 
 The request exceeds configured limits.
 
-## Request Body Limit
+### Request Body Limit
 
 ```conf
 max_request_body_bytes 1M;
@@ -1182,7 +1182,7 @@ Supported formats:
 2M
 ```
 
-## Prompt Character Limit
+### Prompt Character Limit
 
 ```conf
 max_prompt_chars 200000;
@@ -1192,19 +1192,19 @@ max_prompt_chars 200000;
 
 ---
 
-# Docker Compose Path Problems
+## Docker Compose Path Problems
 
-## Symptoms
+### Symptoms
 
 - dashboards not found
 - provisioning missing
 - config files missing
 
-## Common Cause
+### Common Cause
 
 Running Docker Compose from the wrong directory.
 
-## Recommended Pattern
+### Recommended Pattern
 
 ```bash
 cd deploy/examples/openai-cloud
@@ -1223,7 +1223,7 @@ docker compose \
 
 ---
 
-# Logs
+## Logs
 
 AI Cost Firewall logs to stdout/stderr.
 
@@ -1241,9 +1241,9 @@ docker compose logs firewall > firewall.log
 
 ---
 
-# Useful Metrics for Debugging
+## Useful Metrics for Debugging
 
-## Cache Behavior
+### Cache Behavior
 
 ```text
 aif_cache_hits_total{cache_type="exact"}
@@ -1252,7 +1252,7 @@ aif_cache_misses_total
 aif_cache_bypass_requests_total
 ```
 
-## Semantic Diagnostics
+### Semantic Diagnostics
 
 ```text
 aif_semantic_candidates_checked_total
@@ -1263,7 +1263,7 @@ aif_semantic_store_total
 aif_semantic_store_errors_total
 ```
 
-## Runtime Health
+### Runtime Health
 
 ```text
 aif_inflight_requests
@@ -1271,7 +1271,7 @@ aif_shutdown_in_progress
 aif_readiness_state
 ```
 
-## Errors
+### Errors
 
 ```text
 aif_errors_total
@@ -1279,7 +1279,7 @@ aif_upstream_timeouts_total
 aif_embedding_timeouts_total
 ```
 
-## Guard Orchestration
+### Guard Orchestration
 
 ```text
 aif_guard_requests_total
@@ -1293,9 +1293,9 @@ aif_usage_blocks_total
 
 ---
 
-# VCAL Audit Delivery Problems
+## VCAL Audit Delivery Problems
 
-## Audit initialization is not logged
+### Audit initialization is not logged
 
 Confirm the configuration:
 
@@ -1311,13 +1311,13 @@ Check:
 docker compose logs firewall | grep -i audit
 ```
 
-## Audit returns HTTP 401
+### Audit returns HTTP 401
 
 The value configured in AI Firewall must exactly match `VCAL_AUDIT_API_KEY`.
 
 Confirm that both services use the same token and that no surrounding quotes or whitespace were copied into the value.
 
-## Audit hostname cannot be resolved
+### Audit hostname cannot be resolved
 
 AI Firewall and VCAL Audit must share a Docker network.
 
@@ -1330,7 +1330,7 @@ docker exec ai-firewall-firewall-1 \
 
 Distroless images may not include diagnostic tools. In that case, use a temporary BusyBox container attached to the same network.
 
-## Batches are retried and then dropped
+### Batches are retried and then dropped
 
 This means VCAL Audit remained unavailable or rejected the request through all configured attempts.
 
@@ -1345,11 +1345,11 @@ Check:
 
 The sender queue is memory-backed. Batches dropped after retry exhaustion are not replayed automatically.
 
-## Requests succeed while Audit is unavailable
+### Requests succeed while Audit is unavailable
 
 This is expected. Audit delivery is asynchronous and does not normally fail the LLM request path.
 
-# `/v1/models` Discovery Problems
+## `/v1/models` Discovery Problems
 
 AIF v0.8.2 proxies `GET /v1/models` to the configured chat/inference upstream. If discovery fails, verify the upstream base URL and query the provider directly. For a typical vLLM deployment:
 
@@ -1364,66 +1364,11 @@ If chat inference and embeddings use separate vLLM services, AIF `/v1/models` re
 
 ---
 
-# Provider Compatibility Notes
+## Provider compatibility details
 
-AI Cost Firewall supports OpenAI-compatible provider patterns.
+Provider-specific base URLs, authentication placeholders, and compatibility limits are maintained in [Provider Compatibility](provider-compatibility.md). Use its provider sections after checking AIF logs and the failing upstream request.
 
-The expected configuration model is:
-
-```conf
-upstream_provider openai_compatible;
-embedding_provider openai_compatible;
-```
-
-This means AI Cost Firewall expects OpenAI-style chat and embedding APIs.
-
-It does not claim universal compatibility with every OpenAI-like API implementation. Some runtimes and gateways may differ in request format, response format, streaming behavior, model naming, authentication, or embedding support.
-
-Native Anthropic, Gemini, Mistral, Cohere, and other provider-specific APIs are not directly supported. They may be used only through an OpenAI-compatible compatibility layer such as LiteLLM, OpenRouter, or another gateway.
-
-Provider-specific configuration blocks, provider-specific request transformations, fallback chains, and native provider pricing catalogs remain outside the current scope.
-
-## OpenAI
-
-Reference implementation.
-
-## Ollama
-
-Use OpenAI-compatible mode.
-
-Recommended:
-
-```text
-http://ollama:11434/v1
-```
-
-Pull models before testing.
-
-## LM Studio
-
-Verify that embeddings are enabled.
-
-## vLLM
-
-Check timeout configuration for large models.
-
-## LiteLLM
-
-Useful aggregation layer for multiple providers.
-
-## OpenRouter
-
-Enable:
-
-```conf
-allow_unknown_models_pass_through true;
-```
-
-because model naming varies by provider.
-
----
-
-# Additional Documentation
+## Additional Documentation
 
 See also:
 

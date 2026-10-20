@@ -1,1120 +1,173 @@
 # How AI Cost Firewall Works
 
-This document explains how AI Cost Firewall processes requests, optionally orchestrates enterprise guard modules, evaluates cache reuse, communicates with OpenAI-compatible providers, and reduces LLM API cost and latency.
+This guide explains the **request and cache decision path**. It complements the
+[Architecture](architecture.md) overview, the [Configuration Reference](config-reference.md), and the
+focused [Evaluation Mode](evaluation-mode.md) and [Controlled Streaming](controlled-streaming.md) guides.
 
-AI Cost Firewall sits between client applications and LLM providers and applies a two-layer cache strategy:
+## Processing sequence
 
-1. exact cache (Redis)
-2. semantic cache (Qdrant)
+A typical successful request is processed as follows:
 
-In the default `enforce` mode, cache misses and explicit cache-bypass requests are forwarded upstream. In v0.8.0 `observe` mode, AIF also forwards would-have cache hits upstream while recording the hypothetical cache decision separately.
+1. Parse the OpenAI-compatible chat request, validate body/prompt limits, and preserve completion-affecting JSON fields.
+2. Run any enabled **Security Guard request scan**, **Privacy Guard scan/anonymization**, and **Usage Guard request policy evaluation**, in that order.
+3. Determine whether the request bypasses cache and whether exact and semantic caching are eligible.
+4. Query exact cache in Redis/Valkey; if eligible and necessary, query semantic cache in Qdrant using an embedding from the configured embedding provider.
+5. In `enforce`, use an eligible cache hit; otherwise request a live response from the chat provider. In `observe`, always request the live response and record the would-have cache decision separately.
+6. Normalize the completion; run enabled response Security scanning; write eligible cache state (production or isolated shadow), then restore Privacy placeholders using the current request mapping.
+7. Record usage, cost, metrics, and evidence; return JSON or replay the approved completion as SSE. Evidence delivery to optional VCAL Audit is asynchronous.
 
----
+The ordering is important: Security Guard may block before any model/cache call, and Privacy Guard
+placeholder restoration occurs **after** eligible pre-restoration cache storage. Usage Guard is request-side
+in the AIF orchestration described by this documentation. See [Structured Content](structured-content.md)
+for the limits of content inspection.
 
-# High-Level Architecture
-
-```text
-Client Applications
-        │
-        ▼
-AI Cost Firewall
-        │
-        ├── VCAL Security Guard (optional)
-        ├── VCAL Privacy Guard (optional)
-        ├── VCAL Usage Guard (optional)
-        ├── VCAL Audit (optional evidence delivery)
-        ├── Redis (exact cache)
-        ├── Qdrant (semantic cache)
-        │
-        ▼
-OpenAI-compatible provider
-```
-
-Supported OpenAI-compatible providers include:
-
-- OpenAI
-- Ollama
-- LM Studio
-- vLLM
-- LiteLLM
-- OpenRouter
-
----
-
-# Request Lifecycle
-
-AI Cost Firewall evaluates requests in stages:
-
-1. parse and validate request limits
-2. normalize request and derive transport-independent cache identity
-3. read the effective AIF enforcement mode (`enforce` or `observe`)
-4. call Security Guard request scan, if enabled
-5. call Privacy Guard scan/anonymize/redact, if enabled
-6. call Usage Guard policy evaluation, if enabled
-7. evaluate per-request cache bypass
-8. exact cache lookup, if enabled
-9. semantic cache lookup, if enabled and not bypassed and not short-circuited by an exact decision
-10. call the upstream provider on a miss/bypass, and also on would-have hits when in `observe`; for `stream=true`, consume provider SSE internally
-11. normalize cache hits and upstream results into the canonical chat-completion response
-12. call Security Guard response scan, if enabled
-13. update production cache state in `enforce` or isolated shadow state in `observe`, when store controls allow it
-14. call Privacy Guard restore, if enabled and mapping exists
-15. record actual usage/cost plus production or evaluation metrics/evidence; enqueue Audit delivery, if enabled
-16. return JSON or replay the approved response as OpenAI-compatible SSE
-
----
-
-# Enforcement and Evaluation Modes
-
-The cache pipeline has two execution modes:
-
-```conf
-aif_enforcement_mode enforce;
-```
-
-`enforce` is the normal production path: eligible exact or semantic hits can be returned without an upstream chat-completion call.
-
-```conf
-aif_enforcement_mode observe;
-```
-
-`observe` is a shadow evaluation path. AIF evaluates the same cache decisions but the live response always comes from the upstream provider. Shadow state is isolated from production state.
-
-Observe-mode state transitions intentionally mirror what enforcement would have done:
-
-| Shadow decision | Live request | Shadow state |
-|---|---|---|
-| exact hit | call upstream | no semantic lookup/store; exact hit is the would-have decision |
-| exact miss + semantic hit | call upstream | semantic hit is recorded and the shadow exact cache may be warmed |
-| exact + semantic miss | call upstream | eligible live upstream result is stored in shadow exact/semantic cache |
-| cache bypass | call upstream | no shadow lookup and no shadow store |
-
-The potential cost/tokens attributed to a would-have hit are calculated from the actual live upstream response for that request. This avoids treating historical cached-response usage as the cost of the call that would have been avoided.
-
----
-
-# Assessment Context and Configuration Stability
-
-AIF v0.8.3 adds a read-only Assessment Context surface alongside the existing Evaluation Mode telemetry.
-
-```text
-GET /assessment-context
-```
-
-Evaluation Mode answers what AIF would have done for cache/cost optimization during Observe mode. Assessment Context answers which safe effective runtime configuration produced that telemetry.
-
-The endpoint returns an allow-listed configuration snapshot and a deterministic `configuration_hash`. AIF also publishes the same active identity through:
-
-```text
-aif_runtime_info{version="0.8.3",config_schema="1",configuration_hash="sha256:..."} 1
-```
-
-A reporting/assessment layer can combine a bounded set of `aif_evaluation_*` metrics with historical `aif_runtime_info` samples and the current `/assessment-context` response to verify configuration stability before freezing an assessment.
-
-This path is observational only and does not participate in request routing, cache lookup/store, guard decisions, or upstream response handling.
-
----
-
-# Request Flow Diagram
+## Cache decision summary
 
 ```mermaid
 flowchart TD
-
-    A[Client Request]
-
-    A0{Request limits OK?}
-
-    B[Normalize Request]
-
-    B0{Cache bypass header?}
-
-    C{Exact Cache Enabled?}
-
-    C1{Exact Cache Lookup<br/>Redis}
-
-    D[Return Cached Response]
-
-    E{Semantic Cache Enabled?}
-
-    E1[Generate Embedding]
-
-    F{Semantic Search<br/>Qdrant}
-
-    G{Candidate Valid?<br/>similarity + freshness}
-
-    H[Forward to OpenAI-compatible Upstream]
-
-    I[Receive Upstream Response]
-
-    J{Exact Store Enabled?}
-
-    J1[Store Exact Cache]
-
-    K{Semantic Store Enabled?}
-
-    K1[Store Semantic Cache]
-
-    L[Return Response]
-
-    A --> A0
-    A0 -->|NO| L
-    A0 -->|YES| B
-
-    B --> B0
-
-    B0 -->|YES| H
-    B0 -->|NO| C
-
-    C -->|NO| E
-    C -->|YES| C1
-
-    C1 -->|HIT| D
-    D --> L
-
-    C1 -->|MISS| E
-
-    E -->|NO| H
-    E -->|YES| E1
-
-    E1 --> F
-    F --> G
-
-    G -->|YES| D
-    G -->|NO| H
-
-    H --> I
-
-    I --> J
-    J -->|YES| J1
-    J -->|NO| K
-    J1 --> K
-
-    K -->|YES| K1
-    K -->|NO| L
-    K1 --> L
+    A[Validated and guard-approved request] --> B{Bypass or unsafe for cache?}
+    B -->|Yes| U[Call upstream]
+    B -->|No| C{Exact cache hit?}
+    C -->|Yes| D[Eligible cached completion]
+    C -->|No| E{Semantic eligible?}
+    E -->|No| U
+    E -->|Yes| F[Embed + Qdrant candidate lookup]
+    F -->|Hit| D
+    F -->|Miss| U
+    D --> G{AIF mode?}
+    G -->|Enforce| R[Apply response controls and deliver]
+    G -->|Observe| U
+    U --> H[Assemble/normalize upstream response]
+    H --> J[Response controls + eligible cache updates]
+    J --> R
 ```
 
----
+The diagram omits request error branches, guard-specific behavior, and exact/shadow warming to stay
+readable. In Observe Mode, `D` is a *hypothetical* decision and is never returned to the client.
 
-# Guard Orchestration Flow
+## Request identity and cache eligibility
 
-AI Firewall can run as a guard orchestrator in addition to a cache gateway.
+### Exact request identity
 
-When VCAL Security Guard, VCAL Privacy Guard, and VCAL Usage Guard are enabled, the flow is:
+The exact cache hashes normalized request data with SHA-256. Completion-affecting OpenAI-compatible request
+and message extension fields are preserved in the identity: examples include tools, tool choice, tool-call
+IDs, `response_format`, reasoning settings, and other accepted extensions. Delivery-only `stream` and
+`stream_options` do not split JSON and SSE cache identities.
 
-```text
-Client request
-→ AI Firewall validates request limits
-→ Security Guard scans request text
-→ block with HTTP 403 if Security Guard rejects the request
-→ Privacy Guard anonymizes or redacts sensitive text
-→ Usage Guard evaluates organizational usage policy
-→ continue on allow/warn; stop on block/escalate
-→ exact/semantic cache lookup or upstream request
-→ Security Guard scans assistant response text
-→ block response if Security Guard rejects the output
-→ Privacy Guard restores placeholders, if a mapping exists
-→ AI Firewall returns final response
-```
-
-Usage Guard is request-side only in the current AI Firewall integration and runs after Privacy Guard, so anonymized text is evaluated when Privacy Guard modifies the request.
-
----
-# Example Request
-
-Client applications use the standard OpenAI-compatible API.
-
-Example:
-
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini-2024-07-18",
-    "messages": [
-      {"role":"user","content":"Explain Redis briefly"}
-    ]
-  }'
-```
-
-The firewall returns a standard OpenAI-compatible response.
-
-No client-side API changes are required.
-
----
-
-# Client Authentication Notes
-
-By default, AI Cost Firewall does not require incoming client authentication.
-
-The configured:
-
-```text
-upstream_api_key
-```
-
-is used only for upstream provider communication.
-
-For production environments, place the firewall behind:
-
-- authenticated reverse proxy
-- API gateway
-- VPN
-- private network boundary
-- service mesh
-
----
-
-# Request Limits and Cache Bypass
-
-Before cache lookup, AI Cost Firewall validates basic gateway limits.
-
-Relevant settings:
-
-```conf
-max_request_body_bytes 1048576;
-max_prompt_chars 200000;
-```
-
-`max_request_body_bytes` limits the full HTTP request body. `max_prompt_chars` limits the total chat message content after parsing.
-
-AI Cost Firewall also supports per-request cache bypass:
-
-```conf
-cache_bypass_header X-AIF-Cache-Bypass;
-```
-
-Example request header:
-
-```http
-X-AIF-Cache-Bypass: true
-```
-
-Accepted truthy values:
-
-```text
-true
-1
-yes
-on
-```
-
-When bypass is enabled for a request:
-
-- exact cache lookup is skipped
-- semantic cache lookup is skipped
-- exact cache storage is skipped
-- semantic cache storage is skipped
-- the request is forwarded upstream
-
-Bypass requests are counted with:
-
-```text
-aif_cache_bypass_requests_total
-```
-
----
-
-# Step 1 — Request Normalization
-
-Before cache lookup, the firewall normalizes requests.
-
-Exact-cache normalization preserves completion-affecting OpenAI-compatible extension fields at both request and message level. This includes fields such as tool definitions/selection, structured-output options, reasoning/provider extensions, tool-call identifiers, and future flattened fields that AIF proxies without requiring a schema release. Delivery-only streaming options remain outside completion identity.
-
-For semantic caching, AIF derives stable text only from eligible plain-string messages. Requests containing `tools`, `response_format`, or any non-string message content bypass semantic lookup and store.
-
-Example normalized prompt:
-
-```text
-user: Explain Redis briefly
-```
-
-With system message:
-
-```text
-system: You are a concise assistant
-user: Explain Redis briefly
-```
-
-Normalization is used for:
-
-- exact cache hashing
-- semantic embeddings
-- semantic search consistency
-
----
-
-# Step 2 — Exact Cache Lookup
-
-Exact cache is controlled by:
-
-```conf
-exact_cache_enabled true;
-exact_cache_fail_open true;
-```
-
-When `exact_cache_enabled` is disabled, Redis exact-cache lookup and storage are skipped and the request continues to semantic lookup or upstream forwarding.
-
-When `exact_cache_fail_open` is enabled, runtime Redis lookup failures behave like cache misses and requests continue upstream.
-
-The firewall creates a SHA256 hash from the normalized request JSON.
-
-Example key:
+Illustrative Redis key:
 
 ```text
 aif:exact:<sha256>
 ```
 
-Redis lookup:
+An exact hit can avoid embeddings and an upstream chat call in `enforce`. Exact cache may also serve
+eligible structured-content requests; the full JSON content participates in the key. `exact_cache_enabled`,
+`exact_cache_store_enabled`, TTL, and `exact_cache_fail_open` control the path. See [Configuration
+Reference](config-reference.md).
+
+### Semantic request eligibility
+
+AIF derives semantic text from eligible **plain-string messages**. Requests containing non-string message
+content, `tools`, or `response_format` bypass semantic lookup and store. This restriction prevents a
+similarity result from ignoring completion-critical structured information.
+
+For eligible text requests, AIF requests an embedding and searches Qdrant. A candidate must satisfy the
+configured similarity threshold, be unexpired, contain a valid cached payload, and meet the applicable
+model/identity/scope requirements. Example:
 
 ```text
-GET aif:exact:<sha256>
+Query:       Explain Redis briefly
+Candidate:   What is Redis used for?
+Similarity:  0.94
+Threshold:   0.92
+Result:      candidate meets the similarity threshold
 ```
 
----
+Crossing the threshold is **necessary but not sufficient**: the other eligibility checks still apply.
+Similarity thresholds require application-specific tuning, particularly where apparently similar questions
+can require different factual answers.
 
-# Exact Cache Hit
+### Embedding vector and retention
 
-If the response already exists in Redis:
+The embedding model and Qdrant collection must use the same vector dimension. Verify the actual vector
+length returned by the configured endpoint rather than assuming dimensions from a model's name. The
+embedding endpoint may be different from the chat endpoint.
 
-```text
-Redis → HIT
-```
+Semantic entries include insertion and expiry metadata. Expired entries are excluded from reuse even if
+physical collection cleanup has not run. `semantic_cache_retention_seconds` controls retention; cleanup is
+an operational task, not a correctness prerequisite. See [Operations](operation.md).
 
-In `enforce`, the firewall immediately returns the cached response. In `observe`, the exact result is recorded as a would-have hit, semantic lookup is skipped for that simulated decision, and the live request still goes upstream.
+### Per-request bypass
 
-Benefits under enforcement:
-
-- near-zero latency
-- no upstream API call
-- no additional token usage
-- predictable response times
-
----
-
-# Exact Cache Miss
-
-If Redis does not contain the request:
-
-```text
-Redis → MISS
-```
-
-the firewall continues to semantic lookup.
-
----
-
-# Step 3 — Embedding Generation
-
-The firewall generates an embedding from the normalized semantic text.
-
-Embeddings are produced through the configured embedding provider.
-
-Embedding calls use:
-
-```conf
-embedding_timeout_seconds 30;
-```
-
-If omitted, `request_timeout_seconds` is used as the fallback.
-
-The embedding provider may differ from the chat provider.
-
-Examples:
-
-| Chat Provider | Embedding Provider |
-|---|---|
-| OpenAI | OpenAI |
-| OpenAI | Ollama |
-| OpenRouter | OpenAI |
-| Ollama | Ollama |
-
----
-
-# Embedding Models
-
-Typical embedding models:
-
-| Model | Vector Size |
-|---|---|
-| text-embedding-3-small | 1536 |
-| nomic-embed-text (common Ollama configuration) | 768 |
-
-Example configuration:
-
-```conf
-embedding_model text-embedding-3-small;
-qdrant_vector_size 1536;
-```
-
-The vector size must match the actual embedding vector returned by the serving endpoint. For self-hosted runtimes such as vLLM, verify the returned length before enabling semantic cache.
-
----
-
-# Step 4 — Semantic Search
-
-The generated embedding is used to query Qdrant.
-
-Typical collection:
-
-```text
-aif_semantic_cache
-```
-
-Qdrant returns semantically similar candidates.
-
-Each candidate contains:
-
-- embedding vector
-- cached response payload
-- similarity score
-- inserted_at
-- expires_at
-- model metadata
-
----
-
-# Semantic Candidate Evaluation
-
-AI Cost Firewall validates semantic candidates before reuse.
-
-A candidate is reusable only if:
-
-```text
-similarity_score >= semantic_similarity_threshold
-AND
-expires_at > now
-AND
-cached response payload is valid
-```
-
----
-
-# Semantic Threshold Example
-
-Example:
-
-```text
-Prompt: "Explain Redis briefly"
-Cached Prompt: "What is Redis used for?"
-Similarity: 0.94
-Threshold: 0.92
-```
-
-Because:
-
-```text
-0.94 >= 0.92
-```
-
-the candidate may be reused.
-
----
-
-# Semantic Cache Hit
-
-When a valid semantic candidate exists:
-
-```text
-semantic HIT
-```
-
-the firewall returns the cached response in `enforce`. In `observe`, AIF records the semantic would-have hit but still calls the live upstream provider; the shadow exact cache can be warmed from the semantic result to mirror enforcement state transitions.
-
-Benefits under enforcement:
-
-- reduced upstream API cost
-- reduced latency
-- reuse of semantically equivalent answers
-- higher effective cache utilization
-
----
-
-# Semantic Cache Miss
-
-Semantic miss occurs when:
-
-- no candidates returned
-- similarity below threshold
-- entry expired
-- payload invalid
-- semantic lookup failure occurs
-
-The firewall then forwards the request upstream.
-
----
-
-# Semantic Cache Lifecycle
-
-Semantic entries contain lifecycle metadata:
-
-- inserted_at
-- expires_at
-
-Expiration derives from:
-
-```conf
-semantic_cache_retention_seconds 604800;
-```
-
-Expired entries:
-
-- are filtered during lookup
-- are never reused
-- may remain stored until pruned
-
-Semantic correctness does not depend on cleanup.
-
----
-
-# Runtime Fail-Open Behavior
-
-AI Cost Firewall supports separate runtime fail-open controls for exact and semantic cache paths:
-
-```conf
-exact_cache_fail_open true;
-semantic_cache_fail_open true;
-```
-
-When enabled:
-
-- Redis exact-cache lookup/store failures can behave like cache misses or skipped stores
-- semantic lookup failures behave like cache misses
-- requests continue upstream normally
-
-This prevents cache infrastructure failures from blocking chat traffic when fail-open behavior is desired.
-
-Fail-open settings do not bypass static configuration validation.
-
-In `observe`, evaluation dependency failures are always non-blocking regardless of the normal production cache fail-open policy: Redis, Qdrant, or embedding failures increment evaluation-error telemetry and the request continues upstream. Evaluation Redis/Qdrant availability also does not by itself make `/readyz` fail.
-
----
-
-# Step 5 — Upstream Request
-
-When both cache layers miss, or when cache bypass is requested, the firewall forwards the request upstream.
-
-Example providers:
-
-```text
-https://api.openai.com
-http://ollama:11434/v1
-http://vllm:8000/v1
-```
-
-AI Cost Firewall internally appends:
-
-```text
-/v1/chat/completions
-```
-
-Chat-completion upstream calls use:
-
-```conf
-upstream_timeout_seconds 120;
-```
-
-If omitted, `request_timeout_seconds` is used as the fallback.
-
-Do not configure the full endpoint path as:
-
-```text
-upstream_base_url
-```
-
----
-
-# Correct vs Wrong Base URLs
-
-## Correct
-
-```text
-http://ollama:11434/v1
-```
-
-## Wrong
-
-```text
-http://ollama:11434/v1/chat/completions
-```
-
----
-
-# Local Provider Authentication
-
-Local providers often do not require authentication.
-
-Accepted placeholders:
-
-```text
-dummy
-none
-null
--
-```
-
-Example:
-
-```conf
-upstream_api_key dummy;
-embedding_api_key dummy;
-```
-
-When placeholders are used, AI Cost Firewall does not send:
-
-```text
-Authorization: Bearer ...
-```
-
-headers upstream.
-
----
-
-# Step 6 — Cache Storage
-
-After receiving and normalizing the upstream response, the firewall can store results in one or both cache layers. Controlled-streaming cache misses are first assembled into the same canonical response used by the non-streaming path.
-
-Cache writes are controlled independently:
-
-```conf
-exact_cache_store_enabled true;
-semantic_cache_store_enabled true;
-```
-
-When a store control is disabled, lookup may still be enabled, but new upstream responses are not written to that cache layer.
-
-Cache storage is skipped for requests that use the cache bypass header.
-
-When Privacy Guard restoration is enabled, eligible responses are stored using the pre-restore representation and restored only after the response-control/cache-store stage. This preserves the existing cache semantics while keeping sensitive original values out of cache storage.
-
----
-
-# Exact Cache Storage
-
-When `exact_cache_store_enabled` is enabled, Redis stores:
-
-```text
-exact request → response
-```
-
-Example:
-
-```text
-SET aif:exact:<sha256> response
-```
-
----
-
-# Semantic Cache Storage
-
-When `semantic_cache_store_enabled` is enabled, Qdrant stores:
-
-- normalized prompt text
-- embedding vector
-- response payload
-- inserted_at
-- expires_at
-- model metadata
-
----
-
-# Step 7 — Return Response
-
-The firewall returns a standard OpenAI-compatible response to the client.
-
-For `stream=false` or an omitted `stream` field, the response is normal JSON. For `stream=true`, the approved canonical response is encoded as OpenAI-compatible SSE and terminated with `[DONE]`.
-
-Applications do not need special cache-awareness logic.
-
----
-
----
-
-# Controlled Streaming Observability
-
-Key metrics include:
-
-```text
-aif_stream_requests_total
-aif_stream_completed_total
-aif_stream_errors_total
-aif_stream_aborted_total
-aif_stream_upstream_errors_total
-aif_stream_upstream_chunks_total
-aif_stream_upstream_bytes_total
-aif_stream_upstream_time_to_first_byte_seconds
-aif_stream_generation_duration_seconds
-aif_stream_client_time_to_first_byte_seconds
-aif_stream_upstream_response_bytes
-aif_stream_client_buffer_bytes
-aif_stream_duration_seconds
-```
-
-Upstream stream completion/failure is also represented in structured evidence as `upstream.stream.completed` or `upstream.stream.failed`. Failed controlled streams record that content was not committed to the client.
-
----
-
-# Evidence and Audit Delivery
-
-AI Cost Firewall emits structured evidence throughout the request lifecycle.
-
-Evidence uses:
-
-```text
-schema: vcal.evidence.event
-schema_version: 1.1
-```
-
-A stable `trace_id` correlates validation, guard, cache, upstream, response, and terminal events.
-
-For each trace that emits `request.received`, AI Firewall emits exactly one terminal event:
-
-```text
-request.completed
-```
-
-or:
-
-```text
-request.failed
-```
-
-When Audit delivery is enabled, events are enqueued without synchronously blocking the request path. The sender groups events by batch size or flush interval and posts them to:
-
-```text
-{audit_url}/v1/events/batch
-```
-
-Failed deliveries are retried with configurable backoff. The queue is bounded and memory-backed, so producer-side delivery does not guarantee durable replay after process termination or retry exhaustion.
-
-# Streaming Behavior
-
-AI Cost Firewall supports **controlled streaming** rather than raw provider-SSE passthrough.
-
-The normal JSON path, controlled provider-stream path, and eligible cache-hit path converge on the same canonical response processing:
-
-```text
-ordinary upstream JSON ───────────────┐
-assembled upstream stream ────────────┼─► canonical ChatCompletionResponse
-eligible exact / semantic cache hit ──┘
-                                              │
-                                              ▼
-                                      response Security Guard
-                                      eligible cache store
-                                      (cache miss only, pre-restore)
-                                      Privacy Guard restore
-                                      usage / cost accounting
-                                      metrics / evidence
-                                              │
-                                 ┌────────────┴────────────┐
-                                 ▼                         ▼
-                          JSON serializer             SSE encoder / replay
-                          stream=false                stream=true
-                                                       → [DONE]
-```
-
-Because cache identity is transport-independent, JSON and SSE delivery can reuse the same eligible cached completion.
-
-No model-generated response content is sent to the client until the provider stream has completed, the response has been assembled, and all enabled response controls have approved it.
-
-If the provider stream fails, is malformed, is truncated, exceeds `max_stream_upstream_bytes`, becomes idle for longer than `upstream_timeout_seconds`, or exceeds the 15-minute absolute generation ceiling, AI Cost Firewall returns a normal HTTP error before downstream SSE commit. Partial provider content is not exposed.
-
-Configuration:
-
-```conf
-streaming_enabled true;
-max_stream_upstream_bytes 8M;
-upstream_timeout_seconds 120;
-```
-
-`max_stream_upstream_bytes` counts cumulative provider SSE bytes for the request; it is not an instantaneous in-memory buffer measurement.
-
-`upstream_timeout_seconds` is also the controlled-stream idle timeout after provider headers arrive. A separate 15-minute absolute generation ceiling closes the drip-feed case where chunks continue to arrive without the generation terminating.
-
-When `stream_options.include_usage` is requested by the client, controlled SSE replay includes the usage chunk. AI Cost Firewall requests upstream usage data for its own accounting even when the client does not request the downstream usage chunk.
-
-Controlled streaming reconstructs fragmented content and tool-call/function arguments into the canonical response before re-encoding SSE. The downstream stream is semantically OpenAI-compatible but is not intended to preserve the provider's byte-for-byte event framing.
-
----
-
-# Structured Outputs and Tools
-
-Exact cache remains available because the exact identity includes the complete preserved request/message extension fields.
-
-Semantic cache is skipped for requests containing:
-
-- `tools` / tool-calling schemas
-- `response_format` / structured response formats
-- any non-string message content
-
-These request types depend on exact structure or non-text context and are intentionally excluded from semantic reuse in v0.8.2.
-
----
-
-# When Cache Layers Are Disabled
-
-Semantic cache may be disabled globally:
-
-```conf
-semantic_cache_enabled false;
-```
-
-In this mode:
-
-- exact cache can still be used
-- semantic embeddings are skipped
-- Qdrant is not required for request processing
-
-Exact cache may also be disabled:
-
-```conf
-exact_cache_enabled false;
-```
-
-In this mode:
-
-- Redis exact-cache lookup and storage are skipped
-- semantic cache can still be used if enabled
-- all cache can be disabled when both exact and semantic cache are disabled
-
----
-
-# Non-text and Content-part Messages
-
-OpenAI-style message content is parsed as JSON, so array/object content can be preserved and forwarded rather than rejected at the parsing layer. Exact-cache identity preserves that complete JSON content.
-
-Requests containing any non-string message content bypass semantic cache in v0.8.2. This prevents image/file/audio payload structures or base64 data from entering the text embedding path.
-
-Privacy Guard inspects supported string and structured text-array content, preserving supported content-part structure. Recognized unsupported text-bearing shapes are rejected rather than silently bypassing privacy inspection. Security Guard and Usage Guard continue to inspect plain string message content; their inspection of nested array text is not implied. Non-text parts are not inspected, and referenced files/attachments are not retrieved or scanned. Client-extracted OCR text, captions, or metadata can be inspected when sent as supported text content.
-
----
-# Metrics and Observability
-
-AI Cost Firewall exposes Prometheus metrics:
-
-```text
-/metrics
-```
-
-Example:
-
-```bash
-curl http://localhost:8080/metrics
-```
-
-The metrics endpoint can be protected:
-
-```conf
-metrics_auth_required true;
-metrics_auth_token your-prometheus-token;
-```
-
-When enabled, clients must send:
+A request carrying the configured truthy cache-bypass header skips **both exact and semantic lookup and
+storage**, including isolated Observe-mode operations:
 
 ```http
-Authorization: Bearer your-prometheus-token
+X-AIF-Cache-Bypass: true
 ```
 
----
+`true`, `1`, `yes`, and `on` are accepted by the documented default behavior. This is distinct from
+disabling a cache backend globally. Request bypass counts are recorded in `aif_cache_bypass_requests_total`.
 
-# Core Request Metrics
+## Enforce Mode and Observe Mode
 
-```text
-aif_requests_total
-aif_cache_hits_total{cache_type="exact"}
-aif_cache_hits_total{cache_type="semantic"}
-aif_cache_misses
-aif_cache_bypass_requests_total
-aif_upstream_calls_total
-```
+| Decision | `enforce` live path | `observe` live path / shadow state |
+|---|---|---|
+| Exact hit | Return eligible Redis response | Record would-have exact hit; call upstream; do not run shadow semantic lookup |
+| Exact miss, semantic hit | Return eligible Qdrant response, optionally warm exact | Record would-have semantic hit; call upstream; potentially warm shadow exact |
+| Both miss | Call upstream and store if eligible | Call upstream and populate only shadow caches if eligible |
+| Bypass | Call upstream; do not look up/store | Call upstream; no shadow lookup/store |
 
-These metrics show whether requests were:
+Observe Mode maintains separate Redis key space and Qdrant collection, does not promote shadow entries
+automatically into production, and keeps evaluation estimates separate from real savings. Evaluation-only
+dependency failures are non-blocking for live inference. See [Evaluation Mode](evaluation-mode.md).
 
-- exact cache hits
-- semantic cache hits
-- cache misses
-- explicit cache-bypass requests
-- upstream requests
+## Privacy and other guard effects on caching
 
----
+When Privacy Guard is active, supported text is inspected before cache lookup. If Privacy Guard provides the
+complete effective **tenant and policy scope** (policy ID, version, hash), AIF isolates exact/semantic cache
+reuse by that effective identity. If the successful scan lacks complete policy identity, or a Privacy Guard
+transport failure is allowed to fail open, cache lookup and store are bypassed for that request.
 
-# Evaluation Metrics
+When anonymization is active, cache storage retains the **placeholder-containing** response, not a restored
+response containing the current user's sensitive data. Restoration must use the mapping created for the
+**current** request. This protects against cross-request placeholder restoration. See [Structured
+Content](structured-content.md).
 
-AIF v0.8.0 keeps hypothetical evaluation outcomes separate from production cache/savings counters:
+Security Guard and Usage Guard coverage of nested structured content must not be inferred from Privacy
+Guard's capabilities. Do not assume AIF downloads or scans referenced attachments.
 
-```text
-aif_enforcement_mode_info
-aif_runtime_info{version,config_schema,configuration_hash}
-aif_evaluation_requests_total
-aif_evaluation_cache_outcomes_total
-aif_evaluation_upstream_calls_avoided_total
-aif_evaluation_tokens_avoided_total
-aif_evaluation_gross_saved_micro_usd_total
-aif_evaluation_net_saved_micro_usd_total
-aif_evaluation_shadow_store_total
-aif_evaluation_errors_total
-```
+## Upstream and response paths
 
-A shadow hit does not increment the normal production `aif_cache_hits_total` or production saved-token/cost counters.
+For a cache miss/bypass (and **every** Observe request), the gateway calls the configured OpenAI-compatible
+upstream. Set its **base URL**, not a URL that already ends in `/v1/chat/completions`. Example compatible
+base URLs may be `https://api.openai.com`, `http://ollama:11434/v1`, or `http://vllm:8000/v1`, depending on
+the provider. See [Provider Compatibility](provider-compatibility.md).
 
----
+For `stream=false` or omitted `stream`, AIF processes a JSON completion. For `stream=true`, it consumes
+provider SSE, assembles the whole response, applies response controls, then generates downstream SSE with
+`[DONE]`. A client does **not** receive upstream tokens immediately as generated. Provider failures before
+approval do not expose partial content. See [Controlled Streaming](controlled-streaming.md).
 
-# Semantic Diagnostics Metrics
+Independent cache store switches allow lookup without writing new entries. Responses are normalized before
+storage and response processing; unsuccessful or otherwise ineligible flows must not be assumed cacheable.
 
-```text
-aif_semantic_candidates_checked_total
-aif_semantic_threshold_results_total
-aif_semantic_lookup_duration_seconds
-aif_semantic_expired_entries_skipped_total
-aif_semantic_store_total
-aif_semantic_store_errors_total
-```
+## Limits, failures, and operational signals
 
-These metrics help tune:
+- `max_request_body_bytes` caps the HTTP body; `max_prompt_chars` caps parsed prompt content. Configuration
+  validity is checked at startup.
+- `exact_cache_fail_open` and `semantic_cache_fail_open` determine whether runtime cache problems skip the
+  affected path or fail the request under enforcement. They do not disable static validation.
+- `/startupz` and `/readyz` distinguish required dependency initialization from current readiness; consult
+  [Operations](operation.md) when designing container probes.
+- Metrics distinguish exact/semantic hits, misses, bypasses, costs, latency, guard results, and
+  evaluation-only opportunities. See [Metrics and Costs](metrics-and-costs.md).
+- Structured evidence contains per-trace decisions and one terminal event. Optional HTTP delivery to VCAL
+  Audit can lose events when its bounded in-memory delivery queue is exhausted. See [Evidence and
+  Audit](audit-integration.md).
 
-- semantic similarity thresholds
-- retention windows
-- embedding quality
-- semantic reuse behavior
+## Related guides
 
----
-
-# Timeout Metrics
-
-```text
-aif_upstream_timeouts_total
-aif_embedding_timeouts_total
-aif_upstream_request_duration_seconds
-aif_embedding_request_duration_seconds
-```
-
-Useful for diagnosing:
-
-- slow providers
-- overloaded local models
-- embedding bottlenecks
-- network latency
-
----
-
-# Cost Metrics
-
-```text
-aif_model_cost_micro_usd_total
-aif_gross_saved_micro_usd_total
-aif_embedding_overhead_micro_usd_total
-aif_net_saved_micro_usd_total
-```
-
-These metrics distinguish:
-
-- gross avoided chat-completion cost
-- embedding overhead
-- net savings after embeddings
-
----
-
-# Guard Metrics
-
-```text
-aif_guard_requests_total
-aif_guard_latency_seconds
-aif_security_blocks_total
-aif_privacy_restore_skipped_total
-aif_usage_blocks_total
-```
-
----
-# Included Dashboards
-
-AI Cost Firewall includes pre-configured Grafana dashboards in the Docker deployment files.
-
-Overview dashboard:
-
-- total request volume
-- estimated chat cost
-- gross and net savings
-- embedding overhead
-- cache hit rate
-- exact and semantic cache activity
-- cache bypass request rate
-- per-model spend and savings
-- Usage Guard policy blocks
-- high-level guard orchestration health
-
-Diagnostics dashboard:
-
-- readiness state
-- semantic threshold pass/fail behavior
-- semantic candidate evaluation
-- expired entry skips
-- semantic lookup latency
-- upstream and embedding latency
-- semantic store health
-- runtime and provider pressure signals
-- provider error classes
-
----
-
-# Why Semantic Cache Matters
-
-Exact cache alone only reuses identical prompts.
-
-Semantic cache enables reuse across:
-
-- paraphrased questions
-- slightly modified prompts
-- repeated support requests
-- repeated agent interactions
-- recurring enterprise workflows
-
-This significantly improves effective cache utilization.
-
----
-
-# Typical Deployment Patterns
-
-AI Cost Firewall supports:
-
-| Pattern | Example |
-|---|---|
-| Cloud upstream | OpenAI |
-| Fully local | Ollama |
-| Hybrid | OpenAI + local embeddings |
-| Routing layer | OpenRouter |
-| Self-hosted inference | vLLM |
-
-Deployment examples:
-
-```text
-deploy/examples/
-deploy/openshift/
-```
-
-The OpenShift directory provides a deployment-specific Kubernetes baseline; it does not change the portability of the generic AIF OCI image.
-
----
-
-# Operational Notes
-
-- Redis is used for exact cache when `exact_cache_enabled` is true
-- Redis startup/runtime behavior depends on `exact_cache_fail_open` and readiness settings
-- Qdrant is required for semantic cache when semantic cache is enabled and fail-open behavior does not allow startup without it
-- vector size must match embedding dimension
-- semantic correctness does not depend on pruning
-- expired entries are filtered during lookup
-- exact and semantic cache writes can be controlled independently
-- per-request cache bypass skips lookup and store
-- OpenAI-compatible providers are supported through a flat configuration model
-
----
-
-# Additional Documentation
-
-See also:
-
-- `docs/quickstart.md`
-- `docs/config-reference.md`
-- `docs/provider-compatibility.md`
-- `docs/operation.md`
-- `docs/troubleshooting.md`
+[Architecture](architecture.md) · [Configuration Reference](config-reference.md) · [Evaluation
+Mode](evaluation-mode.md) · [Structured Content](structured-content.md) ·
+[Troubleshooting](troubleshooting.md)
