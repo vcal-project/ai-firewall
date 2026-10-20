@@ -259,11 +259,9 @@ guard_fail_open false;
 # 5. Security Guard response scan
 # 6. Privacy Guard restore
 #
-# Current guard modules inspect plain string message content only. OpenAI-style
-# content-part arrays are preserved and forwarded, but text nested inside those
-# arrays is not yet scanned, anonymized, or classified by AIF guard modules.
-# Requests containing non-string message content are ineligible for semantic
-# cache; exact-cache identity still preserves the complete JSON content.
+# Current guard modules inspect text content only. Non-text content such as
+# images, audio, video, or binary payloads is preserved where possible but is
+# not scanned, anonymized, or classified by AI Firewall guard modules.
 
 # VCAL Audit integration
 #
