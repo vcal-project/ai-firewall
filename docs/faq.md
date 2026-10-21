@@ -1,21 +1,39 @@
 # AI Cost Firewall — FAQ
 
-Concise answers to frequent questions. Detailed behavior belongs in the linked guide so that a single
-explanation remains authoritative.
+Short answers about deploying AI Cost Firewall as a self-hosted control point for production AI.
+For version-specific behavior and procedures, follow the linked technical guides.
 
 ## Product and providers
 
 ### What is AI Cost Firewall?
 
-A self-hosted OpenAI-compatible gateway that reduces repeated upstream calls using Redis/Valkey exact
-caching and Qdrant semantic caching. AIF also exposes metrics and optionally integrates separately licensed
-VCAL Guards and Audit. See [Architecture](architecture.md).
+AI Cost Firewall (AIF) is a **self-hosted, OpenAI-compatible control point for production AI**.
+It uses **Redis exact caching** and **Qdrant semantic caching** to identify opportunities to avoid
+repeated upstream model calls. AIF provides Prometheus metrics and structured evidence; optional,
+separately licensed VCAL modules add privacy, security, organizational usage-policy, auditing, and
+compliance capabilities. See [Architecture](architecture.md).
+
+### Does AIF require replacing my existing AI platform?
+
+No. Keep your OpenAI-compatible applications, model endpoints, and observability tools. Point compatible
+client requests at AIF instead of directly at the provider. See [Deployment](deployment.md) and
+[Provider Compatibility](provider-compatibility.md).
+
+### Does the AIF core have a software license fee?
+
+No. The open-source AIF core has **no software license fee**. Annual **VCAL Production Support** is
+optional, and additional VCAL modules are separately licensed. See [VCAL pricing](https://vcal-project.com/pricing).
+
+### Is a VCAL-operated service part of the request path?
+
+No. AIF runs in infrastructure you control (on-premises, private cloud, or elsewhere); there is no
+VCAL-operated SaaS gateway in the request path. See [Deployment](deployment.md).
 
 ### Does AIF support native Anthropic, Gemini, Mistral, or Cohere APIs?
 
-Not directly in this documented version. It expects OpenAI-compatible chat and embedding endpoints; such
-providers may be used through a compatible translation gateway such as LiteLLM or OpenRouter. Compatibility
-is not universal. See [Provider Compatibility](provider-compatibility.md).
+Not directly. AIF expects OpenAI-compatible chat and embedding endpoints. Those providers may be used
+through a compatible translation gateway such as LiteLLM or OpenRouter; compatibility is not universal.
+See [Provider Compatibility](provider-compatibility.md).
 
 ### Can the chat model and embedding model run on different services?
 
@@ -25,16 +43,18 @@ service. See [Provider Compatibility](provider-compatibility.md).
 
 ### Does AIF authenticate incoming application users?
 
-The configured `upstream_api_key` authenticates AIF **to the provider**; it does not by itself authenticate
-incoming clients. Protect the AIF ingress through your network/reverse proxy/API gateway and decide on an
-appropriate cache scope for shared or user-specific responses. See [Architecture](architecture.md).
+The configured `upstream_api_key` authenticates AIF **to the provider**, not incoming application users.
+Protect AIF ingress using appropriate network and authentication controls, and ensure cache reuse is
+appropriate for your workload. AIF is not a replacement for application authorization. See
+[Architecture](architecture.md).
 
 ### Is the standalone VCAL Semantic Cache Server an AIF backend?
 
-No. AIF currently uses Qdrant for semantic cache; the separately developed VCAL Semantic Cache Server is not
-integrated as an AIF cache adapter.
+No. **VCAL Semantic Cache Server** is a separate, standalone HTTP semantic-cache service for other
+applications and RAG pipelines. AIF uses Redis and Qdrant; no native AIF adapter for Semantic Cache Server
+is currently available.
 
-## Caching and evaluation
+## Caching and Observe/Enforce modes
 
 ### What is the difference between exact and semantic caching?
 
@@ -49,20 +69,22 @@ See [Configuration Reference](config-reference.md).
 
 ### Can I bypass caching for one request?
 
-Yes. The default `X-AIF-Cache-Bypass: true` header skips both lookups and stores. This also skips
-shadow-cache work in Observe Mode. See [How It Works](how-it-works.md#per-request-bypass).
+Yes. The default `X-AIF-Cache-Bypass: true` header skips both cache lookups and stores, including
+isolated evaluation-cache work in Observe mode. See [How It Works](how-it-works.md#per-request-bypass).
 
-### What do `enforce` and `observe` change?
+### How do Observe mode and Enforce mode differ?
 
-`enforce` may return eligible cached responses; `observe` always forwards the live request to the chat
-provider and records hypothetical reuse using isolated shadow cache state. Observe does **not** reduce live
-provider traffic or automatically change guard policy modes. See [Evaluation Mode](evaluation-mode.md).
+**Observe mode** (`observe`) forwards requests that pass enabled controls to the upstream model while using
+**isolated evaluation caches** to estimate potential cache hits, avoided calls and tokens, and cost savings.
+It never substitutes cached responses for live upstream responses. **Enforce mode** (`enforce`) can serve
+eligible cached results, avoiding upstream model calls. Observe mode does not change the behavior of
+independently configured VCAL Guards. See [Evaluation Mode](evaluation-mode.md).
 
 ### What is Assessment Context?
 
 `GET /assessment-context` returns sanitized effective configuration information and a deterministic hash.
-Combined with historical `aif_runtime_info` and bounded evaluation metrics, it supports reproducible
-external assessments. AIF itself does not persist assessment reports. See [Assessment
+Together with historical `aif_runtime_info` and evaluation metrics from a defined observation period,
+it supports reproducible external assessments. AIF itself does not persist assessment reports. See [Assessment
 Context](assessment-context.md).
 
 ### Are streaming completions cacheable?
@@ -79,8 +101,9 @@ coverage in every other module. See [Structured Content](structured-content.md).
 
 ### Does AIF scan images or documents attached to a chat?
 
-No general attachment processor is documented. Referenced files, opaque non-text payloads, and images are
-not fetched and inspected as documents by AIF. See [Structured Content](structured-content.md).
+No. AIF does **not** fetch, parse, or scan referenced documents, file attachments, images, or opaque
+non-text content. Supported structured text parts have separate inspection rules. See
+[Structured Content](structured-content.md).
 
 ## Configuration and operations
 
@@ -103,7 +126,7 @@ settings. See [Operations](operation.md) and [Configuration Reference](config-re
 ### What do `/healthz`, `/startupz`, and `/readyz` mean?
 
 Liveness, successful initialization of configured required dependencies, and current readiness are distinct.
-In Observe Mode, optional evaluation cache failures do not block live upstream responses. See
+In Observe mode, optional evaluation cache failures do not block live upstream responses. See
 [Operations](operation.md).
 
 ### What happens if Redis, Qdrant, embeddings, or a Guard fails?
@@ -113,20 +136,27 @@ Evaluation-only cache dependency failures are non-disruptive; unsupported recogn
 are not the same as a transport failure. See [Operations](operation.md) and
 [Troubleshooting](troubleshooting.md).
 
-## Optional modules and evidence
+## Optional VCAL modules and structured evidence
 
-### Are VCAL Security, Privacy, Usage, or Audit required?
+### Are optional VCAL modules required to use AIF?
 
-No. AIF Core works without these separately licensed products. Guards can be independently enabled; optional
-VCAL Audit receives structured evidence. See [Architecture](architecture.md) and [Evidence and
-Audit](audit-integration.md).
+No. The open-source AIF core works independently. **Privacy Guard**, **Security Guard**, and **Usage Guard**
+can be enabled separately or together; **VCAL Audit** can receive structured evidence, and **VCAL Compliance**
+supports governance workflows using retained evidence. These modules are separate commercial products.
+See [Architecture](architecture.md) and [Audit Integration](audit-integration.md).
+
+### Do I need VCAL Console to run AIF?
+
+No. **VCAL Console** is optional and distinguishes actual production outcomes from potential Observe-mode
+savings. It is included with an active annual VCAL Production Support subscription for AIF or an applicable
+VCAL module license; no separate Console license is required.
 
 ### Which Guard handles what?
 
-Security Guard evaluates security rules; Privacy Guard inspects supported sensitive text and may
-anonymize/redact and later restore placeholders; Usage Guard applies organizational usage policies. Coverage
-for structured content is module-specific and must be checked for the deployed module/API versions. See
-[Structured Content](structured-content.md).
+**Privacy Guard** detects and redacts or anonymizes supported sensitive text and can restore approved
+placeholders; **Security Guard** detects and blocks supported text-based security risks; **Usage Guard**
+allows, warns, or blocks requests according to organizational AI usage policy. Structured-content coverage
+is specific to each module and its adapter. See [Structured Content](structured-content.md).
 
 ### Does Privacy Guard protect shared cached entries?
 
@@ -137,23 +167,23 @@ Guard transport fail-open bypasses caches. This is not a replacement for applica
 
 ### Is evidence delivery to Audit durable?
 
-Not end-to-end from AIF: the HTTP sender uses a bounded **in-memory** queue with retries. Persistent Audit
-storage begins after successful ingestion, and events can be dropped on queue overflow, exhausted retries,
-or premature shutdown. See [Evidence and Audit](audit-integration.md).
+Not end-to-end from AIF: evidence delivery uses a bounded **in-memory** queue with retries. Persistent
+retention begins after successful VCAL Audit ingestion; events can be lost on queue overflow, exhausted
+retries, or premature shutdown. See [Audit Integration](audit-integration.md).
 
 ## Metrics, troubleshooting, and releases
 
-### How are savings calculated? Do Observe metrics reduce my bill?
+### Do Observe-mode savings estimates reduce upstream model calls?
 
-Estimated provider spend and gross savings use configured model prices; embedding overhead reduces net
-savings. Observe records potential savings separately from actual Enforce-mode avoidance and does not reduce
-live upstream calls. See [Metrics and Costs](metrics-and-costs.md).
+No. In Observe mode, all allowed requests still reach the upstream provider. AIF estimates **potential**
+avoided calls, tokens, and cost, kept separate from Enforce-mode outcomes. Savings estimates use configured
+model prices, and net savings account for embedding overhead. See [Metrics and Costs](metrics-and-costs.md).
 
 ### Why do my dashboards have zero values?
 
 Check that real traffic reaches AIF, that Prometheus scrapes its metrics endpoint, that the configured
-provider is reachable, that cache is eligible, and that you are looking at the correct Observe/Enforce
-series. See [Troubleshooting](troubleshooting.md).
+provider is reachable, that cache is eligible, and that you are looking at the appropriate Observe-mode evaluation or
+Enforce-mode production series. See [Troubleshooting](troubleshooting.md).
 
 ### Is AIF guaranteed to achieve the README benchmark rates?
 
@@ -164,5 +194,7 @@ validation](../EVALUATION_VALIDATION.md).
 ### Where should I start?
 
 [Quick Start](quickstart.md) → [Configuration Reference](config-reference.md) → [Operations](operation.md).
-For version changes, use [Upgrading](upgrading.md) and the [GitHub
-releases](https://github.com/vcal-project/ai-firewall/releases).
+For version changes, consult [Upgrading](upgrading.md) and
+[GitHub Releases](https://github.com/vcal-project/ai-firewall/releases).
+For guided deployment and product documentation, visit the
+[AIF documentation portal](https://ai-firewall.docs.vcal-project.com/).
