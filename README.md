@@ -18,7 +18,7 @@ The **AIF core gateway is open source and has no software license fee**. Optiona
   <img src="assets/ai-cost-firewall-overview.gif" alt="AI Cost Firewall and optional VCAL modules" width="900">
 </p>
 
-Developed and maintained by **VCAL Labs, Inc.** · [Documentation portal](https://ai-firewall.docs.vcal-project.com/) · [Releases](https://github.com/vcal-project/ai-firewall/releases)
+Developed and maintained by **VCAL Labs, Inc.** · [Website](https://vcal-project.com/)· [Documentation portal](https://ai-firewall.docs.vcal-project.com/) · [Releases](https://github.com/vcal-project/ai-firewall/releases)
 
 ## Quick Start
 
