@@ -3,7 +3,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 SRC="$ROOT/deploy/quickstart"
 DIST="$ROOT/dist"
-VERSION='v0.8.6'
+VERSION='v0.8.7'
 ARCHIVE="aif-quickstart-${VERSION}.tar.gz"
 mkdir -p "$DIST"
 files=(

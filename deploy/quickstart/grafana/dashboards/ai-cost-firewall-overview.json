@@ -1793,7 +1793,7 @@
     "prometheus",
     "runtime",
     "semantic-cache",
-    "v0.8.6",
+    "v0.8.7",
     "guard-orchestration",
     "usage-guard",
     "streaming"
