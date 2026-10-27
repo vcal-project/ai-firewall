@@ -77,6 +77,7 @@ redis_url redis://redis:6379;
 
 upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
+# upstream_ca_bundle /etc/aif-certs/service-ca.crt;  # optional private CA
 upstream_api_key sk-your-key;
 
 streaming_enabled true;
@@ -84,6 +85,7 @@ max_stream_upstream_bytes 8M;
 
 embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
+# embedding_ca_bundle /etc/aif-certs/service-ca.crt;  # optional private CA
 embedding_api_key sk-your-key;
 embedding_model text-embedding-3-small;
 
@@ -151,7 +153,7 @@ embedding_price 0.020;
 
 ## Deployment Examples
 
-Docker/Compose examples remain under `deploy/examples/`. v0.8.2 also provides an OpenShift-specific baseline under `deploy/openshift/`. The OpenShift manifests do not change the generic OCI image or the normal Docker Compose configuration path.
+Docker/Compose examples remain under `deploy/examples/`. An OpenShift-specific baseline is available under `deploy/openshift/`. The OpenShift manifests do not change the generic OCI image or the normal Docker Compose configuration path.
 
 Ready-to-run examples are included under:
 
@@ -383,6 +385,30 @@ upstream_base_url http://ollama:11434/v1;
 
 ---
 
+### upstream_ca_bundle
+
+Optional path to an additional **PEM CA bundle** trusted by the upstream LLM HTTPS
+client, **including the separate controlled-streaming client**. The trusted roots
+are **added** to the built-in WebPKI trust anchors; certificate-chain and DNS
+hostname/SAN verification remain enabled. Default: unset (built-in roots only).
+
+```conf
+upstream_ca_bundle /etc/aif-certs/service-ca.crt;
+```
+
+When using environment-only configuration (no `ai-firewall.conf`), set
+`AIF_UPSTREAM_CA_BUNDLE=/etc/aif-certs/service-ca.crt`.
+The file must be readable by the AIF process and contain one or more PEM
+certificates. An explicitly configured unreadable/invalid bundle causes startup
+validation to fail. Changing the path or rotating certificate contents requires
+**restarting AIF**; SIGHUP is insufficient. `SSL_CERT_FILE` alone is not used
+by the explicit AIF provider CA loader. The setting does not configure mTLS
+client certificates and does not change trust for Redis, Qdrant, Guards, or Audit.
+
+See [Private HTTPS / custom CA bundles](private-ca-tls.md).
+
+---
+
 ### upstream_api_key
 
 API key used for upstream authentication.
@@ -492,6 +518,24 @@ Local example:
 ```conf
 embedding_base_url http://ollama:11434/v1;
 ```
+
+---
+
+### embedding_ca_bundle
+
+Optional path to an additional **PEM CA bundle** trusted by the HTTPS embedding
+provider HTTP client. Default: unset (built-in WebPKI roots only). The setting
+preserves certificate and hostname/SAN verification and is independent of
+`upstream_ca_bundle` (the two paths may point to the same OpenShift service CA).
+
+```conf
+embedding_ca_bundle /etc/aif-certs/service-ca.crt;
+```
+
+When using environment-only configuration, set
+`AIF_EMBEDDING_CA_BUNDLE=/etc/aif-certs/service-ca.crt`.
+A configured unreadable or invalid bundle fails validation. Restart AIF after
+changing the path or CA contents. See [Private HTTPS / custom CA bundles](private-ca-tls.md).
 
 ---
 
@@ -1459,7 +1503,11 @@ listen_addr
 max_request_body_bytes
 max_inflight_requests
 graceful_shutdown_timeout_seconds
+upstream_ca_bundle
+embedding_ca_bundle
 ```
+
+The CA bundle paths are restart-only. Certificate **contents** may change when a ConfigMap volume is refreshed without changing the path; restart AIF to rebuild all affected HTTP clients with the new trust material.
 
 The previous valid runtime remains active when such a reload is rejected.
 

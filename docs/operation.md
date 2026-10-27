@@ -92,8 +92,11 @@ Reload validates the replacement configuration and rebuilds eligible runtime dep
 the active runtime. A failed reload leaves the prior valid runtime active. Reload is not automatic file
 watching.
 
-Changes to `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`, and
-`graceful_shutdown_timeout_seconds` require a **process restart** and are rejected as reload-only changes. A
+Changes to `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`,
+`graceful_shutdown_timeout_seconds`, `upstream_ca_bundle`, and `embedding_ca_bundle`
+require a **process restart** and are rejected if attempted through SIGHUP. The CA
+trust store is loaded into provider HTTP clients at startup; rotating PEM file
+**contents** without changing the configured path also requires restarting AIF. A
 successful reload that changes effective safe configuration identity updates `aif_runtime_info`; see
 [Assessment Context](assessment-context.md).
 

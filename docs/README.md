@@ -1,6 +1,6 @@
 # AI Cost Firewall Documentation
 
-This directory contains version-specific technical documentation for [AI Cost Firewall](../README.md) (AIF).
+This directory documents [AI Cost Firewall](../README.md) (AIF) as provided by the checked-out repository. The guides use version-neutral relative links; consult [GitHub Releases](https://github.com/vcal-project/ai-firewall/releases) for release history.
 Start with the [Quick Start](quickstart.md) or browse by subject below. For guided product documentation,
 visit the [AIF documentation portal](https://ai-firewall.docs.vcal-project.com/).
 
@@ -8,6 +8,7 @@ visit the [AIF documentation portal](https://ai-firewall.docs.vcal-project.com/)
 
 - [Quick Start](quickstart.md) — install, configure an upstream, and verify a first request.
 - [Deployment](deployment.md) — production deployment and OpenShift considerations.
+- [Private HTTPS / custom CA bundles](private-ca-tls.md) — trusted internal CAs, OpenShift service CA, and TLS verification.
 - [Upgrading](upgrading.md) — release-to-release upgrade notes and rollback checks.
 - [Provider compatibility](provider-compatibility.md) — supported OpenAI-compatible patterns and limits.
 

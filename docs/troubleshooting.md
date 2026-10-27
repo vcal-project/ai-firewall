@@ -385,53 +385,60 @@ Then restart the firewall.
 
 ### Symptoms
 
-```text
-502 Bad Gateway
-```
+The upstream LLM or embedding provider may return `upstream_tls_error`, and
+AIF may return HTTP `502 Bad Gateway`. The errors can occur in **Observe mode**
+because AIF still calls the live chat provider and (when enabled) the embedding
+provider for semantic evaluation.
 
-or:
+### Check CA trust, certificate identity, and the full handshake
 
-```text
-upstream_tls_error
-```
+Typical causes include an internal signing CA absent from the AIF HTTP client's
+trust store, an expired certificate, or a service DNS name missing from the
+server certificate's subjectAltName (SAN). TCP connectivity, TLS cipher
+selection, and ALPN negotiation do **not** prove completed TLS authentication.
 
-### Common Causes
-
-- self-signed certificates
-- hostname mismatch
-- expired certificate
-- missing SAN entries
-- local HTTPS provider without trusted CA
-
-### Example
-
-```text
-certificate verify failed
-```
-
-### Recommended Checks
-
-Test upstream directly:
+Verify against the same internal hostname used in `upstream_base_url` or
+`embedding_base_url` (from within the AIF namespace or equivalent network):
 
 ```bash
-curl https://your-provider/v1/models
+curl -v --cacert /etc/aif-certs/service-ca.crt \
+  https://<service>.<namespace>.svc.cluster.local:<port>/v1/models
 ```
 
-Inspect certificate:
+The provider may return `404` for `/v1/models` when it does not implement model
+listing; the TLS portion of the verbose output should still show verified
+certificate trust and hostname. **Never use `-k` to validate TLS trust.**
 
-```bash
-openssl s_client -connect host:443
+### Configure explicit CA bundles
+
+Mount a readable PEM bundle inside the **AIF** container, and set one or both:
+
+```nginx
+upstream_ca_bundle /etc/aif-certs/service-ca.crt;
+embedding_ca_bundle /etc/aif-certs/service-ca.crt;
 ```
 
-### Notes
+These directives install extra trust roots into the chat (buffered and
+controlled-streaming) and embedding `reqwest` HTTP clients, respectively.
+Existing WebPKI roots and hostname verification remain enabled. `SSL_CERT_FILE`
+alone does **not** activate this AIF feature. A configured missing, empty, or
+invalid CA bundle causes configuration/initialization to fail rather than
+silently downgrading TLS.
 
-Local providers such as Ollama usually work more reliably over:
+**Restart the AIF pod** after changing a CA path or after certificate rotation;
+SIGHUP cannot reload the trust material. Check startup logs for the two
+`loaded custom ... CA roots` messages. If semantic cache is disabled or the
+request hits a cache, successful chat alone does not validate the embedding
+client: exercise a fresh prompt with semantic evaluation enabled and inspect
+evidence for successful semantic lookup.
 
-```text
-http://
-```
+A debug log saying `Client auth requested but no cert/sigscheme available`
+indicates that the TLS server requested a client certificate; it does not
+establish that client authentication is mandatory. This CA feature trusts the
+**server**; it does not supply an mTLS client certificate.
 
-inside trusted local networks.
+Avoid replacing verified internal HTTPS with plaintext HTTP as a TLS workaround.
+See [Private HTTPS / custom CA bundles](private-ca-tls.md).
 
 ---
 

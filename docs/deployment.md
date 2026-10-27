@@ -10,7 +10,7 @@ The AIF image is not OpenShift-specific. The normal `docker-compose.yml` deploym
 - Use `guard_fail_open false` when Security Guard, Privacy Guard, or Usage Guard is an enforcement control.
 - Protect `/metrics` or expose it only on a trusted monitoring network.
 - Supply credentials through deployment secrets; never commit real secrets to the config file.
-- Run the Firewall as non-root, read-only where possible, with Linux capabilities dropped and `no-new-privileges`. The v0.8.2 image uses a numeric non-root fallback user and an explicit `SIGTERM` stop signal; orchestrators such as OpenShift may assign their own runtime UID.
+- Run the Firewall as non-root, read-only where possible, with Linux capabilities dropped and `no-new-privileges`. The image uses a numeric non-root fallback user and an explicit `SIGTERM` stop signal; orchestrators such as OpenShift may assign their own runtime UID.
 
 ## Evaluation deployments
 
@@ -36,7 +36,7 @@ During shutdown `/readyz` becomes unavailable before in-flight requests are drai
 
 ## Startup and readiness policy
 
-AIF exposes three probe endpoints in v0.8.2:
+AIF exposes three probe endpoints:
 
 - `/healthz` reports process liveness.
 - `/readyz` evaluates whether the instance should currently receive traffic and preserves the existing fail-open / Observe semantics.
@@ -48,7 +48,7 @@ Do not mark an optional fail-open cache as a required readiness dependency unles
 
 ## OpenShift deployment
 
-v0.8.2 includes an OpenShift `restricted-v2` baseline under:
+An OpenShift `restricted-v2` baseline is provided under:
 
 ```text
 deploy/openshift/
@@ -57,6 +57,19 @@ deploy/openshift/
 The example does not request `anyuid` or a custom SCC. It drops all Linux capabilities, disables privilege escalation, uses a read-only root filesystem, uses `RuntimeDefault` seccomp, and does not mount a service-account token. It deliberately leaves `runAsUser`/`runAsGroup` unset so OpenShift can assign a namespace-specific arbitrary UID.
 
 Review `deploy/openshift/README.md` and replace the illustrative Service names, model IDs, credentials, and resource settings before applying the manifests.
+
+## Internal HTTPS trust (OpenShift service CA)
+
+The supplied OpenShift manifests do not automatically mount internal service
+CA certificates. For private HTTPS inference and embedding endpoints, mount a
+trusted CA bundle into the AIF container and set `upstream_ca_bundle` and/or
+`embedding_ca_bundle` in the application configuration. AIF adds these roots to
+the built-in WebPKI trust roots while preserving full hostname/SAN verification.
+The CA bundle paths and their certificate contents are restart-only: restart
+the AIF pod after an OpenShift service CA rotation.
+
+See [Private HTTPS / custom CA bundles](private-ca-tls.md) and the
+[OpenShift deployment baseline](../deploy/openshift/README.md).
 
 ## vLLM chat and embedding endpoints
 
@@ -68,7 +81,7 @@ Open WebUI -> AIF -> vLLM chat endpoint -> gpt-oss:20b
                    -> vLLM embedding endpoint -> Nomic model -> Qdrant
 ```
 
-AIF v0.8.2 proxies `GET /v1/models` to the configured chat/inference upstream so OpenAI-compatible clients can discover chat models through AIF. The embedding endpoint is configured separately and is not exposed through that chat-side discovery route.
+AIF proxies `GET /v1/models` to the configured chat/inference upstream so OpenAI-compatible clients can discover chat models through AIF. The embedding endpoint is configured separately and is not exposed through that chat-side discovery route.
 
 Before enabling semantic cache with a Nomic embedding service, verify the exact served embedding model ID and issue a test embedding request. Set `qdrant_vector_size` to the actual returned vector length rather than assuming a dimension from the model-family name.
 

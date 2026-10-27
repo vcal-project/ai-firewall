@@ -102,3 +102,61 @@ Files under `examples/` are not applied automatically. Adapt their selectors to
 the MSSP cluster before enabling them. In particular, do not add a default-deny
 egress policy until DNS, Redis, Qdrant, the embedding vLLM service, the chat vLLM
 service, Audit, and any guard-service egress paths have all been enumerated.
+
+
+## Private HTTPS endpoints using OpenShift service CA
+
+AIF's upstream chat (including controlled streaming) and embedding HTTP clients
+support optional, **additive** PEM trust roots. The built-in TLS verification,
+including hostname/SAN checks, remains enabled. This is independent of Observe
+versus Enforce mode. Do not use `danger_accept_invalid_certs` or an HTTP
+fallback to work around internal certificate trust.
+
+OpenShift can inject its service signing CA into a ConfigMap in the **AIF
+namespace**. For example, in namespace `aif-pilot`:
+
+```bash
+oc -n aif-pilot annotate configmap aif-service-ca \
+  service.beta.openshift.io/inject-cabundle=true --overwrite
+oc -n aif-pilot get configmap aif-service-ca -o jsonpath='{.data.service-ca\.crt}' | head -c 80
+```
+
+Create the `aif-service-ca` ConfigMap before annotating it if it does not
+exist. Mount its `service-ca.crt` key read-only at
+`/etc/aif-certs/service-ca.crt` in the **AIF container**. The supplied
+OpenShift baseline is illustrative; it does **not** automatically create or
+mount this ConfigMap. Ensure that the arbitrary OpenShift runtime UID can read
+the mounted file. Mount this trust bundle in addition to the application's
+normal configuration; do not overwrite the system trust directory.
+
+With nginx-style `ai-firewall.conf`:
+
+```nginx
+upstream_ca_bundle /etc/aif-certs/service-ca.crt;
+embedding_ca_bundle /etc/aif-certs/service-ca.crt;
+```
+
+Only when running **without** the configuration file, equivalent environment
+settings are `AIF_UPSTREAM_CA_BUNDLE` and `AIF_EMBEDDING_CA_BUNDLE`. With the
+current `reqwest`/WebPKI setup, `SSL_CERT_FILE` alone does not add trust to
+these clients. All configured CA paths must be readable and contain valid PEM
+certificates when AIF starts. Defaults remain unchanged if directives are
+omitted. Custom CA roots apply to the chat and embedding clients only, not
+Audit/Guard/evidence clients, Redis, Qdrant, or incoming AIF server TLS.
+
+1. From the same network context as the AIF pod, verify the provider with
+   `curl --cacert /etc/aif-certs/service-ca.crt https://<service>.<namespace>.svc.cluster.local:<port>/v1/models`
+   (or another supported endpoint). **Do not use `-k`.** The hostname must
+   match the service certificate's DNS SAN.
+2. Restart the AIF pod after changing either CA path or CA contents, including
+   OpenShift service CA rotation. SIGHUP cannot replace these trust roots.
+3. Check INFO logs for `loaded custom upstream CA roots for buffered and streaming clients`
+   and `loaded custom CA roots for embedding client`.
+4. Exercise non-streaming and `stream=true` chat through AIF. For embeddings,
+   send a fresh prompt with semantic evaluation enabled and confirm a completed
+   semantic lookup rather than an `upstream_tls_error`; a cache hit or disabled
+   semantic evaluation does **not** prove embedding connectivity.
+5. Negative tests: an untrusted root or hostname mismatch must still fail TLS
+   verification (do not perform destructive negative tests against production).
+
+For more detail, see [CA configuration and diagnostics](../../docs/private-ca-tls.md).

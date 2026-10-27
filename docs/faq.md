@@ -107,6 +107,15 @@ non-text content. Supported structured text parts have separate inspection rules
 
 ## Configuration and operations
 
+### How do I trust an OpenShift service CA for internal HTTPS models?
+
+Inject or mount a PEM CA bundle **inside the AIF container**, then configure
+`upstream_ca_bundle` for LLM requests (normal and streaming) and
+`embedding_ca_bundle` for embedding requests. These settings add trust roots;
+full TLS verification remains enabled. `SSL_CERT_FILE` alone is not sufficient
+for AIF's current explicit loader. Restart AIF after a path or CA-content change.
+See [Private HTTPS / custom CA bundles](private-ca-tls.md).
+
 ### Should `upstream_base_url` include `/v1/chat/completions`?
 
 No. Use the provider's compatible base URL; AIF appends the chat-completions route. The correct `/v1` prefix
@@ -120,8 +129,9 @@ do not silently reuse vectors from a different model/dimension. See [Troubleshoo
 ### How do I validate the configuration or reload it?
 
 AIF supports `--test-config`, masked `--print-config`, and nginx-style `SIGHUP` for reloadable settings.
-Listener, request-body limit, inflight-request limit, and graceful-shutdown timeout are restart-only
-settings. See [Operations](operation.md) and [Configuration Reference](config-reference.md).
+Listener, request-body limit, inflight-request limit, graceful-shutdown timeout, and
+custom CA bundle paths are restart-only settings. Rotating CA file contents also
+requires a restart. See [Operations](operation.md) and [Configuration Reference](config-reference.md).
 
 ### What do `/healthz`, `/startupz`, and `/readyz` mean?
 

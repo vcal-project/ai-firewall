@@ -63,6 +63,7 @@ In **Observe mode**, AIF uses isolated evaluation caches to identify potential c
 - **Cost and operational visibility:** Prometheus metrics, Grafana dashboards, per-model cost estimates, cache diagnostics, and evidence events.
 - **Operational controls:** configuration validation, readiness/startup/liveness probes, configurable fail-open/fail-closed behavior, request limits, and graceful shutdown.
 - **Deployment flexibility:** Docker Compose examples and an OpenShift `restricted-v2` deployment baseline.
+- **Private-provider HTTPS:** optional CA bundles for upstream LLM and embedding endpoints, including controlled streaming, without disabling certificate or hostname verification.
 
 **Controlled streaming is buffered:** AIF assembles and checks the full provider response before replaying it as SSE. It does **not** forward model tokens immediately as they arrive. [Details](docs/controlled-streaming.md).
 
@@ -132,9 +133,23 @@ Run AIF on premises, in a private cloud, or in other infrastructure you control.
 | [Manual installation](docs/quickstart.md) | Docker Compose and source-based setup |
 | [Deployment examples](deploy/examples/) | Cloud, local Ollama, hybrid, and OpenRouter configurations |
 | [OpenShift baseline](deploy/openshift/) | Security-restricted OpenShift manifests |
+| [Private CA and TLS](docs/private-ca-tls.md) | Custom certificate trust for internal HTTPS model and embedding endpoints |
 | [Configuration Reference](docs/config-reference.md) | Nginx-style directives and examples |
 | [Operations](docs/operation.md) | Probes, reload, fail-open behavior, and runtime controls |
 | [Troubleshooting](docs/troubleshooting.md) | Provider and cache diagnostics |
+
+### Private HTTPS endpoints
+
+For OpenShift service certificates or other private PKI, mount a PEM CA bundle inside the AIF container and configure trust independently for the upstream LLM and embedding provider:
+
+```conf
+upstream_ca_bundle /etc/aif-certs/service-ca.crt;
+embedding_ca_bundle /etc/aif-certs/service-ca.crt;
+```
+
+Both settings are optional. They add CA certificates to the existing trust roots; TLS certificate-chain and hostname verification remain enabled for normal and streaming requests. AIF rejects an unreadable or invalid configured CA bundle during initialization. Restart the AIF container after rotating CA files. Setting `SSL_CERT_FILE` alone is not a substitute for these directives. **Observe mode still requires a working HTTPS connection to the live upstream.**
+
+See [Private CA and TLS](docs/private-ca-tls.md) for volume mounting, OpenShift service CA injection, and verification steps.
 
 Validate a repository-based deployment with:
 
@@ -159,6 +174,7 @@ Historical controlled tests with a **local simulated upstream** demonstrated cac
 | Architecture and request flow | [Architecture](docs/architecture.md) · [How It Works](docs/how-it-works.md) |
 | Observe mode and assessments | [Evaluation Mode](docs/evaluation-mode.md) · [Assessment Context](docs/assessment-context.md) |
 | Streaming and content | [Controlled Streaming](docs/controlled-streaming.md) · [Structured Content](docs/structured-content.md) |
+| Private HTTPS providers | [Private CA and TLS](docs/private-ca-tls.md) · [Provider Compatibility](docs/provider-compatibility.md) |
 | Monitoring | [Metrics and Costs](docs/metrics-and-costs.md) |
 | Audit and evidence | [Audit Integration](docs/audit-integration.md) |
 | Questions and examples | [FAQ](docs/faq.md) · [Examples](deploy/examples/) |

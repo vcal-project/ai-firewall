@@ -546,7 +546,13 @@ This encrypts:
 
 ### Local Providers
 
-Inside trusted Docker networks:
+Private HTTPS endpoints (including OpenShift service-ca certificates) are
+supported with `upstream_ca_bundle` / `embedding_ca_bundle`, which add PEM trust
+roots without weakening certificate verification. Read the
+[private CA guide](private-ca-tls.md).
+
+For local providers explicitly configured for plaintext HTTP, inside trusted
+Docker networks:
 
 ```text
 http://
