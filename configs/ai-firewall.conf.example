@@ -38,6 +38,11 @@ streaming_enabled true;
 max_stream_upstream_bytes 8M;
 upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
+# Optional: PEM CA bundle to trust for upstream chat and controlled streaming.
+# Adds to default root certificates; TLS certificate and hostname verification stay enabled.
+# Requires an AIF restart when the path or CA file contents change.
+# For OpenShift service CA mounts, for example:
+# upstream_ca_bundle /etc/aif-certs/service-ca.crt;
 upstream_api_key replace-with-upstream-api-key;
 
 # Embedding provider
@@ -45,6 +50,9 @@ upstream_api_key replace-with-upstream-api-key;
 # Supports OpenAI-compatible /v1/embeddings endpoints.
 embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
+# Optional: separate PEM CA bundle for the embedding HTTPS client.
+# May point to the same service-ca.crt as upstream_ca_bundle.
+# embedding_ca_bundle /etc/aif-certs/service-ca.crt;
 embedding_api_key replace-with-embedding-api-key;
 embedding_model text-embedding-3-small;
 

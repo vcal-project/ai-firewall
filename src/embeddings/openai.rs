@@ -26,14 +26,24 @@ impl OpenAiEmbeddingProvider {
         api_key: String,
         model: String,
         timeout: Duration,
+        ca_bundle_path: Option<&str>,
     ) -> Result<Self> {
+        let custom_roots = crate::tls::load_custom_ca_roots(ca_bundle_path, "embedding_ca_bundle")
+            .context("failed to load embedding CA bundle")?;
+        if !custom_roots.is_empty() {
+            tracing::info!(
+                certificate_count = custom_roots.len(),
+                "loaded custom CA roots for embedding client"
+            );
+        }
+
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
             header::HeaderValue::from_static("application/json"),
         );
 
-        let client = Client::builder()
+        let client = crate::tls::with_custom_ca_roots(Client::builder(), &custom_roots)
             .default_headers(headers)
             .timeout(timeout)
             .build()
@@ -300,7 +310,7 @@ fn embedding_error_hint(kind: UpstreamErrorKind) -> &'static str {
             "Increase embedding_timeout_seconds or check embedding provider latency, model load time, network latency, and provider availability."
         }
         UpstreamErrorKind::Tls => {
-            "Check certificate trust, hostname/SAN, and whether embedding_base_url uses the correct scheme. For trusted local providers with self-signed certificates, consider using http:// inside the private network."
+            "Check certificate trust, hostname/SAN, and whether embedding_base_url uses the correct scheme. For an internal CA, configure embedding_ca_bundle and restart AIF; do not disable TLS verification."
         }
         UpstreamErrorKind::Dns => {
             "Check embedding_base_url, provider hostname, Docker service name, and DNS resolution from inside the AI Firewall container."
@@ -361,4 +371,36 @@ fn parses_embedding_response_with_partial_usage() {
     let usage = parsed.usage.unwrap();
     assert_eq!(usage.prompt_tokens, 5);
     assert_eq!(usage.total_tokens, 0);
+}
+
+#[cfg(test)]
+mod custom_ca_tests {
+    use super::*;
+
+    #[test]
+    fn creates_embedding_client_with_custom_ca() {
+        let ca_path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/testdata/ca.pem");
+        OpenAiEmbeddingProvider::new(
+            "https://example.test/v1".into(),
+            "none".into(),
+            "bge-m3".into(),
+            Duration::from_secs(30),
+            Some(ca_path),
+        )
+        .expect("embedding HTTP client must accept the configured CA");
+    }
+
+    #[test]
+    fn rejects_missing_embedding_ca_file() {
+        let error = OpenAiEmbeddingProvider::new(
+            "https://example.test/v1".into(),
+            "none".into(),
+            "bge-m3".into(),
+            Duration::from_secs(30),
+            Some("/does-not-exist/aif-embedding-ca.pem"),
+        )
+        .err()
+        .expect("missing configured CA must fail initialization");
+        assert!(format!("{error:#}").contains("embedding_ca_bundle"));
+    }
 }

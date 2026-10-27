@@ -1,6 +1,6 @@
 [package]
 name = "ai-firewall"
-version = "0.8.6"
+version = "0.8.7"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -39,6 +39,8 @@ dotenvy = "0.15"
 
 [dev-dependencies]
 serial_test = "3.5.0"
+# Test-only loopback TLS server. Also present transitively in the existing lockfile.
+tokio-rustls = "0.26.6"
 
 [profile.release]
 strip = true

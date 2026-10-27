@@ -1019,12 +1019,14 @@ mod tests {
 
             upstream_provider: ProviderKind::OpenAiCompatible,
             upstream_base_url: "http://127.0.0.1:9000".to_string(),
+            upstream_ca_bundle: None,
             upstream_api_key: "test-upstream-key".to_string(),
             streaming_enabled: true,
             max_stream_upstream_bytes: 8 * 1024 * 1024,
 
             embedding_provider: ProviderKind::OpenAiCompatible,
             embedding_base_url: "http://127.0.0.1:9000".to_string(),
+            embedding_ca_bundle: None,
             embedding_api_key: "test-embedding-key".to_string(),
             embedding_model: "text-embedding-3-small".to_string(),
             embedding_price: Some(EmbeddingPrice {

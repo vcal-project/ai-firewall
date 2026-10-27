@@ -2,7 +2,7 @@ pub const PRODUCT_NAME: &str = "AI Cost Firewall";
 
 pub const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const RELEASE_TITLE: &str = "Usage Guard Structured Content Compatibility";
+pub const RELEASE_TITLE: &str = "Security Maintenance and Custom CA Trust";
 
 pub const SUPPORTED_API_STYLE: &str = "openai_compatible";
 
@@ -10,7 +10,7 @@ pub const COMPATIBILITY_MODEL: &str =
     "OpenAI-compatible chat, model discovery, and embedding APIs through a simple flat configuration model";
 
 pub const SCOPE_NOTE: &str =
-    "v0.8.6 fixes AIF compatibility with VCAL Usage Guard v0.2.0 for structured message content: request- and response-side scans preserve the original JSON content, including text-part arrays, instead of silently omitting non-string messages. Security inspection now covers supported structured text before cache lookup and upstream forwarding, while unsupported shapes are passed to Security Guard for validation. Existing Usage Guard hardening, Evaluation Mode, controlled streaming, and Assessment Context remain supported. The API and configuration schema versions are unchanged.";
+    "v0.8.7 adds optional PEM CA bundles for private HTTPS upstream LLM and embedding providers via upstream_ca_bundle and embedding_ca_bundle. Custom roots are added to the existing trusted roots for both buffered and controlled-streaming chat clients and the embedding client, while TLS certificate and hostname verification remain enabled. Missing, invalid, or unreadable configured bundles fail initialization; CA certificate rotation requires an AIF restart. The release adds loopback TLS regression tests and OpenShift service CA deployment guidance, and updates Tokio to address RUSTSEC-2026-0386. Existing Observe/Enforce behavior, caching, Guard integrations, and Assessment Context remain supported. The API and configuration schema versions are unchanged.";
 
 pub const API_COMPATIBILITY_VERSION: &str = "v1";
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;

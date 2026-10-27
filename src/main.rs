@@ -14,6 +14,7 @@ mod evidence;
 mod semantic;
 mod services;
 mod streaming;
+mod tls;
 mod types;
 mod upstream;
 

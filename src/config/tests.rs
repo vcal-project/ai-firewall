@@ -32,12 +32,14 @@ fn minimal_valid_config() -> Config {
 
         upstream_provider: ProviderKind::OpenAiCompatible,
         upstream_base_url: "https://api.openai.com".to_string(),
+        upstream_ca_bundle: None,
         upstream_api_key: "test-upstream-key".to_string(),
         streaming_enabled: true,
         max_stream_upstream_bytes: 8 * 1024 * 1024,
 
         embedding_provider: ProviderKind::OpenAiCompatible,
         embedding_base_url: "https://api.openai.com".to_string(),
+        embedding_ca_bundle: None,
         embedding_api_key: "test-embedding-key".to_string(),
         embedding_model: "text-embedding-3-small".to_string(),
         embedding_price: None,
@@ -1282,4 +1284,127 @@ fn restart_required_changes_allows_hot_reloadable_fields() {
     candidate.upstream_timeout_seconds += 1;
 
     assert!(current.restart_required_changes(&candidate).is_empty());
+}
+
+// Patch 01: custom CA bundle parsing, validation, and restart-only behavior.
+const TEST_CA_PEM: &str = include_str!("testdata/ca.pem");
+
+fn ca_test_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let path = temp_config_path(name);
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn ca_bundles_default_to_none() {
+    let path = temp_config_path("aif_ca_unconfigured");
+    fs::write(
+        &path,
+        "redis_url redis://127.0.0.1:6379;\nupstream_api_key key;\nmodel_price m 0.1 0.2;\n",
+    )
+    .unwrap();
+    let cfg = Config::from_file(&path).unwrap();
+    fs::remove_file(path).ok();
+    assert_eq!(cfg.upstream_ca_bundle, None);
+    assert_eq!(cfg.embedding_ca_bundle, None);
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+fn configured_ca_bundles_parse_and_validate_from_file() {
+    let ca_path = ca_test_file("aif_test_ca", TEST_CA_PEM.as_bytes());
+    let config_path = temp_config_path("aif_ca_config");
+    let config_text = format!(
+        "redis_url redis://127.0.0.1:6379;\nupstream_api_key key;\nmodel_price m 0.1 0.2;\nupstream_ca_bundle {};\nembedding_ca_bundle {};\n",
+        ca_path.display(), ca_path.display(),
+    );
+    fs::write(&config_path, config_text).unwrap();
+    let cfg = Config::from_file(&config_path).unwrap();
+    assert_eq!(cfg.upstream_ca_bundle.as_deref(), ca_path.to_str());
+    assert_eq!(cfg.embedding_ca_bundle.as_deref(), ca_path.to_str());
+    assert!(cfg.validate().is_ok());
+    assert!(cfg.to_masked_display().contains("upstream_ca_bundle = "));
+
+    fs::remove_file(config_path).ok();
+    fs::remove_file(ca_path).ok();
+}
+
+#[test]
+fn configured_ca_bundles_reject_missing_empty_and_invalid_pem() {
+    let missing = temp_config_path("aif_ca_does_not_exist");
+    let mut cfg = minimal_valid_config();
+
+    cfg.upstream_ca_bundle = Some(missing.to_string_lossy().to_string());
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("upstream_ca_bundle could not read"));
+
+    cfg.upstream_ca_bundle = Some("  ".to_string());
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("upstream_ca_bundle must not be empty"));
+
+    cfg.upstream_ca_bundle = None;
+    let empty_file = ca_test_file("aif_ca_empty", b"");
+    cfg.embedding_ca_bundle = Some(empty_file.to_string_lossy().to_string());
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("embedding_ca_bundle CA bundle"));
+    fs::remove_file(empty_file).ok();
+
+    let garbage_file = ca_test_file("aif_ca_garbage", b"not a certificate");
+    cfg.embedding_ca_bundle = Some(garbage_file.to_string_lossy().to_string());
+    assert!(cfg.validate().is_err());
+    fs::remove_file(garbage_file).ok();
+}
+
+#[test]
+fn configured_ca_bundle_supports_multiple_pem_certificates() {
+    let mut two_cas = TEST_CA_PEM.as_bytes().to_vec();
+    two_cas.extend_from_slice(TEST_CA_PEM.as_bytes());
+    let path = ca_test_file("aif_ca_bundle_multiple", &two_cas);
+    let mut cfg = minimal_valid_config();
+    cfg.upstream_ca_bundle = Some(path.to_string_lossy().to_string());
+    assert!(cfg.validate().is_ok());
+    fs::remove_file(path).ok();
+}
+
+#[test]
+#[serial]
+fn configured_ca_bundles_parse_from_environment() {
+    let path = ca_test_file("aif_ca_env", TEST_CA_PEM.as_bytes());
+    unsafe {
+        std::env::set_var("AIF_REDIS_URL", "redis://127.0.0.1:6379");
+        std::env::set_var("AIF_UPSTREAM_API_KEY", "key");
+        std::env::set_var("AIF_UPSTREAM_CA_BUNDLE", &path);
+        std::env::set_var("AIF_EMBEDDING_CA_BUNDLE", &path);
+    }
+    let cfg = Config::from_env().unwrap();
+    unsafe {
+        std::env::remove_var("AIF_UPSTREAM_CA_BUNDLE");
+        std::env::remove_var("AIF_EMBEDDING_CA_BUNDLE");
+        std::env::remove_var("AIF_REDIS_URL");
+        std::env::remove_var("AIF_UPSTREAM_API_KEY");
+    }
+    assert_eq!(cfg.upstream_ca_bundle.as_deref(), path.to_str());
+    assert_eq!(cfg.embedding_ca_bundle.as_deref(), path.to_str());
+    fs::remove_file(path).ok();
+}
+
+#[test]
+fn ca_bundle_path_changes_require_restart_not_sighup() {
+    let current = minimal_valid_config();
+    let mut candidate = current.clone();
+    candidate.upstream_ca_bundle = Some("/etc/aif-certs/new-ca.pem".into());
+    candidate.embedding_ca_bundle = Some("/etc/aif-certs/other-ca.pem".into());
+    assert_eq!(
+        current.restart_required_changes(&candidate),
+        vec!["upstream_ca_bundle", "embedding_ca_bundle"]
+    );
 }

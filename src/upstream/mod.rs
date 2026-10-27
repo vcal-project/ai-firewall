@@ -17,6 +17,7 @@ pub fn build_llm_upstream(cfg: &Config) -> Result<Arc<dyn LlmUpstream>, AppError
             cfg.upstream_base_url.clone(),
             cfg.upstream_api_key.clone(),
             Duration::from_secs(cfg.upstream_timeout_seconds),
+            cfg.upstream_ca_bundle.as_deref(),
         )?)),
     }
 }

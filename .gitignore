@@ -39,6 +39,9 @@ deploy/grafana/dashboards/*.json
 # SBOM files
 sbom/
 
-tests/
+tests/*
+!tests/tls-fixtures/
+tests/failure/
+
 scripts/
 release-security/

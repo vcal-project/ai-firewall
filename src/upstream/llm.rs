@@ -77,7 +77,7 @@ impl UpstreamErrorKind {
     pub fn default_hint(self) -> Option<&'static str> {
         match self {
             UpstreamErrorKind::Tls => Some(
-                "Check certificate trust, hostname/SAN, and whether upstream_base_url uses the correct scheme. For trusted local providers with self-signed certificates, consider using http:// inside the private network.",
+                "Check certificate trust, hostname/SAN, and the upstream HTTPS URL. For an internal CA, configure upstream_ca_bundle and restart AIF; do not disable TLS verification.",
             ),
             UpstreamErrorKind::Dns => Some(
                 "Check upstream_base_url, provider hostname, Docker service name, and DNS resolution from inside the AI Firewall container.",

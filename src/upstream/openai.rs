@@ -24,14 +24,32 @@ pub struct OpenAiUpstream {
 }
 
 impl OpenAiUpstream {
-    pub fn new(base_url: String, api_key: String, timeout: Duration) -> Result<Self, AppError> {
+    pub fn new(
+        base_url: String,
+        api_key: String,
+        timeout: Duration,
+        ca_bundle_path: Option<&str>,
+    ) -> Result<Self, AppError> {
+        // Parse once, then use this same CA snapshot for both buffered and
+        // streaming clients. Paths and certificate contents are restart-only.
+        let custom_roots = crate::tls::load_custom_ca_roots(ca_bundle_path, "upstream_ca_bundle")
+            .map_err(|error| {
+            AppError::internal(format!("failed to load upstream CA bundle: {error:#}"))
+        })?;
+        if !custom_roots.is_empty() {
+            tracing::info!(
+                certificate_count = custom_roots.len(),
+                "loaded custom upstream CA roots for buffered and streaming clients"
+            );
+        }
+
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
             header::HeaderValue::from_static("application/json"),
         );
 
-        let client = Client::builder()
+        let client = crate::tls::with_custom_ca_roots(Client::builder(), &custom_roots)
             .default_headers(headers.clone())
             .timeout(timeout)
             .build()
@@ -41,7 +59,7 @@ impl OpenAiUpstream {
         // The configured upstream timeout bounds response headers and is also exposed
         // as the provider-stream idle timeout. ChatService separately enforces an
         // absolute controlled-stream generation ceiling while consuming the body.
-        let streaming_client = Client::builder()
+        let streaming_client = crate::tls::with_custom_ca_roots(Client::builder(), &custom_roots)
             .default_headers(headers)
             .build()
             .map_err(|e| {
@@ -490,5 +508,35 @@ mod tests {
             classify_upstream_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
             UpstreamErrorKind::HttpStatus
         );
+    }
+}
+
+#[cfg(test)]
+mod custom_ca_tests {
+    use super::*;
+
+    #[test]
+    fn creates_buffered_and_streaming_clients_with_custom_ca() {
+        let ca_path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/testdata/ca.pem");
+        OpenAiUpstream::new(
+            "https://example.test/v1".into(),
+            "none".into(),
+            Duration::from_secs(30),
+            Some(ca_path),
+        )
+        .expect("both upstream HTTP clients must accept the configured CA");
+    }
+
+    #[test]
+    fn rejects_missing_upstream_ca_file() {
+        let error = OpenAiUpstream::new(
+            "https://example.test/v1".into(),
+            "none".into(),
+            Duration::from_secs(30),
+            Some("/does-not-exist/aif-upstream-ca.pem"),
+        )
+        .err()
+        .expect("missing configured CA must fail initialization");
+        assert!(error.to_string().contains("upstream CA bundle"));
     }
 }

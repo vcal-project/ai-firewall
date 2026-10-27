@@ -237,12 +237,14 @@ pub struct Config {
 
     pub upstream_provider: ProviderKind,
     pub upstream_base_url: String,
+    pub upstream_ca_bundle: Option<String>,
     pub upstream_api_key: String,
     pub streaming_enabled: bool,
     pub max_stream_upstream_bytes: usize,
 
     pub embedding_provider: ProviderKind,
     pub embedding_base_url: String,
+    pub embedding_ca_bundle: Option<String>,
     pub embedding_api_key: String,
     pub embedding_model: String,
     pub embedding_price: Option<EmbeddingPrice>,
@@ -361,6 +363,19 @@ impl Config {
             validate_openai_compatible_base_url("upstream_base_url", &self.upstream_base_url)
         {
             errors.push(err);
+        }
+
+        // Custom CA bundles are optional and additive to reqwest's WebPKI roots.
+        // Runtime client constructors load the configured roots at initialization.
+        if let Some(error) =
+            validate_ca_bundle("upstream_ca_bundle", self.upstream_ca_bundle.as_deref())
+        {
+            errors.push(error);
+        }
+        if let Some(error) =
+            validate_ca_bundle("embedding_ca_bundle", self.embedding_ca_bundle.as_deref())
+        {
+            errors.push(error);
         }
 
         if self.upstream_api_key.trim().is_empty() {
@@ -875,6 +890,10 @@ impl Config {
         ));
         out.push_str(&format!("upstream_base_url = {}\n", self.upstream_base_url));
         out.push_str(&format!(
+            "upstream_ca_bundle = {}\n",
+            self.upstream_ca_bundle.as_deref().unwrap_or("<not set>")
+        ));
+        out.push_str(&format!(
             "upstream_api_key = {}\n",
             mask_secret_value(&self.upstream_api_key)
         ));
@@ -929,6 +948,10 @@ impl Config {
         out.push_str(&format!(
             "embedding_base_url = {}\n",
             self.embedding_base_url
+        ));
+        out.push_str(&format!(
+            "embedding_ca_bundle = {}\n",
+            self.embedding_ca_bundle.as_deref().unwrap_or("<not set>")
         ));
         out.push_str(&format!(
             "embedding_api_key = {}\n",
@@ -1185,6 +1208,7 @@ impl Config {
                 ProviderKind::OpenAiCompatible,
             )?,
             upstream_base_url: get_or_default(&map, "upstream_base_url", "https://api.openai.com"),
+            upstream_ca_bundle: map.get("upstream_ca_bundle").cloned(),
             upstream_api_key: get_required(&map, "upstream_api_key")?,
             streaming_enabled: parse_or_default(&map, "streaming_enabled", true)?,
             max_stream_upstream_bytes: map
@@ -1204,6 +1228,7 @@ impl Config {
                 "embedding_base_url",
                 "https://api.openai.com",
             ),
+            embedding_ca_bundle: map.get("embedding_ca_bundle").cloned(),
 
             embedding_api_key: map
                 .get("embedding_api_key")
@@ -1465,6 +1490,7 @@ impl Config {
 
             upstream_base_url: env::var("AIF_UPSTREAM_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".into()),
+            upstream_ca_bundle: optional_env("AIF_UPSTREAM_CA_BUNDLE")?,
             upstream_api_key: env::var("AIF_UPSTREAM_API_KEY").map_err(|_| {
                 cfg_err("AIF_UPSTREAM_API_KEY is required when no config file is used")
             })?,
@@ -1494,6 +1520,7 @@ impl Config {
 
             embedding_base_url: env::var("AIF_EMBEDDING_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".into()),
+            embedding_ca_bundle: optional_env("AIF_EMBEDDING_CA_BUNDLE")?,
             embedding_api_key: env::var("AIF_EMBEDDING_API_KEY")
                 .unwrap_or_else(|_| env::var("AIF_UPSTREAM_API_KEY").unwrap_or_default()),
             embedding_model: env::var("AIF_EMBEDDING_MODEL")
@@ -1893,6 +1920,14 @@ impl Config {
         if self.listen_addr != candidate.listen_addr {
             changes.push("listen_addr");
         }
+        // CA trust configuration is restart-only: rotating a mounted CA or
+        // changing either path requires a pod restart rather than SIGHUP.
+        if self.upstream_ca_bundle != candidate.upstream_ca_bundle {
+            changes.push("upstream_ca_bundle");
+        }
+        if self.embedding_ca_bundle != candidate.embedding_ca_bundle {
+            changes.push("embedding_ca_bundle");
+        }
         if self.max_request_body_bytes != candidate.max_request_body_bytes {
             changes.push("max_request_body_bytes");
         }
@@ -2024,11 +2059,13 @@ impl fmt::Debug for Config {
             .field("aif_enforcement_mode", &self.aif_enforcement_mode.as_str())
             .field("upstream_provider", &self.upstream_provider.as_str())
             .field("upstream_base_url", &self.upstream_base_url)
+            .field("upstream_ca_bundle", &self.upstream_ca_bundle)
             .field("upstream_api_key", &mask_secret(&self.upstream_api_key))
             .field("streaming_enabled", &self.streaming_enabled)
             .field("max_stream_upstream_bytes", &self.max_stream_upstream_bytes)
             .field("embedding_provider", &self.embedding_provider.as_str())
             .field("embedding_base_url", &self.embedding_base_url)
+            .field("embedding_ca_bundle", &self.embedding_ca_bundle)
             .field("embedding_api_key", &mask_secret(&self.embedding_api_key))
             .field("embedding_model", &self.embedding_model)
             .field("embedding_price", &self.embedding_price)
@@ -2207,11 +2244,13 @@ fn allowed_directives() -> HashSet<&'static str> {
         "aif_enforcement_mode",
         "upstream_provider",
         "upstream_base_url",
+        "upstream_ca_bundle",
         "upstream_api_key",
         "streaming_enabled",
         "max_stream_upstream_bytes",
         "embedding_provider",
         "embedding_base_url",
+        "embedding_ca_bundle",
         "embedding_api_key",
         "embedding_model",
         "embedding_price",
@@ -2442,6 +2481,54 @@ fn get_required(map: &HashMap<String, String>, key: &str) -> Result<String> {
 
 fn get_or_default(map: &HashMap<String, String>, key: &str, default: &str) -> String {
     map.get(key).cloned().unwrap_or_else(|| default.to_string())
+}
+
+// An absent custom CA path means default TLS roots. A present but invalid
+// UTF-8 environment variable is a configuration error, never silently ignored.
+fn optional_env(key: &str) -> Result<Option<String>> {
+    match env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(cfg_err(format!(
+            "environment variable {} is not valid UTF-8",
+            key
+        ))),
+    }
+}
+
+/// Validate a configured PEM root bundle before any HTTP clients are created.
+/// The TLS client constructors also read and install the roots at initialization.
+fn validate_ca_bundle(name: &str, path: Option<&str>) -> Option<String> {
+    let path = path?;
+    if path.trim().is_empty() {
+        return Some(format!("{name} must not be empty when configured"));
+    }
+
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Some(format!(
+                "{name} could not read CA bundle '{}': {}",
+                path, error
+            ))
+        }
+    };
+
+    if bytes.is_empty() {
+        return Some(format!("{name} CA bundle '{}' is empty", path));
+    }
+
+    match reqwest::Certificate::from_pem_bundle(&bytes) {
+        Ok(certificates) if !certificates.is_empty() => None,
+        Ok(_) => Some(format!(
+            "{name} CA bundle '{}' contains no PEM certificates",
+            path
+        )),
+        Err(error) => Some(format!(
+            "{name} CA bundle '{}' is not a valid PEM certificate bundle: {}",
+            path, error
+        )),
+    }
 }
 
 fn parse_env_or_default<T>(key: &str, default: T) -> Result<T>

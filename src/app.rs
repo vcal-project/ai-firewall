@@ -464,6 +464,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
                     cfg.embedding_api_key.clone(),
                     cfg.embedding_model.clone(),
                     Duration::from_secs(cfg.embedding_timeout_seconds),
+                    cfg.embedding_ca_bundle.as_deref(),
                 )
                 .context("failed to initialize OpenAI-compatible embedding provider")?;
 
