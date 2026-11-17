@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ai-firewall
-          image: vcalproject/ai-firewall:v0.8.2
+          image: vcalproject/ai-firewall:v0.8.8
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

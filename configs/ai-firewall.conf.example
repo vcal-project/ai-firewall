@@ -33,6 +33,9 @@ aif_enforcement_mode enforce;
 # a canonical completion, applies response controls and Privacy restoration,
 # records accounting/evidence, and only then commits an SSE response to the
 # client. Streamed and non-streamed requests share the normal cache pipeline.
+# Exact and semantic cache hits return a complete cached answer promptly; AIF
+# does not simulate token-by-token output for cached responses. Progressive
+# delivery of upstream tokens is not part of v0.8.8.
 streaming_enabled true;
 # Maximum cumulative provider SSE bytes accepted for one controlled streaming request.
 max_stream_upstream_bytes 8M;
@@ -134,7 +137,8 @@ metrics_auth_required false;
 # metrics_auth_token replace-with-prometheus-token;
 
 # Readiness dependency behavior.
-# These checks use dependency status known during startup/reload.
+# Redis readiness reflects periodic write-health checks during operation,
+# including after recovery or configuration reload.
 
 # Redis is required for readiness even though exact-cache request processing
 # is configured to fail open. Set this to false when Redis outages should not
