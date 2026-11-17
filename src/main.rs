@@ -48,6 +48,10 @@ fn parse_healthcheck() -> bool {
     std::env::args().any(|a| a == "--healthcheck")
 }
 
+fn parse_readycheck() -> bool {
+    std::env::args().any(|a| a == "--readycheck")
+}
+
 fn resolve_config_path(explicit: Option<String>) -> Option<String> {
     if explicit.is_some() {
         return explicit;
@@ -198,7 +202,13 @@ async fn config_reload_loop(
                             *svc = runtime.chat_service;
                         }
 
-                        state.dependencies.update(&runtime.dependencies);
+                        // Install the new runtime's dependency handles, not
+                        // just a snapshot of their current boolean values.
+                        // Its Redis monitor and chat service share these Arcs.
+                        {
+                            let mut dependencies = state.dependencies.write().await;
+                            *dependencies = runtime.dependencies;
+                        }
                         state
                             .replace_evidence_delivery(
                                 runtime.evidence_delivery,
@@ -315,7 +325,7 @@ async fn graceful_shutdown(state: Arc<app::AppState>, drain_timeout: Duration) {
     tracing::info!("shutdown phase 4/4: graceful shutdown complete");
 }
 
-async fn run_healthcheck() -> anyhow::Result<()> {
+async fn run_healthcheck(path: &'static str) -> anyhow::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let addr =
@@ -329,8 +339,9 @@ async fn run_healthcheck() -> anyhow::Result<()> {
     .context("healthcheck connection timed out")?
     .context("healthcheck failed to connect")?;
 
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     stream
-        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .write_all(request.as_bytes())
         .await
         .context("healthcheck failed to send request")?;
 
@@ -352,7 +363,7 @@ async fn run_healthcheck() -> anyhow::Result<()> {
     if status_line.contains(" 200 ") {
         Ok(())
     } else {
-        anyhow::bail!("healthcheck failed: {}", status_line);
+        anyhow::bail!("{} check failed: {}", path, status_line);
     }
 }
 
@@ -373,9 +384,18 @@ async fn main() -> anyhow::Result<()> {
     let print_config = parse_print_config();
     let prune_expired_semantic_cache = parse_prune_expired_semantic_cache();
     let healthcheck = parse_healthcheck();
+    let readycheck = parse_readycheck();
 
+    if healthcheck && readycheck {
+        anyhow::bail!("--healthcheck and --readycheck are mutually exclusive");
+    }
     if healthcheck {
-        return run_healthcheck().await;
+        // Backward compatible liveness semantics (e.g. Docker HEALTHCHECK).
+        return run_healthcheck("/healthz").await;
+    }
+    if readycheck {
+        // Use this for exec-based readiness probes, not --healthcheck.
+        return run_healthcheck("/readyz").await;
     }
 
     let explicit_config_path = parse_config_path();

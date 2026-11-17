@@ -8,6 +8,7 @@ use prometheus::{
 use std::sync::Once;
 
 static INIT: Once = Once::new();
+static INIT_REDIS_METRICS: Once = Once::new();
 
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 
@@ -369,6 +370,50 @@ pub static DEPENDENCY_FAILURES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
         &["dependency", "class"],
     )
     .expect("metric aif_dependency_failures_total must be valid")
+});
+
+// Redis exact-cache diagnostics. The gauge describes the last *write probe*,
+// not a PING or successful connection-manager construction. A value of -1
+// means no write probe has completed since monitor startup (or no monitor).
+pub static REDIS_WRITE_HEALTHY: Lazy<IntGauge> = Lazy::new(|| {
+    IntGauge::new(
+        "aif_redis_write_healthy",
+        "Last Redis exact-cache write-health result: 1 healthy, 0 unhealthy, -1 unknown/not probed",
+    )
+    .expect("metric aif_redis_write_healthy must be valid")
+});
+
+pub static REDIS_WRITE_PROBES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_redis_write_probes_total",
+            "Redis exact-cache SETEX health probes by stable result class",
+        ),
+        &["result"],
+    )
+    .expect("metric aif_redis_write_probes_total must be valid")
+});
+
+pub static REDIS_RECONNECT_ATTEMPTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_redis_reconnect_attempts_total",
+            "Redis exact-cache connection-manager replacement attempts by outcome",
+        ),
+        &["result"],
+    )
+    .expect("metric aif_redis_reconnect_attempts_total must be valid")
+});
+
+pub static REDIS_WRITE_TRANSITIONS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_redis_write_transitions_total",
+            "Redis exact-cache write-health monitor state changes by destination state",
+        ),
+        &["state"],
+    )
+    .expect("metric aif_redis_write_transitions_total must be valid")
 });
 
 pub static ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -914,6 +959,8 @@ pub fn evidence_delivery_snapshot() -> (i64, u64, u64, u64) {
 }
 
 pub fn init() {
+    // Explicitly distinguish no Redis monitor from an unhealthy Redis probe.
+    INIT_REDIS_METRICS.call_once(|| REDIS_WRITE_HEALTHY.set(-1));
     Lazy::force(&ENFORCEMENT_MODE_INFO);
     Lazy::force(&RUNTIME_INFO);
     Lazy::force(&EVALUATION_REQUESTS_TOTAL);
@@ -957,6 +1004,10 @@ pub fn init() {
     Lazy::force(&EMBEDDING_REQUEST_DURATION_SECONDS);
     Lazy::force(&BACKPRESSURE_REJECTIONS_TOTAL);
     Lazy::force(&DEPENDENCY_FAILURES_TOTAL);
+    Lazy::force(&REDIS_WRITE_HEALTHY);
+    Lazy::force(&REDIS_WRITE_PROBES_TOTAL);
+    Lazy::force(&REDIS_RECONNECT_ATTEMPTS_TOTAL);
+    Lazy::force(&REDIS_WRITE_TRANSITIONS_TOTAL);
     Lazy::force(&MODEL_REQUESTS_TOTAL);
     Lazy::force(&MODEL_INPUT_TOKENS_TOTAL);
     Lazy::force(&MODEL_OUTPUT_TOKENS_TOTAL);
@@ -1022,6 +1073,10 @@ pub fn init() {
             Box::new(ERRORS_TOTAL.clone()),
             Box::new(BACKPRESSURE_REJECTIONS_TOTAL.clone()),
             Box::new(DEPENDENCY_FAILURES_TOTAL.clone()),
+            Box::new(REDIS_WRITE_HEALTHY.clone()),
+            Box::new(REDIS_WRITE_PROBES_TOTAL.clone()),
+            Box::new(REDIS_RECONNECT_ATTEMPTS_TOTAL.clone()),
+            Box::new(REDIS_WRITE_TRANSITIONS_TOTAL.clone()),
             Box::new(READINESS_STATE.clone()),
             Box::new(SHUTDOWN_IN_PROGRESS.clone()),
             Box::new(SHUTDOWN_REJECTIONS_TOTAL.clone()),

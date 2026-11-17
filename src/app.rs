@@ -100,28 +100,13 @@ impl DependencyState {
             upstream_available: Arc::new(AtomicBool::new(upstream_available)),
         }
     }
-
-    pub fn update(&self, other: &Self) {
-        self.redis_available.store(
-            other.redis_available.load(Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-        self.qdrant_available.store(
-            other.qdrant_available.load(Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-        self.upstream_available.store(
-            other.upstream_available.load(Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-    }
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<RwLock<Config>>,
     pub chat_service: Arc<RwLock<Arc<ChatService>>>,
-    pub dependencies: DependencyState,
+    pub dependencies: Arc<RwLock<DependencyState>>,
     pub evidence_delivery: Arc<Mutex<Option<BufferedHttpEvidenceHandle>>>,
     pub shutdown: ShutdownState,
     pub request_limit: Arc<Semaphore>,
@@ -189,10 +174,9 @@ impl AppState {
 
     /// Strict startup dependency check for orchestrators. Unlike normal
     /// readiness in Evaluation Mode, this verifies that cache backends marked
-    /// as required for readiness were initialized in the current process. It is intended
-    /// for Kubernetes/OpenShift startupProbe use so a pod that started before
-    /// Redis or Qdrant can be restarted and initialize the real cache clients
-    /// instead of remaining on a fail-open Noop cache for its whole lifetime.
+    /// as required for readiness are available. Redis is recoverable after
+    /// startup in fail-open or Observe mode; Qdrant may still need a runtime
+    /// rebuild when its initialization failed.
     pub async fn startup_failure(&self) -> Option<&'static str> {
         if self.shutdown.is_shutting_down() {
             return Some("not started: shutting down\n");
@@ -203,11 +187,12 @@ impl AppState {
         let requires_qdrant = cfg.semantic_cache_enabled && cfg.readiness_requires_qdrant;
         drop(cfg);
 
-        if requires_redis && !self.dependencies.redis_available.load(Ordering::Relaxed) {
-            return Some("not started: enabled Redis exact cache was not initialized\n");
+        let dependencies = self.dependencies.read().await;
+        if requires_redis && !dependencies.redis_available.load(Ordering::Relaxed) {
+            return Some("not started: enabled Redis exact cache unavailable\n");
         }
 
-        if requires_qdrant && !self.dependencies.qdrant_available.load(Ordering::Relaxed) {
+        if requires_qdrant && !dependencies.qdrant_available.load(Ordering::Relaxed) {
             return Some("not started: enabled Qdrant semantic cache was not initialized\n");
         }
 
@@ -226,13 +211,14 @@ impl AppState {
         let requires_upstream = cfg.readiness_requires_upstream;
         drop(cfg);
 
-        if requires_redis && !self.dependencies.redis_available.load(Ordering::Relaxed) {
+        let dependencies = self.dependencies.read().await;
+        if requires_redis && !dependencies.redis_available.load(Ordering::Relaxed) {
             return Some("not ready: redis unavailable\n");
         }
-        if requires_qdrant && !self.dependencies.qdrant_available.load(Ordering::Relaxed) {
+        if requires_qdrant && !dependencies.qdrant_available.load(Ordering::Relaxed) {
             return Some("not ready: qdrant unavailable\n");
         }
-        if requires_upstream && !self.dependencies.upstream_available.load(Ordering::Relaxed) {
+        if requires_upstream && !dependencies.upstream_available.load(Ordering::Relaxed) {
             return Some("not ready: upstream unavailable\n");
         }
 
@@ -382,6 +368,7 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     let effective_qdrant_collection = cfg.effective_qdrant_collection();
     let mut redis_available = false;
     let mut qdrant_available = false;
+    let mut redis_monitor_cache: Option<Arc<RedisExactCache>> = None;
 
     let exact_cache: Arc<dyn ExactCache> = if !cfg.exact_cache_enabled {
         tracing::info!("[SKIP] Exact cache disabled; Redis is not required");
@@ -394,28 +381,52 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
             )
         })?;
 
-        match ConnectionManager::new(redis_client.clone()).await {
+        // Bound initial connection establishment as well as later cache I/O.
+        // An unresponsive Redis must not hold fail-open startup indefinitely.
+        let initial_connection = match tokio::time::timeout(
+            Duration::from_secs(cfg.redis_timeout_seconds),
+            ConnectionManager::new(redis_client.clone()),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => Ok(conn),
+            Ok(Err(error)) => Err(anyhow::Error::new(error)),
+            Err(_) => Err(anyhow::anyhow!(
+                "Redis initial connection timed out after {}s",
+                cfg.redis_timeout_seconds
+            )),
+        };
+
+        match initial_connection {
             Ok(conn) => {
                 redis_available = true;
                 tracing::info!(
                     redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
                     "[OK] Redis connected"
                 );
-                Arc::new(RedisExactCache::new(
+                let cache = Arc::new(RedisExactCache::new(
                     redis_client,
                     conn,
                     cfg.exact_cache_ttl_seconds,
                     Duration::from_secs(cfg.redis_timeout_seconds),
-                ))
+                ));
+                redis_monitor_cache = Some(Arc::clone(&cache));
+                cache
             }
             Err(e) if cfg.exact_cache_fail_open || cfg.aif_enforcement_mode.is_observe() => {
                 tracing::warn!(
                     redis_url = %mask_redis_url_for_logs(&cfg.redis_url),
                     error = %e,
                     enforcement_mode = cfg.aif_enforcement_mode.as_str(),
-                    "Redis exact cache unavailable; startup continues without exact cache because fail-open or observe mode is active"
+                    "Redis unavailable at startup; exact cache will reconnect in background under fail-open or observe mode"
                 );
-                Arc::new(NoopExactCache)
+                let cache = Arc::new(RedisExactCache::new_disconnected(
+                    redis_client,
+                    cfg.exact_cache_ttl_seconds,
+                    Duration::from_secs(cfg.redis_timeout_seconds),
+                ));
+                redis_monitor_cache = Some(Arc::clone(&cache));
+                cache
             }
             Err(e) => {
                 tracing::error!(
@@ -586,6 +597,9 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     tracing::info!("[OK] Guard orchestrator initialized");
 
     let dependencies = DependencyState::new(redis_available, qdrant_available, upstream_available);
+    if let Some(cache) = redis_monitor_cache {
+        cache.start_health_monitor(Arc::clone(&dependencies.redis_available));
+    }
 
     let chat_service = Arc::new(ChatService::new_with_guards_and_evidence(
         ChatServiceDeps {
@@ -649,7 +663,9 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
     let state = Arc::new(AppState {
         config: Arc::new(RwLock::new(config.clone())),
         chat_service: Arc::new(RwLock::new(runtime.chat_service)),
-        dependencies: runtime.dependencies,
+        // Readiness must follow the active runtime after SIGHUP: replacing
+        // only the flag values would strand it on the old monitor's Arcs.
+        dependencies: Arc::new(RwLock::new(runtime.dependencies)),
         evidence_delivery: Arc::new(Mutex::new(runtime.evidence_delivery)),
         shutdown: ShutdownState::new(),
         request_limit: Arc::new(Semaphore::new(config.max_inflight_requests)),

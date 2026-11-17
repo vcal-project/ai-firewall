@@ -306,9 +306,9 @@ impl ChatService {
         embedding_price: Option<EmbeddingPrice>,
     ) -> Self {
         let dependencies = deps.dependencies;
-        let track_redis_runtime = dependencies
-            .redis_available
-            .load(std::sync::atomic::Ordering::Relaxed);
+        // Redis may be unavailable at startup but recover later. Keep tracking
+        // runtime errors whenever the Redis-backed exact cache is enabled.
+        let track_redis_runtime = settings.exact_cache_enabled;
         let track_qdrant_runtime = dependencies
             .qdrant_available
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -597,7 +597,8 @@ impl ChatService {
             } else {
                 match self.exact_cache.get(&exact_key).await {
                     Ok(Some(raw)) => {
-                        self.set_redis_available(true);
+                        // GET may succeed while AOF errors reject writes (MISCONF).
+                        // The independent SETEX monitor restores write-health state.
                         let hit: ChatCompletionResponse =
                             serde_json::from_str(&raw).map_err(|e| {
                                 AppError::internal(format!("cached response decode failed: {e}"))
@@ -679,7 +680,7 @@ impl ChatService {
                         }
                     }
                     Ok(None) => {
-                        self.set_redis_available(true);
+                        // A read-only success must not clear a failed write state.
                         if observe_mode {
                             self.record_evaluation_cache_outcome(CACHE_TYPE_EXACT, "miss");
                         }

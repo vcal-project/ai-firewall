@@ -1,4 +1,4 @@
-use crate::cache::exact::ExactCache;
+use crate::{cache::exact::ExactCache, metrics};
 use anyhow::Context;
 use async_trait::async_trait;
 use redis::{aio::ConnectionManager, AsyncCommands};
@@ -7,7 +7,11 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use tokio::{sync::Mutex, time::timeout};
+use tokio::{
+    sync::Mutex,
+    time::{interval, timeout, MissedTickBehavior},
+};
+use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 #[error("redis {operation} timed out after {timeout_seconds}s")]
@@ -16,13 +20,50 @@ pub struct RedisOperationTimeout {
     timeout_seconds: u64,
 }
 
+/// Fixed classes only. Never use Redis URLs, key names, or server messages
+/// as Prometheus labels. MISCONF is commonly returned when Redis has stopped
+/// accepting writes following a persistence failure.
+fn redis_server_code_class(code: Option<&str>) -> Option<&'static str> {
+    match code {
+        Some("MISCONF") => Some("persistence_rejected"),
+        Some("READONLY") => Some("write_rejected"),
+        _ => None,
+    }
+}
+
+fn redis_error_class(error: &redis::RedisError) -> &'static str {
+    if let Some(class) = redis_server_code_class(error.code()) {
+        return class;
+    }
+    if error.is_io_error() {
+        "connection_error"
+    } else {
+        "redis_error"
+    }
+}
+
+fn redis_health_error_class(error: &anyhow::Error) -> &'static str {
+    if error.downcast_ref::<RedisOperationTimeout>().is_some() {
+        return "timeout";
+    }
+
+    for source in error.chain() {
+        if let Some(redis_error) = source.downcast_ref::<redis::RedisError>() {
+            return redis_error_class(redis_error);
+        }
+    }
+
+    "client_unavailable"
+}
+
 #[derive(Clone)]
 pub struct RedisExactCache {
     client: redis::Client,
-    conn: Arc<Mutex<ConnectionManager>>,
+    conn: Arc<Mutex<Option<ConnectionManager>>>,
     reconnect_inflight: Arc<AtomicBool>,
     ttl_seconds: usize,
     operation_timeout: Duration,
+    health_probe_key: String,
 }
 
 impl RedisExactCache {
@@ -32,12 +73,145 @@ impl RedisExactCache {
         ttl_seconds: usize,
         operation_timeout: Duration,
     ) -> Self {
+        Self::with_connection(client, Some(conn), ttl_seconds, operation_timeout)
+    }
+
+    /// A fail-open runtime must retain a Redis-backed cache that can become
+    /// operational after startup, rather than permanently selecting NoopExactCache.
+    pub fn new_disconnected(
+        client: redis::Client,
+        ttl_seconds: usize,
+        operation_timeout: Duration,
+    ) -> Self {
+        Self::with_connection(client, None, ttl_seconds, operation_timeout)
+    }
+
+    fn with_connection(
+        client: redis::Client,
+        conn: Option<ConnectionManager>,
+        ttl_seconds: usize,
+        operation_timeout: Duration,
+    ) -> Self {
         Self {
             client,
             conn: Arc::new(Mutex::new(conn)),
             reconnect_inflight: Arc::new(AtomicBool::new(false)),
             ttl_seconds,
             operation_timeout,
+            health_probe_key: format!("aif:redis-health:{}", Uuid::new_v4()),
+        }
+    }
+
+    async fn current_connection(&self) -> anyhow::Result<ConnectionManager> {
+        // Do not hold a mutex while performing network I/O. In particular, a
+        // blocked read or write must not prevent installing a recovered manager.
+        self.conn
+            .lock()
+            .await
+            .clone()
+            .context("redis connection manager not yet initialized")
+    }
+
+    /// Continuously verify that Redis accepts writes, even when no requests are
+    /// reaching AIF (for example, while the pod has been removed from routing).
+    /// A PING/GET is insufficient: Redis can accept reads while AOF errors make
+    /// SETEX fail with MISCONF.
+    ///
+    /// The Weak cache reference ensures that reloading the runtime does not
+    /// leave a monitor running against a replaced connection manager.
+    pub fn start_health_monitor(self: &Arc<Self>, available: Arc<AtomicBool>) {
+        // Creating a manager does not establish write health. Do not expose a
+        // false-positive 1 during the initial five-second probe interval.
+        metrics::REDIS_WRITE_HEALTHY.set(-1);
+        let cache = Arc::downgrade(self);
+        tokio::spawn(async move {
+            // Request handling also updates dependency readiness. Track probe
+            // transitions independently, so a failed request cannot suppress
+            // the monitor's outage diagnostic event.
+            let mut last_probe_healthy = available.load(Ordering::Acquire);
+            let mut ticks = interval(Duration::from_secs(5));
+            ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            ticks.tick().await; // First probe after five seconds.
+
+            loop {
+                ticks.tick().await;
+                let Some(cache) = cache.upgrade() else {
+                    break;
+                };
+
+                match cache.probe_write().await {
+                    Ok(()) => {
+                        metrics::REDIS_WRITE_PROBES_TOTAL
+                            .with_label_values(&["success"])
+                            .inc();
+                        metrics::REDIS_WRITE_HEALTHY.set(1);
+                        available.store(true, Ordering::Release);
+                        if !last_probe_healthy {
+                            last_probe_healthy = true;
+                            metrics::REDIS_WRITE_TRANSITIONS_TOTAL
+                                .with_label_values(&["available"])
+                                .inc();
+                            tracing::info!(
+                                redis_health = "available",
+                                probe = "SETEX",
+                                "Redis write health restored; dependency marked available"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let error_class = redis_health_error_class(&error);
+                        metrics::REDIS_WRITE_PROBES_TOTAL
+                            .with_label_values(&[error_class])
+                            .inc();
+                        metrics::REDIS_WRITE_HEALTHY.set(0);
+                        available.store(false, Ordering::Release);
+                        if last_probe_healthy {
+                            last_probe_healthy = false;
+                            metrics::REDIS_WRITE_TRANSITIONS_TOTAL
+                                .with_label_values(&["unavailable"])
+                                .inc();
+                            tracing::warn!(
+                                redis_health = "unavailable",
+                                probe = "SETEX",
+                                error_class,
+                                error = %error,
+                                "Redis write health failed; dependency marked unavailable"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    async fn probe_write(&self) -> anyhow::Result<()> {
+        // This key contains no request information. Expiration bounds its
+        // lifetime even with AOF enabled or following an unclean pod exit.
+        let result = timeout(self.operation_timeout, async {
+            // ConnectionManager is cloneable; avoid holding the replacement
+            // mutex across I/O, which could otherwise delay live cache calls.
+            let mut conn = self.current_connection().await?;
+            let _: () = conn
+                .set_ex(self.health_probe_key.as_str(), "ok", 15)
+                .await
+                .context("redis health SETEX failed")?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.trigger_reconnect("HEALTH_SETEX");
+                Err(error)
+            }
+            Err(_) => {
+                self.trigger_reconnect("HEALTH_SETEX");
+                Err(anyhow::Error::new(RedisOperationTimeout {
+                    operation: "HEALTH_SETEX",
+                    timeout_seconds: self.operation_timeout.as_secs(),
+                }))
+            }
         }
     }
 
@@ -57,22 +231,36 @@ impl RedisExactCache {
             match reconnect_result {
                 Ok(Ok(new_conn)) => {
                     let mut current = conn.lock().await;
-                    *current = new_conn;
-                    tracing::info!(
+                    *current = Some(new_conn);
+                    metrics::REDIS_RECONNECT_ATTEMPTS_TOTAL
+                        .with_label_values(&["success"])
+                        .inc();
+                    // Connection-manager construction is NOT proof that Redis
+                    // accepts SETEX: an AOF MISCONF can persist across reconnects.
+                    tracing::debug!(
                         failed_operation = operation,
-                        "Redis exact-cache connection manager reconnected"
+                        "Redis exact-cache connection manager refreshed; write health unverified"
                     );
                 }
                 Ok(Err(error)) => {
+                    let error_class = redis_error_class(&error);
+                    metrics::REDIS_RECONNECT_ATTEMPTS_TOTAL
+                        .with_label_values(&["error"])
+                        .inc();
                     tracing::warn!(
                         failed_operation = operation,
+                        error_class,
                         error = %error,
                         "Redis exact-cache background reconnect failed"
                     );
                 }
                 Err(_) => {
+                    metrics::REDIS_RECONNECT_ATTEMPTS_TOTAL
+                        .with_label_values(&["timeout"])
+                        .inc();
                     tracing::warn!(
                         failed_operation = operation,
+                        error_class = "timeout",
                         timeout_seconds = reconnect_timeout.as_secs(),
                         "Redis exact-cache background reconnect timed out"
                     );
@@ -90,7 +278,7 @@ impl ExactCache for RedisExactCache {
         let start = Instant::now();
 
         let operation_result = timeout(self.operation_timeout, async {
-            let mut conn = self.conn.lock().await;
+            let mut conn = self.current_connection().await?;
             conn.get(key)
                 .await
                 .with_context(|| format!("redis GET failed for key '{}'", key))
@@ -134,7 +322,7 @@ impl ExactCache for RedisExactCache {
         let start = Instant::now();
 
         let operation_result = timeout(self.operation_timeout, async {
-            let mut conn = self.conn.lock().await;
+            let mut conn = self.current_connection().await?;
             let _: () = conn
                 .set_ex(key, value, self.ttl_seconds as u64)
                 .await
@@ -168,5 +356,38 @@ impl ExactCache for RedisExactCache {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redis_probe_timeout_uses_stable_class() {
+        let error = anyhow::Error::new(RedisOperationTimeout {
+            operation: "HEALTH_SETEX",
+            timeout_seconds: 2,
+        });
+        assert_eq!(redis_health_error_class(&error), "timeout");
+    }
+
+    #[test]
+    fn known_redis_rejections_have_stable_classes() {
+        assert_eq!(
+            redis_server_code_class(Some("MISCONF")),
+            Some("persistence_rejected")
+        );
+        assert_eq!(
+            redis_server_code_class(Some("READONLY")),
+            Some("write_rejected")
+        );
+        assert_eq!(redis_server_code_class(Some("OTHER")), None);
+    }
+
+    #[test]
+    fn non_redis_probe_error_is_not_a_high_cardinality_label() {
+        let error = anyhow::anyhow!("redis connection manager not yet initialized");
+        assert_eq!(redis_health_error_class(&error), "client_unavailable");
     }
 }
