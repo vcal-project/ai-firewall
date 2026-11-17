@@ -140,7 +140,41 @@ aif_evaluation_gross_saved_micro_usd_total
 aif_evaluation_net_saved_micro_usd_total
 aif_evaluation_shadow_store_total
 aif_evaluation_errors_total
+aif_redis_write_healthy
+aif_redis_write_probes_total
+aif_redis_reconnect_attempts_total
+aif_redis_write_transitions_total
 ```
+
+### Redis recovery diagnostics
+
+When Redis exact caching is enabled, a background health check periodically performs a short-lived
+`SETEX` write. This detects failures that a connection check or Redis `PING` would miss, including
+write rejections related to Redis persistence. The health check continues without client traffic.
+
+| Metric | Interpretation |
+|---|---|
+| `aif_redis_write_healthy` | Latest write-probe result: `1` healthy, `0` unhealthy, `-1` unknown or not yet probed. This is not a replacement for `/readyz`. |
+| `aif_redis_write_probes_total{result}` | Write probes by stable outcome: `success`, `timeout`, `persistence_rejected`, `write_rejected`, `connection_error`, `redis_error`, or `client_unavailable`. |
+| `aif_redis_reconnect_attempts_total{result}` | Connection-manager replacement attempts by `success`, `error`, or `timeout`; success does **not** confirm write availability. |
+| `aif_redis_write_transitions_total{state}` | Monitor-observed transitions into `available` or `unavailable`, not one event per probe. |
+
+The `persistence_rejected` class corresponds to Redis `MISCONF` and `write_rejected` to `READONLY`.
+These AIF metrics complement Redis server persistence metrics and logs. They use bounded result labels;
+Redis connection strings, request keys, and error messages are not included as metric labels.
+
+Example PromQL queries:
+
+```promql
+aif_redis_write_healthy
+increase(aif_redis_write_probes_total{result="persistence_rejected"}[15m])
+increase(aif_redis_write_transitions_total{state="available"}[15m])
+```
+
+AIF readiness also depends on the configured dependency requirements and enforcement mode. The
+Redis write-health gauge is specific to exact caching and does not represent Qdrant, Guard, or
+upstream availability. See [Operations](operation.md#redis-failure-and-recovery) and
+[Troubleshooting](troubleshooting.md#redis-connection-and-write-failures).
 
 AI Cost Firewall reports:
 

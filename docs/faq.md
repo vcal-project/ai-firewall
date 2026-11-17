@@ -146,6 +146,22 @@ Evaluation-only cache dependency failures are non-disruptive; unsupported recogn
 are not the same as a transport failure. See [Operations](operation.md) and
 [Troubleshooting](troubleshooting.md).
 
+### Does Redis reconnect automatically after an outage?
+
+When exact caching is enabled, AIF checks Redis write availability periodically and can restore
+connectivity and dependency readiness without restarting the AIF process. In fail-open or Observe
+mode, a Redis outage during startup also retains a reconnectable cache client. Redis can answer
+`PING` while refusing writes, so AIF verifies a short-lived `SETEX`. Enforce-mode fail-closed
+startup still requires Redis to be available. Qdrant initialization and recovery have different
+semantics. See [Operations](operation.md#redis-failure-and-recovery).
+
+### Why can `/healthz` be healthy while `/readyz` reports unavailable?
+
+`/healthz` checks process liveness; `/readyz` also applies the configured dependency policy.
+The CLI `--healthcheck` tests liveness, whereas `--readycheck` tests readiness. A fail-open cache
+policy does not automatically mean the cache is optional for readiness. See
+[Operations](operation.md#probe-endpoints).
+
 ## Optional VCAL modules and structured evidence
 
 ### Are optional VCAL modules required to use AIF?

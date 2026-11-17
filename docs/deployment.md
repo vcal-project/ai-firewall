@@ -24,7 +24,7 @@ In `observe`, live responses still come from the upstream provider. Redis and Qd
 
 Evaluation Mode controls AIF caching only. Existing Security Guard, Privacy Guard, and Usage Guard settings continue to enforce exactly as configured.
 
-For assessment-capable deployments, keep Prometheus scraping AIF throughout the selected Observe period. v0.8.3 exposes the active runtime identity as `aif_runtime_info{version,config_schema,configuration_hash}` and exposes the current safe effective configuration at `GET /assessment-context`. Together these allow an assessment tool to verify that the selected period used one stable AIF runtime/configuration identity.
+For assessment-capable deployments, keep Prometheus scraping AIF throughout the selected Observe period. AIF exposes the active runtime identity as `aif_runtime_info{version,config_schema,configuration_hash}` and exposes the current safe effective configuration at `GET /assessment-context`. Together these allow an assessment tool to verify that the selected period used one stable AIF runtime/configuration identity.
 
 `/assessment-context` is sanitized and does not return API keys or credentials, but it still contains operational configuration metadata. Expose it only where that administrative/runtime metadata is intended to be visible.
 
@@ -40,11 +40,20 @@ AIF exposes three probe endpoints:
 
 - `/healthz` reports process liveness.
 - `/readyz` evaluates whether the instance should currently receive traffic and preserves the existing fail-open / Observe semantics.
-- `/startupz` is a stricter orchestrator startup check. If an enabled Redis or Qdrant cache is also configured as required for readiness, `/startupz` requires that backend to have initialized successfully in the current process.
+- `/startupz` is a stricter orchestrator startup check. When Redis exact caching is configured as required for readiness, Redis must be currently available; a required Qdrant semantic-cache backend must have initialized successfully.
 
-The stricter startup check prevents a pod that started before Redis/Qdrant from remaining on a startup-time no-op cache for its whole lifetime. Use `/startupz` as a Kubernetes/OpenShift `startupProbe`, `/readyz` as the `readinessProbe`, and `/healthz` as the `livenessProbe`.
+Use `/startupz` as the orchestrator `startupProbe`, `/readyz` as the `readinessProbe`, and `/healthz`
+as the `livenessProbe`. For CLI probes, `--healthcheck` tests **liveness** (`/healthz`) and
+`--readycheck` tests **readiness** (`/readyz`). HTTP probes are preferred where supported.
 
-Do not mark an optional fail-open cache as a required readiness dependency unless removing/restarting the pod is the intended policy.
+In fail-open or Observe mode, Redis exact caching can recover from an unavailable Redis service,
+including after initial startup. A failed Qdrant initialization may still require a runtime rebuild.
+If Redis is deliberately configured as required for startup, a prolonged Redis outage can prevent
+startup completion even though fail-open request handling could otherwise continue.
+
+Do not mark an optional fail-open cache as a required readiness dependency unless removing the instance
+from traffic is the intended policy. AIF does not change Redis persistence settings; those settings and
+any required durability guarantees should be managed at the Redis service.
 
 ## OpenShift deployment
 

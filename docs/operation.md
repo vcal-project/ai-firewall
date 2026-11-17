@@ -38,7 +38,13 @@ readiness_requires_upstream false;
 ```
 
 A cache marked required for startup/readiness has stricter initialization semantics than an optional
-fail-open cache. In Observe Mode, failures in Redis/Qdrant/embeddings used **only for evaluation** do not
+fail-open cache. If Redis is unavailable at startup, Enforce mode with `exact_cache_fail_open true`
+(and Observe mode) retains a reconnectable Redis exact-cache client. When Redis becomes available,
+the client can recover without restarting AIF. Enforce mode with `exact_cache_fail_open false`
+still fails startup if Redis cannot be initialized. Qdrant initialization follows its own policy;
+a failed semantic-cache initialization may require a runtime rebuild or process restart.
+
+In Observe Mode, failures in Redis/Qdrant/embeddings used **only for evaluation** do not
 interrupt live inference and are recorded in evaluation error telemetry. Static invalid configuration can
 still prevent startup.
 
@@ -57,10 +63,15 @@ curl -i http://localhost:8080/readyz
 ```
 
 Normal responses are 200 (`OK`, `started`, `ready` respectively). During graceful shutdown `/startupz` and
-`/readyz` return 503. `/startupz` is intentionally strict when enabled Redis/Qdrant backends were declared
-required for readiness and failed to initialize in the current process. `/readyz` remains healthy when an
-**optional evaluation-only** backend is down in Observe Mode. A required upstream can cause `/readyz` to
-fail without independently blocking `/startupz`.
+`/readyz` return 503. `/startupz` is intentionally strict when enabled Redis/Qdrant backends are declared
+required for readiness: Redis must be currently available, while Qdrant must have initialized successfully.
+`/readyz` applies the current dependency policy and remains healthy when an **optional evaluation-only**
+backend is down in Observe Mode. A required upstream can cause `/readyz` to fail without independently
+blocking `/startupz`.
+
+The CLI `--healthcheck` checks `/healthz` (liveness); it is **not** a dependency-aware readiness check.
+Use HTTP `/readyz`, or `--readycheck` when an exec-based readiness probe is required. The CLI checks
+connect to `127.0.0.1:8080` by default, overridable through `AIF_HEALTHCHECK_ADDR`.
 
 Do not treat a healthy probe as a complete chat/embedding connectivity test: verify a real model request
 separately.
@@ -89,8 +100,9 @@ docker compose kill -s HUP firewall
 ```
 
 Reload validates the replacement configuration and rebuilds eligible runtime dependencies before swapping
-the active runtime. A failed reload leaves the prior valid runtime active. Reload is not automatic file
-watching.
+the active runtime. A failed reload leaves the prior valid runtime active. Redis readiness monitoring and
+dependency flags follow the active runtime after a successful reload, rather than retaining a snapshot from
+the previous runtime. Reload is not automatic file watching.
 
 Changes to `listen_addr`, `max_request_body_bytes`, `max_inflight_requests`,
 `graceful_shutdown_timeout_seconds`, `upstream_ca_bundle`, and `embedding_ca_bundle`
@@ -112,6 +124,26 @@ variables, mounted Secrets, or Compose settings. Plan this according to your dep
 | Cache-bypass header | Forward upstream, no cache lookup/store | Forward upstream, no shadow lookup/store |
 | Guard transport/contract failure | `guard_fail_open` policy determines operational failure handling | AIF Observe does **not** override Guard failure policy |
 | Recognized unsupported Privacy text structure | Privacy inspection contract handling; do not assume fail-open passthrough | Same applicable Privacy safety contract |
+
+### Redis failure and recovery
+
+When Redis exact caching is enabled, AIF checks write availability in the background using a short-lived
+`SETEX` health key at approximately five-second intervals. It continues checking even if no client
+requests arrive. This is a **write** check, not just a connection or `PING` check: Redis can remain
+reachable while refusing writes (for example, with `MISCONF` after a persistence error). The probe
+key contains no request data and expires automatically.
+
+AIF retries reconnecting after failed operations and updates dependency health after a successful write
+probe. If Redis is required for readiness, `/readyz` reflects that state; if Redis is optional and
+`exact_cache_fail_open` is enabled, supported requests can continue to the upstream while caching is
+unavailable. A healthy connection-manager refresh alone is not proof that writes have recovered.
+Request-level cache operations can still incur their configured Redis timeout during a failure.
+
+Cache failure policy and readiness policy are independent. Neither `exact_cache_fail_open` nor an
+optional Redis readiness setting bypasses required Guard policies. Redis persistence is configured and
+operated separately from AIF; monitor persistence health at the Redis service as well as AIF's write
+health. See [Troubleshooting](troubleshooting.md#redis-connection-and-write-failures) and
+[Metrics and Costs](metrics-and-costs.md#redis-recovery-diagnostics).
 
 Guard evaluation order is Security (request), Privacy (request), Usage (request), response Security, and
 Privacy restore. AIF caches pre-restoration responses and uses mappings from the current request. For
@@ -162,8 +194,9 @@ docker compose logs --tail=200 firewall
 
 Metrics may require authentication when `metrics_auth_required` is configured. The built-in Grafana
 dashboards cover request rate, cache outcomes, gross and net cost estimates, semantic diagnostics, pressure,
-and high-level guard outcomes. Evaluation savings are **not** real savings and are exported separately. See
-[Metrics and Costs](metrics-and-costs.md).
+and high-level guard outcomes. Redis write-health and reconnect metrics are available through Prometheus;
+not every series is necessarily shown in the bundled dashboards. Evaluation savings are **not** real savings
+and are exported separately. See [Metrics and Costs](metrics-and-costs.md).
 
 To enable structured evidence logs, the repository documents:
 

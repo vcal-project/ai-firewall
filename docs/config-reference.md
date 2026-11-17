@@ -349,6 +349,9 @@ Redis-compatible systems:
 - Redis
 - Valkey
 
+AIF does not configure Redis AOF/RDB persistence. Choose Redis storage and persistence policies based
+on all consumers of the Redis service and their retention requirements.
+
 ---
 
 ## Upstream Provider Settings
@@ -795,7 +798,7 @@ When disabled:
 
 - Redis lookup or store failures can return an error
 
-This setting controls normal `enforce` runtime request behavior. In `observe`, exact-cache evaluation failures are always non-blocking so evaluation infrastructure cannot interrupt live application traffic. Startup and readiness behavior are also relaxed for evaluation-only dependencies in `observe`.
+This setting controls normal `enforce` runtime request behavior. In `observe`, exact-cache evaluation failures are always non-blocking so evaluation infrastructure cannot interrupt live application traffic. With fail-open enabled (or in Observe mode), Redis connection failure at startup retains a reconnectable exact-cache client, and background write-health checking can restore cache operation when Redis recovers. In Enforce mode with fail-open disabled, Redis connection failure still prevents startup. Readiness requirements are configured separately.
 
 ---
 
@@ -1496,7 +1499,7 @@ embedding_api_key = sk-y...-key
 
 During startup and reload, AI Cost Firewall validates static configuration and constructs the configured runtime dependencies.
 
-In v0.8.3, SIGHUP reload is rejected if it attempts to change a restart-only setting that the running process cannot safely apply. Restart-only fields include:
+SIGHUP reload is rejected if it attempts to change a restart-only setting that the running process cannot safely apply. Restart-only fields include:
 
 ```text
 listen_addr
@@ -1515,7 +1518,12 @@ In `enforce`, Redis/Qdrant availability follows the normal cache fail-open and r
 
 In `observe`, Redis, Qdrant, and embedding infrastructure used only for evaluation are optional to live request serving: initialization or runtime failure is recorded as evaluation telemetry and requests continue to the upstream provider. Static configuration errors, such as invalid syntax or incompatible configured vector dimensions, are still rejected.
 
-AIF v0.8.2 additionally exposes `/startupz`. When an enabled Redis/Qdrant cache is also marked required for readiness, `/startupz` requires that cache backend to have initialized successfully in the current process. This is intentionally stricter than Observe-mode `/readyz` and is intended for Kubernetes/OpenShift startup probes.
+AIF exposes `/healthz` for liveness, `/readyz` for configured dependency-aware readiness, and
+`/startupz` for stricter startup checks. When Redis exact caching is marked required for readiness,
+`/startupz` requires Redis to be currently available; when Qdrant semantic caching is marked required,
+`/startupz` requires the Qdrant backend to have initialized successfully. This is intentionally
+stricter than Observe-mode `/readyz`. The CLI `--healthcheck` tests `/healthz`; `--readycheck`
+tests `/readyz`. Readiness state follows the active runtime when configuration is reloaded.
 
 ---
 
@@ -1533,7 +1541,11 @@ Example:
 readiness_requires_redis true;
 ```
 
-Useful when Redis/exact cache is considered required for serving production traffic.
+Useful when Redis/exact cache is considered required for serving production traffic. With Redis exact
+caching enabled, dependency health is refreshed by periodic `SETEX` write probes, including during
+idle periods and after Redis recovers. A successful connection or `PING` does not imply Redis can
+accept writes. Requests can fail open while the instance reports unready if the two policies are
+configured differently; choose the intended traffic-routing policy explicitly.
 
 ---
 

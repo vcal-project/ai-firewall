@@ -140,57 +140,69 @@ docker compose run --rm firewall \
 
 ---
 
-## Redis Connection Failures
+## Redis Connection and Write Failures
 
 ### Symptoms
 
-```text
-failed to connect to redis
-```
+Redis connection failures may report `connection refused`, timeouts, or failed cache operations.
+Redis can also remain reachable but refuse writes with `MISCONF` (for example, after an AOF
+persistence error) or `READONLY`. In these cases, a successful `PING` alone does not establish
+that the exact cache is writable.
 
-or:
+### Recommended checks
 
-```text
-connection refused
-```
-
-### Common Causes
-
-- Redis container not running
-- wrong Redis hostname
-- wrong Redis port
-- firewall running outside Docker network
-- exact cache enabled while Redis is unavailable
-
-### Recommended Checks
-
-Verify Redis:
+Check process state and service logs:
 
 ```bash
 docker compose ps
+docker compose logs --tail=100 redis
+docker compose logs --tail=100 firewall
 ```
 
-Test connectivity:
+Check connectivity and Redis persistence status from an authorized Redis CLI:
 
 ```bash
-docker compose exec firewall ping redis
+docker compose exec redis redis-cli PING
+docker compose exec redis redis-cli INFO persistence
 ```
 
-Check Redis logs:
+These examples assume Redis CLI access is configured; supply authentication securely where required.
+Inspect `aof_last_write_status` and Redis logs when AOF is enabled. To verify recovery, also perform a
+short-lived write using an authorized test key in the appropriate Redis database (and remove it after the
+check). Do not use production request data or sensitive mappings for health tests.
+
+Inspect AIF's HTTP endpoints and write-health metrics:
 
 ```bash
-docker compose logs redis
+curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/readyz
+curl -sS http://localhost:8080/metrics | grep 'aif_redis_'
 ```
 
-### Typical Configuration
+`aif_redis_write_healthy` reports the last periodic Redis `SETEX` probe result: `1` healthy,
+`0` unhealthy, `-1` unknown/not yet probed. Probe results distinguish `persistence_rejected`
+(`MISCONF`), `write_rejected` (`READONLY`), timeouts, and connection errors. Reconnection attempts
+have separate metrics: a refreshed connection manager is not proof that Redis writes succeed.
+The monitor checks writes approximately every five seconds, even with no incoming requests; recovery
+should update dependency health without an AIF restart when the running exact-cache client is recoverable.
+
+### Typical configuration
 
 ```conf
 redis_url redis://redis:6379;
 exact_cache_enabled true;
 exact_cache_fail_open true;
+readiness_requires_redis true;
 ```
 
-When `exact_cache_fail_open` is enabled, runtime Redis lookup/store failures behave like cache misses and requests continue upstream. This does not mean a broken Redis configuration should be ignored for production; it only controls runtime failure handling.
+With fail-open enabled, runtime Redis cache failures can be treated as misses and requests may continue
+upstream, but `/readyz` can still return 503 when Redis is configured as required for readiness.
+Enforce-mode fail-closed startup can fail if Redis cannot initialize. Redis persistence settings are
+external to AIF; investigate storage and durability issues at the Redis service instead of assuming
+that the cache fail-open policy repairs Redis persistence.
+
+See [Operations](operation.md#redis-failure-and-recovery) and
+[Metrics and Costs](metrics-and-costs.md#redis-recovery-diagnostics).
 
 ---
 
@@ -220,7 +232,7 @@ aif_evaluation_shadow_store_total
 aif_evaluation_errors_total
 ```
 
-If Redis or Qdrant is restarted during observe mode, AIF should continue serving live traffic and remain ready with respect to those evaluation-only dependencies. After the dependency is healthy again, evaluation lookup/store should resume automatically. If it does not, inspect `aif_evaluation_errors_total` and the firewall logs for reconnect/recovery messages.
+If Redis or Qdrant is restarted during observe mode, AIF should continue serving live traffic and remain ready with respect to those evaluation-only dependencies. Redis exact-cache connectivity can recover in the background; Qdrant initialization failures follow a separate lifecycle and may need a runtime rebuild. If evaluation lookup/store does not resume, inspect `aif_evaluation_errors_total`, dependency metrics, and the firewall logs.
 
 Do not use production cache-hit or production savings counters as proof of Evaluation Mode success; shadow outcomes are intentionally isolated.
 
@@ -1076,7 +1088,7 @@ docker compose logs firewall
 
 ### `/startupz` Fails
 
-`/startupz` is stricter than normal readiness for enabled cache backends marked required for readiness. A failure commonly means Redis or Qdrant was not initialized successfully in this process.
+`/startupz` is stricter than normal readiness for enabled cache backends marked required for readiness. Redis must be currently available; Qdrant must have initialized successfully.
 
 Check:
 
@@ -1085,7 +1097,11 @@ curl -i http://localhost:8080/startupz
 docker compose logs firewall
 ```
 
-If the dependency became available only after AIF started, restart the AIF process/pod so it can initialize the real cache client. In Kubernetes/OpenShift, use `/startupz` as the `startupProbe` so this recovery can happen automatically.
+For Redis exact caching under fail-open or Observe mode, a Redis connection failure during startup
+retains a reconnectable client. Verify that Redis accepts writes, then allow the background monitor
+to update health; restarting AIF should not be required for Redis recovery. Enforce-mode fail-closed
+startup still aborts when Redis cannot initialize. A failed Qdrant initialization can require a
+runtime rebuild or process restart.
 
 ---
 
@@ -1112,6 +1128,9 @@ readiness_requires_upstream false;
 ```
 
 This allows deployments to decide which dependency failures should remove the firewall from service.
+`--healthcheck` checks `/healthz` (process liveness), not Redis readiness. Use `/readyz` or CLI
+`--readycheck` for dependency-aware checks. For Redis exact caching, readiness can recover after
+successful periodic Redis writes even when no new client requests are being processed.
 
 ---
 
@@ -1276,7 +1295,15 @@ aif_semantic_store_errors_total
 aif_inflight_requests
 aif_shutdown_in_progress
 aif_readiness_state
+aif_redis_write_healthy
+aif_redis_write_probes_total{result="success"}
+aif_redis_write_probes_total{result="persistence_rejected"}
+aif_redis_reconnect_attempts_total{result="success"}
+aif_redis_write_transitions_total{state="available"}
 ```
+
+See [Redis recovery diagnostics](metrics-and-costs.md#redis-recovery-diagnostics) for metric meanings,
+including the difference between successful reconnection and confirmed write health.
 
 ### Errors
 
