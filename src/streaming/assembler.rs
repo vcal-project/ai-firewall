@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use axum::body::Bytes;
+
 use serde_json::{Map, Value};
 
 use crate::types::openai::{ChatCompletionResponse, ChatMessage, Choice, Usage};
@@ -80,6 +82,14 @@ impl OpenAiStreamAssembler {
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.push_bytes_internal(bytes, false).map(|_| ())
+    }
+
+    pub fn push_bytes_with_events(&mut self, bytes: &[u8]) -> Result<Vec<Bytes>, String> {
+        self.push_bytes_internal(bytes, true)
+    }
+
+    fn push_bytes_internal(&mut self, bytes: &[u8], collect: bool) -> Result<Vec<Bytes>, String> {
         self.received_bytes = self
             .received_bytes
             .checked_add(bytes.len())
@@ -93,11 +103,11 @@ impl OpenAiStreamAssembler {
         }
 
         self.pending.extend_from_slice(bytes);
-        self.drain_events(false)
+        self.drain_events(false, collect)
     }
 
     pub fn finish(mut self) -> Result<ChatCompletionResponse, String> {
-        self.drain_events(true)?;
+        self.drain_events(true, false)?;
 
         if self.choices.is_empty() {
             return Err("upstream stream contained no completion choices".to_string());
@@ -169,22 +179,25 @@ impl OpenAiStreamAssembler {
         })
     }
 
-    fn drain_events(&mut self, flush: bool) -> Result<(), String> {
+    fn drain_events(&mut self, flush: bool, collect: bool) -> Result<Vec<Bytes>, String> {
+        let mut ready = Vec::new();
         while let Some((end, delimiter_len)) = find_event_boundary(&self.pending) {
             let event = self.pending[..end].to_vec();
             self.pending.drain(..end + delimiter_len);
-            self.process_event(&event)?;
+            if let Some(encoded) = self.process_event(&event, collect)? {
+                ready.push(encoded);
+            }
         }
 
         if flush && !self.pending.is_empty() {
             let event = std::mem::take(&mut self.pending);
-            self.process_event(&event)?;
+            self.process_event(&event, false)?;
         }
 
-        Ok(())
+        Ok(ready)
     }
 
-    fn process_event(&mut self, event: &[u8]) -> Result<(), String> {
+    fn process_event(&mut self, event: &[u8], collect: bool) -> Result<Option<Bytes>, String> {
         let text = std::str::from_utf8(event)
             .map_err(|error| format!("upstream SSE event was not valid UTF-8: {error}"))?;
 
@@ -202,18 +215,29 @@ impl OpenAiStreamAssembler {
         }
 
         if data_lines.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let payload = data_lines.join("\n");
         if payload.trim() == "[DONE]" {
             self.saw_done = true;
-            return Ok(());
+            return Ok(None);
         }
 
         let value: Value = serde_json::from_str(&payload)
             .map_err(|error| format!("invalid JSON in upstream SSE data event: {error}"))?;
-        self.apply_chunk(value)
+        self.apply_chunk(value.clone())?;
+
+        if !collect {
+            return Ok(None);
+        }
+        let mut encoded = b"data: ".to_vec();
+        encoded.extend(
+            serde_json::to_vec(&value)
+                .map_err(|error| format!("failed to encode validated SSE event: {error}"))?,
+        );
+        encoded.extend_from_slice(b"\n\n");
+        Ok(Some(Bytes::from(encoded)))
     }
 
     fn apply_chunk(&mut self, value: Value) -> Result<(), String> {
@@ -591,5 +615,105 @@ data: [DONE]
         let mut assembler = OpenAiStreamAssembler::new("m", 4);
         let error = assembler.push_bytes(b"12345").unwrap_err();
         assert!(error.contains("maximum buffered size"));
+    }
+
+    #[test]
+    fn incremental_events_wait_for_complete_boundaries_and_preserve_reconstruction() {
+        let mut assembler = OpenAiStreamAssembler::new("m", 4096);
+        assert!(assembler
+            .push_bytes_with_events(
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel"
+            )
+            .unwrap()
+            .is_empty());
+        let events = assembler
+            .push_bytes_with_events(b"lo\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}]}\n\n")
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        let first = std::str::from_utf8(&events[0]).unwrap();
+        assert!(first.starts_with("data: "));
+        assert!(first.ends_with("\n\n"));
+        let parsed: Value =
+            serde_json::from_str(first.trim_end().strip_prefix("data: ").unwrap()).unwrap();
+        assert_eq!(parsed["choices"][0]["delta"]["content"], "Hello");
+        assert!(assembler
+            .push_bytes_with_events(b"data: [DONE]\n\n")
+            .unwrap()
+            .is_empty());
+        let response = assembler.finish().unwrap();
+        assert_eq!(response.choices[0].message.content, "Hello world");
+        assert_eq!(response.choices[0].finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn incremental_events_ignore_comments_and_handle_crlf_multiline_and_usage() {
+        let mut assembler = OpenAiStreamAssembler::new("m", 4096);
+        let events = assembler.push_bytes_with_events(
+            b": ping\r\n\r\ndata: {\"choices\":[{\"index\":0,\r\ndata: \"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\r\n\r\n",
+        ).unwrap();
+        assert_eq!(events.len(), 2);
+        for event in &events {
+            let text = std::str::from_utf8(event).unwrap();
+            assert!(text.ends_with("\n\n"));
+            let value: Value =
+                serde_json::from_str(text.trim_end().strip_prefix("data: ").unwrap()).unwrap();
+            assert!(value.is_object());
+        }
+        assert!(assembler
+            .push_bytes_with_events(b"data: [DONE]\r\n\r\n")
+            .unwrap()
+            .is_empty());
+        let response = assembler.finish().unwrap();
+        assert_eq!(response.usage.unwrap().total_tokens, 5);
+    }
+
+    #[test]
+    fn incremental_events_reject_invalid_json_and_utf8() {
+        let mut assembler = OpenAiStreamAssembler::new("m", 1024);
+        assert!(assembler
+            .push_bytes_with_events(b"data: {bad}\n\n")
+            .unwrap_err()
+            .contains("invalid JSON"));
+        let mut assembler = OpenAiStreamAssembler::new("m", 1024);
+        assert!(assembler
+            .push_bytes_with_events(b"data: \xff\n\n")
+            .unwrap_err()
+            .contains("UTF-8"));
+    }
+
+    #[test]
+    fn incremental_events_do_not_emit_incomplete_trailing_event() {
+        let mut assembler = OpenAiStreamAssembler::new("m", 4096);
+        assert!(assembler.push_bytes_with_events(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":null}]}").unwrap().is_empty());
+        assert!(assembler.finish().unwrap_err().contains("ended before"));
+    }
+
+    #[test]
+    fn incremental_events_preserve_tool_calls_and_multiple_choices() {
+        let mut assembler = OpenAiStreamAssembler::new("m", 4096);
+        let first = br#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":null},{"index":1,"delta":{"content":"second"},"finish_reason":"stop"}]}
+
+"#;
+        let second = br#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}
+
+"#;
+        assert_eq!(assembler.push_bytes_with_events(first).unwrap().len(), 1);
+        assert_eq!(assembler.push_bytes_with_events(second).unwrap().len(), 1);
+        let result = assembler.finish().unwrap();
+        assert_eq!(result.choices.len(), 2);
+        assert_eq!(
+            result.choices[0].message.extra["tool_calls"][0]["function"]["arguments"],
+            "{\"q\":1}"
+        );
+        assert_eq!(result.choices[1].message.content, "second");
+    }
+
+    #[test]
+    fn incremental_events_obey_total_input_limit() {
+        let mut assembler = OpenAiStreamAssembler::new("m", 4);
+        assert!(assembler
+            .push_bytes_with_events(b"12345")
+            .unwrap_err()
+            .contains("maximum buffered size"));
     }
 }

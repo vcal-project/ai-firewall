@@ -5,9 +5,6 @@ use serde_json::{Map, Value};
 pub fn normalize_chat_request(req: &ChatCompletionRequest) -> Result<String> {
     let mut normalized = Map::new();
 
-    // Keep the existing cache-equivalence rules for common OpenAI parameters:
-    // omitted temperature/top_p are equivalent to their protocol defaults and
-    // stream is a delivery concern rather than completion identity.
     normalized.insert(
         "model".to_string(),
         Value::String(req.model.trim().to_string()),
@@ -33,10 +30,6 @@ pub fn normalize_chat_request(req: &ChatCompletionRequest) -> Result<String> {
         Value::Bool(req.stream.unwrap_or(false)),
     );
 
-    // ChatCompletionRequest intentionally flattens unknown/OpenAI-compatible
-    // fields so AIF can proxy newer parameters without a release. They are also
-    // part of completion identity unless the caller removes a known
-    // delivery-only field before normalization (for example stream_options).
     for (key, value) in &req.extra {
         normalized
             .entry(key.clone())
@@ -44,6 +37,42 @@ pub fn normalize_chat_request(req: &ChatCompletionRequest) -> Result<String> {
     }
 
     Ok(serde_json::to_string(&Value::Object(normalized))?)
+}
+
+/// Scope semantic reuse by generation settings and earlier conversation context.
+/// The final user message is intentionally excluded: paraphrases can still match.
+/// Versioning prevents reading legacy Qdrant entries without compatibility data.
+pub fn semantic_compatibility_scope(req: &ChatCompletionRequest) -> Result<String> {
+    use crate::core::hashing::sha256_hex;
+    let normalized = normalize_chat_request(req)?;
+    let mut identity: Value = serde_json::from_str(&normalized)?;
+    let object = identity
+        .as_object_mut()
+        .expect("normalized request is an object");
+    object.remove("model"); // Already an explicit Qdrant filter.
+    object.remove("stream"); // SSE and JSON responses share the canonical completion.
+    object.remove("stream_options");
+    // Observability/client identity fields do not control generation and often
+    // vary between Open WebUI requests. Keep unknown/provider-specific fields
+    // in scope (fail closed for semantic compatibility).
+    object.remove("metadata");
+    object.remove("user");
+    object.remove("store");
+    object.remove("messages");
+    // System/developer instructions and previous turns must agree. Only a final
+    // user message may vary for semantic matching.
+    let mut context = req.messages.clone();
+    if context
+        .last()
+        .is_some_and(|message| message.role.trim() == "user")
+    {
+        context.pop();
+    }
+    object.insert("context".into(), Value::Array(normalize_messages(&context)));
+    Ok(format!(
+        "semantic-v2:{}",
+        sha256_hex(&serde_json::to_string(&identity)?)
+    ))
 }
 
 pub fn semantic_text_from_request(req: &ChatCompletionRequest) -> String {
@@ -82,8 +111,6 @@ fn normalize_messages(messages: &[ChatMessage]) -> Vec<Value> {
                     .unwrap_or(Value::Null),
             );
 
-            // Preserve tool-call IDs, tool calls, provider extensions, and any
-            // future OpenAI-compatible message fields in exact-cache identity.
             for (key, value) in &m.extra {
                 normalized
                     .entry(key.clone())
@@ -122,6 +149,64 @@ mod tests {
             stream: None,
             extra: Map::new(),
         }
+    }
+
+    #[test]
+    fn semantic_scope_distinguishes_generation_limits_but_allows_paraphrases() {
+        let mut first = request();
+        first.max_tokens = Some(160);
+        let mut limit_changed = first.clone();
+        limit_changed.max_tokens = Some(1024);
+        assert_ne!(
+            semantic_compatibility_scope(&first).unwrap(),
+            semantic_compatibility_scope(&limit_changed).unwrap()
+        );
+
+        let mut paraphrase = first.clone();
+        paraphrase.messages[0].content = serde_json::json!("different phrasing");
+        assert_eq!(
+            semantic_compatibility_scope(&first).unwrap(),
+            semantic_compatibility_scope(&paraphrase).unwrap()
+        );
+
+        let mut metadata_changed = first.clone();
+        metadata_changed.extra.insert(
+            "metadata".into(),
+            serde_json::json!({"request_id":"changing"}),
+        );
+        assert_eq!(
+            semantic_compatibility_scope(&first).unwrap(),
+            semantic_compatibility_scope(&metadata_changed).unwrap()
+        );
+
+        let mut format_changed = first.clone();
+        format_changed
+            .extra
+            .insert("max_completion_tokens".into(), serde_json::json!(500));
+        assert_ne!(
+            semantic_compatibility_scope(&first).unwrap(),
+            semantic_compatibility_scope(&format_changed).unwrap()
+        );
+    }
+
+    #[test]
+    fn semantic_scope_isolates_system_and_history() {
+        let mut first = request();
+        first.messages.insert(
+            0,
+            ChatMessage {
+                role: "system".into(),
+                content: serde_json::json!("Be concise"),
+                name: None,
+                extra: Map::new(),
+            },
+        );
+        let mut changed = first.clone();
+        changed.messages[0].content = serde_json::json!("Respond in JSON");
+        assert_ne!(
+            semantic_compatibility_scope(&first).unwrap(),
+            semantic_compatibility_scope(&changed).unwrap()
+        );
     }
 
     #[test]

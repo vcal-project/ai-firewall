@@ -35,6 +35,7 @@ fn minimal_valid_config() -> Config {
         upstream_ca_bundle: None,
         upstream_api_key: "test-upstream-key".to_string(),
         streaming_enabled: true,
+        streaming_delivery_mode: StreamingDeliveryMode::Controlled,
         max_stream_upstream_bytes: 8 * 1024 * 1024,
 
         embedding_provider: ProviderKind::OpenAiCompatible,
@@ -1286,7 +1287,6 @@ fn restart_required_changes_allows_hot_reloadable_fields() {
     assert!(current.restart_required_changes(&candidate).is_empty());
 }
 
-// Patch 01: custom CA bundle parsing, validation, and restart-only behavior.
 const TEST_CA_PEM: &str = include_str!("testdata/ca.pem");
 
 fn ca_test_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
@@ -1407,4 +1407,196 @@ fn ca_bundle_path_changes_require_restart_not_sighup() {
         current.restart_required_changes(&candidate),
         vec!["upstream_ca_bundle", "embedding_ca_bundle"]
     );
+}
+
+#[test]
+fn streaming_delivery_mode_defaults_and_file_parsing() {
+    let path = temp_config_path("streaming_delivery_mode");
+    let basic = r#"
+listen_addr 127.0.0.1:8080;
+redis_url redis://127.0.0.1:6379;
+upstream_api_key test-upstream-key;
+embedding_api_key test-embedding-key;
+semantic_cache_enabled false;
+model_price gpt-4o-mini-2024-07-18 0.15 0.60;
+"#;
+    fs::write(&path, basic).unwrap();
+    let default_cfg = Config::from_file(&path).unwrap();
+    assert_eq!(
+        default_cfg.streaming_delivery_mode,
+        StreamingDeliveryMode::Controlled
+    );
+    fs::write(&path, format!("{basic}\nstreaming_delivery_mode auto;\n")).unwrap();
+    let auto_cfg = Config::from_file(&path).unwrap();
+    assert_eq!(
+        auto_cfg.streaming_delivery_mode,
+        StreamingDeliveryMode::Auto
+    );
+    assert_eq!(
+        auto_cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Progressive
+    );
+    fs::write(
+        &path,
+        format!("{basic}\nstreaming_delivery_mode invalid;\n"),
+    )
+    .unwrap();
+    assert!(Config::from_file(&path)
+        .unwrap_err()
+        .to_string()
+        .contains("streaming_delivery_mode"));
+    fs::remove_file(path).ok();
+}
+
+#[test]
+fn streaming_delivery_capability_checks_are_conservative() {
+    let mut cfg = minimal_valid_config();
+    cfg.streaming_delivery_mode = StreamingDeliveryMode::Auto;
+    assert!(cfg.progressive_streaming_blockers().is_empty());
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Progressive
+    );
+
+    cfg.security_guard_enabled = true;
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Controlled
+    );
+    assert!(cfg
+        .progressive_streaming_blockers()
+        .contains(&"security_guard_enabled=true"));
+    cfg.security_guard_enabled = false;
+
+    cfg.privacy_guard_enabled = true;
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Controlled
+    );
+    cfg.privacy_guard_enabled = false;
+
+    cfg.exact_cache_fail_open = false;
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Controlled
+    );
+    cfg.exact_cache_store_enabled = false;
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Progressive
+    );
+    cfg.exact_cache_store_enabled = true;
+    cfg.exact_cache_fail_open = true;
+
+    cfg.semantic_cache_enabled = true;
+    cfg.semantic_cache_fail_open = false;
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Controlled
+    );
+    cfg.semantic_cache_store_enabled = false;
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Progressive
+    );
+    cfg.semantic_cache_store_enabled = true;
+    cfg.semantic_cache_fail_open = true;
+
+    cfg.streaming_enabled = false;
+    assert_eq!(
+        cfg.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Controlled
+    );
+}
+
+#[test]
+fn explicit_progressive_mode_rejects_incompatible_configuration() {
+    let mut cfg = minimal_valid_config();
+    cfg.streaming_delivery_mode = StreamingDeliveryMode::Progressive;
+    assert!(cfg.validate().is_ok());
+
+    cfg.privacy_guard_enabled = true;
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("privacy_guard_enabled=true"));
+    cfg.privacy_guard_enabled = false;
+
+    cfg.exact_cache_fail_open = false;
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("exact cache fail-closed storage"));
+    cfg.exact_cache_fail_open = true;
+    cfg.streaming_enabled = false;
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("streaming_enabled=false"));
+}
+
+#[test]
+fn streaming_delivery_config_is_hot_reloadable_and_observe_safe() {
+    let original = minimal_valid_config();
+    let mut candidate = original.clone();
+    candidate.streaming_delivery_mode = StreamingDeliveryMode::Auto;
+    assert!(original.restart_required_changes(&candidate).is_empty());
+    candidate.exact_cache_fail_open = false;
+    candidate.aif_enforcement_mode = AifEnforcementMode::Observe;
+    assert_eq!(
+        candidate.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Progressive
+    );
+    candidate.security_guard_enabled = true;
+    assert_eq!(
+        candidate.selected_streaming_delivery_mode(),
+        StreamingDeliveryMode::Controlled
+    );
+}
+
+#[test]
+#[serial]
+fn streaming_delivery_mode_parses_from_env() {
+    unsafe {
+        std::env::set_var("AIF_STREAMING_DELIVERY_MODE", "auto");
+    }
+    assert_eq!(
+        parse_env_or_default(
+            "AIF_STREAMING_DELIVERY_MODE",
+            StreamingDeliveryMode::Controlled
+        )
+        .unwrap(),
+        StreamingDeliveryMode::Auto
+    );
+    unsafe {
+        std::env::set_var("AIF_STREAMING_DELIVERY_MODE", "invalid");
+    }
+    assert!(parse_env_or_default(
+        "AIF_STREAMING_DELIVERY_MODE",
+        StreamingDeliveryMode::Controlled
+    )
+    .is_err());
+    unsafe {
+        std::env::remove_var("AIF_STREAMING_DELIVERY_MODE");
+    }
+}
+
+#[test]
+fn streaming_diagnostics_distinguish_selected_from_active_path() {
+    let mut cfg = minimal_valid_config();
+    cfg.streaming_delivery_mode = StreamingDeliveryMode::Auto;
+    let summary = cfg.effective_runtime_summary().join("\n");
+    assert!(summary.contains("requested_delivery=auto"));
+    assert!(summary.contains("selected_delivery=progressive"));
+    assert!(summary.contains("active_delivery=request_dependent"));
+    assert!(!summary.contains("active_delivery=controlled"));
+
+    let startup = cfg.startup_summary_lines().join("\n");
+    assert!(startup.contains("active: request_dependent"));
+    cfg.security_guard_enabled = true;
+    let fallback = cfg.effective_runtime_summary().join("\n");
+    assert!(fallback.contains("selected_delivery=controlled"));
 }

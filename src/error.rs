@@ -7,11 +7,6 @@ use serde_json::{json, Value};
 
 use crate::upstream::llm::UpstreamErrorKind;
 
-/// Stable dependency taxonomy used by metrics/evidence.
-///
-/// Some variants are reserved for dependencies that still use dedicated
-/// `AppError` variants today. Keeping them here avoids changing metric/evidence
-/// vocabulary when those paths are migrated to `DependencyFailure`.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DependencyKind {
@@ -36,11 +31,6 @@ impl DependencyKind {
     }
 }
 
-/// Stable failure taxonomy used by metrics/evidence.
-///
-/// Only `Unavailable` is currently constructed through `DependencyFailure`;
-/// the remaining classes are reserved for incremental migration of upstream
-/// and guard failures without changing their public labels later.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureClass {
@@ -344,7 +334,6 @@ impl AppError {
         }
     }
 
-    /// Stable, payload-free reason code for VCAL Audit and Compliance evidence.
     pub fn evidence_reason_code(&self) -> &'static str {
         match self {
             AppError::Upstream { kind, .. } => match kind {
@@ -376,7 +365,6 @@ impl AppError {
         }
     }
 
-    /// Stable classification for Prometheus labels and Grafana panels.
     pub fn metrics_class(&self) -> &'static str {
         match self {
             AppError::Validation { .. } => "validation",
@@ -397,10 +385,6 @@ impl AppError {
         }
     }
 
-    /// Returns true only for intentional Security Guard policy blocks.
-    ///
-    /// Transport failures, timeouts, and contract violations are operational
-    /// errors and must continue to be recorded with `result="error"`.
     pub fn is_security_block(&self) -> bool {
         matches!(
             self,
@@ -408,7 +392,6 @@ impl AppError {
         )
     }
 
-    /// Returns the request/response stage for an intentional Security Guard block.
     pub fn security_block_stage(&self) -> Option<&'static str> {
         match self {
             AppError::SecurityRequestBlocked { .. } => Some("request"),
@@ -417,10 +400,6 @@ impl AppError {
         }
     }
 
-    /// Returns the rule ID associated with an intentional Security Guard block.
-    ///
-    /// The value is borrowed from the structured error so orchestration code can
-    /// preserve it in `aif_security_blocks_total` instead of using `unknown`.
     pub fn security_block_rule_id(&self) -> Option<&str> {
         match self {
             AppError::SecurityRequestBlocked { rule_id, .. }

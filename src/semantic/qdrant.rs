@@ -15,6 +15,7 @@ use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 use crate::{
+    core::cache_admission::cacheable_response,
     core::hashing::sha256_hex,
     embeddings::provider::EmbeddingProvider,
     metrics::{self, EMBEDDING_OPERATION_LOOKUP, EMBEDDING_OPERATION_STORE},
@@ -159,6 +160,7 @@ impl SemanticCache for QdrantSemanticCache {
         &self,
         model: &str,
         normalized_prompt: &str,
+        compatibility_scope: &str,
         privacy_cache_scope: Option<&str>,
         privacy_placeholder_signature: Option<&str>,
     ) -> Result<Option<SemanticLookupHit>> {
@@ -243,6 +245,22 @@ impl SemanticCache for QdrantSemanticCache {
                                 ),
                             },
                         ];
+
+            must.push(Condition {
+                condition_one_of: Some(
+                    qdrant_client::qdrant::condition::ConditionOneOf::Field(FieldCondition {
+                        key: "semantic_compatibility_scope".to_string(),
+                        r#match: Some(Match {
+                            match_value: Some(
+                                qdrant_client::qdrant::r#match::MatchValue::Keyword(
+                                    compatibility_scope.to_string(),
+                                ),
+                            ),
+                        }),
+                        ..Default::default()
+                    }),
+                ),
+            });
 
             if let Some(privacy_cache_scope) = privacy_cache_scope {
                 must.push(Condition {
@@ -349,6 +367,11 @@ impl SemanticCache for QdrantSemanticCache {
                         )
                     })?;
 
+                if !cacheable_response(&parsed) {
+                    tracing::warn!(model = %model, "semantic candidate rejected by cache admission policy");
+                    continue;
+                }
+
                 tracing::debug!(
                     model = %model,
                     score = score,
@@ -380,6 +403,7 @@ impl SemanticCache for QdrantSemanticCache {
         model: &str,
         normalized_prompt: &str,
         response: &ChatCompletionResponse,
+        compatibility_scope: &str,
         privacy_cache_scope: Option<&str>,
         privacy_placeholder_signature: Option<&str>,
     ) -> Result<Option<crate::embeddings::provider::EmbeddingUsage>> {
@@ -410,6 +434,10 @@ impl SemanticCache for QdrantSemanticCache {
 
             let embedding_usage = embedding_result.usage.clone();
             let vector = embedding_result.embedding;
+
+            if !cacheable_response(response) {
+                return Ok(None);
+            }
 
             let request_identity = match privacy_cache_scope {
                 Some(scope) => format!("{normalized_prompt}\nprivacy_cache_scope={scope}"),
@@ -454,6 +482,10 @@ impl SemanticCache for QdrantSemanticCache {
                 (
                     "normalized_prompt",
                     json_to_proto_value(JsonValue::String(record.normalized_prompt)),
+                ),
+                (
+                    "semantic_compatibility_scope",
+                    json_to_proto_value(JsonValue::String(compatibility_scope.to_string())),
                 ),
                 (
                     "privacy_placeholder_signature",

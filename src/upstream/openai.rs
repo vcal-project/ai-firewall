@@ -30,8 +30,6 @@ impl OpenAiUpstream {
         timeout: Duration,
         ca_bundle_path: Option<&str>,
     ) -> Result<Self, AppError> {
-        // Parse once, then use this same CA snapshot for both buffered and
-        // streaming clients. Paths and certificate contents are restart-only.
         let custom_roots = crate::tls::load_custom_ca_roots(ca_bundle_path, "upstream_ca_bundle")
             .map_err(|error| {
             AppError::internal(format!("failed to load upstream CA bundle: {error:#}"))
@@ -55,10 +53,6 @@ impl OpenAiUpstream {
             .build()
             .map_err(|e| AppError::internal(format!("failed to build reqwest client: {e}")))?;
 
-        // Streaming responses must not inherit the buffered client's total-body timeout.
-        // The configured upstream timeout bounds response headers and is also exposed
-        // as the provider-stream idle timeout. ChatService separately enforces an
-        // absolute controlled-stream generation ceiling while consuming the body.
         let streaming_client = crate::tls::with_custom_ca_roots(Client::builder(), &custom_roots)
             .default_headers(headers)
             .build()
@@ -406,8 +400,6 @@ fn classify_reqwest_error(err: &reqwest::Error) -> UpstreamErrorKind {
         return UpstreamErrorKind::Timeout;
     }
 
-    // TLS/certificate errors are often wrapped as connect errors,
-    // so check the full error chain before returning Connect.
     if error_chain_contains(
         err,
         &[

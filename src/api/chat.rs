@@ -1,5 +1,6 @@
 use crate::{
     app::{AppState, RequestTraceId},
+    config::StreamingDeliveryMode,
     error::AppError,
     metrics,
     services::chat_service::CacheControl,
@@ -42,9 +43,13 @@ pub async fn chat_completions(
     let service = state.chat_service().await;
 
     if req.stream.unwrap_or(false) {
-        let (streaming_enabled, max_stream_upstream_bytes) = {
+        let (streaming_enabled, max_stream_upstream_bytes, progressive_requested) = {
             let cfg = state.config.read().await;
-            (cfg.streaming_enabled, cfg.max_stream_upstream_bytes)
+            (
+                cfg.streaming_enabled,
+                cfg.max_stream_upstream_bytes,
+                cfg.selected_streaming_delivery_mode() == StreamingDeliveryMode::Progressive,
+            )
         };
         if !streaming_enabled {
             let err = AppError::unprocessable(
@@ -55,7 +60,13 @@ pub async fn chat_completions(
         }
 
         match service
-            .handle_stream_with_evidence(req, cache_control, trace_id.0, max_stream_upstream_bytes)
+            .handle_stream_with_evidence(
+                req,
+                cache_control,
+                trace_id.0,
+                max_stream_upstream_bytes,
+                progressive_requested,
+            )
             .await
         {
             Ok(streamed) => {

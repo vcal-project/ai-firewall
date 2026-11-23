@@ -1,9 +1,3 @@
-//! Redacted, assessment-oriented view of the effective AIF configuration.
-//!
-//! This module is intentionally allow-list based. It must never return the full
-//! `Config` structure or expose credentials, secret-bearing URLs, tenant identifiers,
-//! or other deployment details merely because they exist in `Config`.
-
 use crate::{config::Config, evidence::EVIDENCE_SCHEMA_VERSION, release};
 use reqwest::Url;
 use serde::Serialize;
@@ -38,17 +32,12 @@ fn endpoint_identity(raw: &str) -> String {
         return raw.trim().to_string();
     };
 
-    // Endpoint identity is hashed but never returned. Strip passwords and
-    // query/fragment data so secret rotation does not alter the fingerprint.
-    // Keep the username because changing an ACL identity can change behavior.
     let _ = url.set_password(None);
     url.set_query(None);
     url.set_fragment(None);
     url.to_string()
 }
 
-// Routing identity is included only in the hash input. It lets Console detect
-// backend/service changes without placing internal service URLs in the response.
 fn routing_identity(cfg: &Config) -> RoutingIdentity {
     RoutingIdentity {
         upstream: endpoint_identity(&cfg.upstream_base_url),
@@ -332,9 +321,6 @@ fn configuration_hash(
 }
 
 impl AssessmentContextV1 {
-    /// Build the stable v1 assessment contract from the configuration currently
-    /// applied by AIF. The returned hash covers both the visible allow-listed
-    /// configuration and redacted routing identity.
     pub fn from_config(cfg: &Config) -> Result<Self, serde_json::Error> {
         let configuration = AssessmentConfigurationV1::from_config(cfg);
         let configuration_hash = configuration_hash(cfg, &configuration)?;

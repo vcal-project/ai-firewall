@@ -85,6 +85,10 @@ fn security_policy_completion(
 
 #[async_trait]
 impl GuardOrchestrator for CompositeGuardOrchestrator {
+    fn supports_progressive_response(&self) -> bool {
+        self.security.is_none() && self.privacy.is_none()
+    }
+
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
@@ -290,8 +294,6 @@ impl GuardOrchestrator for CompositeGuardOrchestrator {
                     self.emit_usage_failure_event(trace_id, &err, started.elapsed())
                         .await;
 
-                    // Fail-open is permitted only for operational failures.
-                    // Contract violations and policy enforcement errors must fail closed.
                     if self.guard_fail_open && usage_error_can_fail_open(&err) {
                         tracing::warn!(
                             guard = "usage",
@@ -523,8 +525,6 @@ impl CompositeGuardOrchestrator {
             EventOutcome::Allowed
         };
 
-        // Keep source=ai_firewall for Evidence Schema v1.1 compatibility with
-        // existing Audit deployments. The event category/type identify Usage Guard.
         let mut event = EvidenceEvent::new(
             trace_id,
             EvidenceSource::AiFirewall,
@@ -802,13 +802,10 @@ pub struct GuardContext {
     pub privacy_policy_id: Option<String>,
     pub privacy_policy_version: Option<String>,
     pub privacy_policy_hash: Option<String>,
-    /// Opaque digest binding effective Privacy Guard tenant/policy state for cache isolation.
     pub privacy_cache_scope: Option<String>,
     pub privacy_inspected_text_parts: Option<u64>,
     pub privacy_uninspected_parts: Option<u64>,
     pub privacy_inspection_complete: Option<bool>,
-    /// Deterministic placeholder/entity signature for semantic cache isolation.
-    /// Example: EMAIL:1|IP:1|PHONE:0|JWT:0|API_KEY:0|BEARER_TOKEN:0|PRIVATE_KEY:0|CREDIT_CARD_LIKE:0|OTHER:0
     pub privacy_placeholder_signature: Option<String>,
     pub privacy_findings: Vec<DataFinding>,
     pub privacy_action: Option<String>,
@@ -816,11 +813,7 @@ pub struct GuardContext {
     pub privacy_modified: bool,
     pub privacy_scan_skipped: bool,
     pub privacy_failure_reason: Option<String>,
-    /// Set when Security Guard intentionally blocks the request and AIF should
-    /// return a synthetic OpenAI-compatible assistant completion.
     pub security_policy_block_message: Option<String>,
-    /// Set when Usage Guard intentionally stops a request and AIF should return
-    /// a synthetic OpenAI-compatible assistant completion instead of an HTTP error.
     pub usage_policy_block_message: Option<String>,
 }
 
@@ -847,6 +840,10 @@ pub struct GuardedRequest {
 
 #[async_trait]
 pub trait GuardOrchestrator: Send + Sync {
+    fn supports_progressive_response(&self) -> bool {
+        false
+    }
+
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
@@ -874,6 +871,10 @@ pub struct NoopGuardOrchestrator;
 
 #[async_trait]
 impl GuardOrchestrator for NoopGuardOrchestrator {
+    fn supports_progressive_response(&self) -> bool {
+        true
+    }
+
     async fn before_cache(
         &self,
         request: ChatCompletionRequest,
@@ -982,7 +983,7 @@ mod tests {
     use super::*;
     use crate::config::{
         AifEnforcementMode, Config, EmbeddingPrice, ModelPrice, PrivacyGuardMode, ProviderKind,
-        SecurityGuardBlockResponse, UsageGuardBlockResponse, UsageGuardMode,
+        SecurityGuardBlockResponse, StreamingDeliveryMode, UsageGuardBlockResponse, UsageGuardMode,
         DEFAULT_SECURITY_GUARD_BLOCK_MESSAGE, DEFAULT_USAGE_GUARD_BLOCK_MESSAGE,
     };
     use std::{collections::HashMap, sync::Mutex};
@@ -1022,6 +1023,7 @@ mod tests {
             upstream_ca_bundle: None,
             upstream_api_key: "test-upstream-key".to_string(),
             streaming_enabled: true,
+            streaming_delivery_mode: StreamingDeliveryMode::Controlled,
             max_stream_upstream_bytes: 8 * 1024 * 1024,
 
             embedding_provider: ProviderKind::OpenAiCompatible,

@@ -12,10 +12,6 @@ static INIT_REDIS_METRICS: Once = Once::new();
 
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 
-// -----------------------------
-// Cost and savings metric labels
-// -----------------------------
-
 pub const COST_TYPE_CHAT: &str = "chat";
 pub const COST_TYPE_EMBEDDING: &str = "embedding";
 
@@ -24,10 +20,6 @@ pub const CACHE_TYPE_SEMANTIC: &str = "semantic";
 
 pub const EMBEDDING_OPERATION_LOOKUP: &str = "lookup";
 pub const EMBEDDING_OPERATION_STORE: &str = "store";
-
-// -----------------------------
-// Overview metrics
-// -----------------------------
 
 pub static REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
@@ -70,8 +62,6 @@ pub static TOKENS_SAVED: Lazy<IntCounter> = Lazy::new(|| {
         .expect("metric aif_tokens_saved must be valid")
 });
 
-// Backward-compatible aggregate cost/savings metrics.
-// Prefer the labeled v0.1.8 metrics below for new dashboards and accounting logic.
 pub static CHAT_COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_chat_cost_saved_micro_usd",
@@ -96,11 +86,6 @@ pub static COST_SAVED_MICRO_USD: Lazy<IntCounter> = Lazy::new(|| {
     .expect("metric aif_cost_saved_micro_usd must be valid")
 });
 
-// -----------------------------
-// Cost and savings intelligence metrics
-// -----------------------------
-
-/// Prompt/input tokens returned by upstream chat completions, grouped by model.
 pub static MODEL_REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new(
@@ -123,7 +108,6 @@ pub static MODEL_INPUT_TOKENS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric aif_model_input_tokens_total must be valid")
 });
 
-/// Completion/output tokens returned by upstream chat completions, grouped by model.
 pub static MODEL_OUTPUT_TOKENS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new(
@@ -135,7 +119,6 @@ pub static MODEL_OUTPUT_TOKENS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric aif_model_output_tokens_total must be valid")
 });
 
-/// Estimated upstream chat-completion cost, grouped by model.
 pub static MODEL_COST_MICRO_USD_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new(
@@ -203,10 +186,6 @@ pub static INFLIGHT_REQUESTS: Lazy<IntGauge> = Lazy::new(|| {
     IntGauge::new("aif_inflight_requests", "In-flight requests")
         .expect("metric aif_inflight_requests must be valid")
 });
-
-// -----------------------------
-// Evaluation / observe-mode metrics
-// -----------------------------
 
 pub static ENFORCEMENT_MODE_INFO: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
@@ -346,10 +325,6 @@ pub fn set_runtime_info(version: &str, config_schema: u32, configuration_hash: &
         .set(1);
 }
 
-// -----------------------------
-// Operational hardening metrics
-// -----------------------------
-
 pub static BACKPRESSURE_REJECTIONS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         prometheus::Opts::new(
@@ -372,9 +347,6 @@ pub static DEPENDENCY_FAILURES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric aif_dependency_failures_total must be valid")
 });
 
-// Redis exact-cache diagnostics. The gauge describes the last *write probe*,
-// not a PING or successful connection-manager construction. A value of -1
-// means no write probe has completed since monitor startup (or no monitor).
 pub static REDIS_WRITE_HEALTHY: Lazy<IntGauge> = Lazy::new(|| {
     IntGauge::new(
         "aif_redis_write_healthy",
@@ -464,14 +436,21 @@ pub static UPSTREAM_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     .expect("metric aif_upstream_request_duration_seconds must be valid")
 });
 
-// -----------------------------
-// Controlled streaming metrics
-// -----------------------------
+pub static STREAM_DELIVERY_SELECTED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        prometheus::Opts::new(
+            "aif_stream_delivery_selected_total",
+            "Streaming execution paths selected by AIF (not client delivery acknowledgements)",
+        ),
+        &["path"],
+    )
+    .expect("metric aif_stream_delivery_selected_total must be valid")
+});
 
 pub static STREAM_REQUESTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_stream_requests_total",
-        "Controlled streaming chat completion requests accepted by AI Firewall",
+        "Streaming chat completion requests accepted by AI Firewall",
     )
     .expect("metric aif_stream_requests_total must be valid")
 });
@@ -479,7 +458,7 @@ pub static STREAM_REQUESTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 pub static STREAM_COMPLETED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_stream_completed_total",
-        "Controlled streaming responses committed after full response processing",
+        "Streaming responses completed after the selected delivery processing",
     )
     .expect("metric aif_stream_completed_total must be valid")
 });
@@ -487,7 +466,7 @@ pub static STREAM_COMPLETED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 pub static STREAM_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_stream_errors_total",
-        "Controlled streaming requests that failed before response commit",
+        "Streaming requests that failed during processing or downstream delivery",
     )
     .expect("metric aif_stream_errors_total must be valid")
 });
@@ -495,7 +474,7 @@ pub static STREAM_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 pub static STREAM_ABORTED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_stream_aborted_total",
-        "Controlled streaming requests cancelled before response commit",
+        "Streaming requests cancelled before delivery completion",
     )
     .expect("metric aif_stream_aborted_total must be valid")
 });
@@ -503,7 +482,7 @@ pub static STREAM_ABORTED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 pub static STREAM_UPSTREAM_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_stream_upstream_errors_total",
-        "Upstream streaming body or assembly failures before response commit",
+        "Upstream streaming body or assembly failures",
     )
     .expect("metric aif_stream_upstream_errors_total must be valid")
 });
@@ -511,7 +490,7 @@ pub static STREAM_UPSTREAM_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 pub static STREAM_UPSTREAM_CHUNKS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_stream_upstream_chunks_total",
-        "Upstream byte chunks consumed internally for controlled streaming",
+        "Upstream streaming byte chunks consumed by AI Firewall",
     )
     .expect("metric aif_stream_upstream_chunks_total must be valid")
 });
@@ -519,7 +498,7 @@ pub static STREAM_UPSTREAM_CHUNKS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 pub static STREAM_UPSTREAM_BYTES_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_stream_upstream_bytes_total",
-        "Upstream bytes consumed internally for controlled streaming",
+        "Upstream streaming bytes consumed by AI Firewall",
     )
     .expect("metric aif_stream_upstream_bytes_total must be valid")
 });
@@ -596,10 +575,6 @@ pub static STREAM_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     .expect("metric aif_stream_duration_seconds must be valid")
 });
 
-// -----------------------------
-// VCAL evidence delivery metrics
-// -----------------------------
-
 pub static EVIDENCE_EVENTS_ENQUEUED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_evidence_events_enqueued_total",
@@ -665,10 +640,6 @@ pub static EVIDENCE_RETRIES_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     .expect("metric aif_evidence_retries_total must be valid")
 });
 
-// -----------------------------
-// Embedding provider diagnostics
-// -----------------------------
-
 pub static EMBEDDING_TIMEOUTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
         "aif_embedding_timeouts_total",
@@ -684,10 +655,6 @@ pub static EMBEDDING_REQUEST_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     ))
     .expect("metric aif_embedding_request_duration_seconds must be valid")
 });
-
-// -----------------------------
-// Semantic diagnostics metrics
-// -----------------------------
 
 pub static SEMANTIC_STORE_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     IntCounter::new(
@@ -766,10 +733,6 @@ pub static SEMANTIC_LOOKUP_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     ))
     .expect("metric aif_semantic_lookup_duration_seconds must be valid")
 });
-
-// -----------------------------
-// VCAL Guard orchestration metrics
-// -----------------------------
 
 pub static GUARD_HOOK_CALLS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
@@ -1019,6 +982,7 @@ pub fn init() {
     Lazy::force(&NET_SAVED_MICRO_USD_TOTAL);
     Lazy::force(&EMBEDDING_OVERHEAD_MICRO_USD_TOTAL);
     Lazy::force(&STREAM_REQUESTS_TOTAL);
+    Lazy::force(&STREAM_DELIVERY_SELECTED_TOTAL);
     Lazy::force(&STREAM_COMPLETED_TOTAL);
     Lazy::force(&STREAM_ERRORS_TOTAL);
     Lazy::force(&STREAM_ABORTED_TOTAL);
@@ -1083,6 +1047,7 @@ pub fn init() {
             Box::new(UPSTREAM_TIMEOUTS_TOTAL.clone()),
             Box::new(UPSTREAM_REQUEST_DURATION_SECONDS.clone()),
             Box::new(STREAM_REQUESTS_TOTAL.clone()),
+            Box::new(STREAM_DELIVERY_SELECTED_TOTAL.clone()),
             Box::new(STREAM_COMPLETED_TOTAL.clone()),
             Box::new(STREAM_ERRORS_TOTAL.clone()),
             Box::new(STREAM_ABORTED_TOTAL.clone()),

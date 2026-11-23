@@ -20,9 +20,6 @@ pub struct RedisOperationTimeout {
     timeout_seconds: u64,
 }
 
-/// Fixed classes only. Never use Redis URLs, key names, or server messages
-/// as Prometheus labels. MISCONF is commonly returned when Redis has stopped
-/// accepting writes following a persistence failure.
 fn redis_server_code_class(code: Option<&str>) -> Option<&'static str> {
     match code {
         Some("MISCONF") => Some("persistence_rejected"),
@@ -76,8 +73,6 @@ impl RedisExactCache {
         Self::with_connection(client, Some(conn), ttl_seconds, operation_timeout)
     }
 
-    /// A fail-open runtime must retain a Redis-backed cache that can become
-    /// operational after startup, rather than permanently selecting NoopExactCache.
     pub fn new_disconnected(
         client: redis::Client,
         ttl_seconds: usize,
@@ -103,8 +98,6 @@ impl RedisExactCache {
     }
 
     async fn current_connection(&self) -> anyhow::Result<ConnectionManager> {
-        // Do not hold a mutex while performing network I/O. In particular, a
-        // blocked read or write must not prevent installing a recovered manager.
         self.conn
             .lock()
             .await
@@ -112,26 +105,14 @@ impl RedisExactCache {
             .context("redis connection manager not yet initialized")
     }
 
-    /// Continuously verify that Redis accepts writes, even when no requests are
-    /// reaching AIF (for example, while the pod has been removed from routing).
-    /// A PING/GET is insufficient: Redis can accept reads while AOF errors make
-    /// SETEX fail with MISCONF.
-    ///
-    /// The Weak cache reference ensures that reloading the runtime does not
-    /// leave a monitor running against a replaced connection manager.
     pub fn start_health_monitor(self: &Arc<Self>, available: Arc<AtomicBool>) {
-        // Creating a manager does not establish write health. Do not expose a
-        // false-positive 1 during the initial five-second probe interval.
         metrics::REDIS_WRITE_HEALTHY.set(-1);
         let cache = Arc::downgrade(self);
         tokio::spawn(async move {
-            // Request handling also updates dependency readiness. Track probe
-            // transitions independently, so a failed request cannot suppress
-            // the monitor's outage diagnostic event.
             let mut last_probe_healthy = available.load(Ordering::Acquire);
             let mut ticks = interval(Duration::from_secs(5));
             ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            ticks.tick().await; // First probe after five seconds.
+            ticks.tick().await;
 
             loop {
                 ticks.tick().await;
@@ -185,11 +166,7 @@ impl RedisExactCache {
     }
 
     async fn probe_write(&self) -> anyhow::Result<()> {
-        // This key contains no request information. Expiration bounds its
-        // lifetime even with AOF enabled or following an unclean pod exit.
         let result = timeout(self.operation_timeout, async {
-            // ConnectionManager is cloneable; avoid holding the replacement
-            // mutex across I/O, which could otherwise delay live cache calls.
             let mut conn = self.current_connection().await?;
             let _: () = conn
                 .set_ex(self.health_probe_key.as_str(), "ok", 15)
@@ -235,8 +212,6 @@ impl RedisExactCache {
                     metrics::REDIS_RECONNECT_ATTEMPTS_TOTAL
                         .with_label_values(&["success"])
                         .inc();
-                    // Connection-manager construction is NOT proof that Redis
-                    // accepts SETEX: an AOF MISCONF can persist across reconnects.
                     tracing::debug!(
                         failed_operation = operation,
                         "Redis exact-cache connection manager refreshed; write health unverified"

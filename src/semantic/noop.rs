@@ -5,8 +5,6 @@ use crate::{
     types::openai::ChatCompletionResponse,
 };
 
-/// No-op semantic cache implementation used when semantic caching is disabled.
-/// Always returns no hits and does not store anything.
 pub struct NoopSemanticCache;
 
 #[async_trait]
@@ -15,6 +13,7 @@ impl SemanticCache for NoopSemanticCache {
         &self,
         _model: &str,
         _normalized_prompt: &str,
+        _compatibility_scope: &str,
         _privacy_cache_scope: Option<&str>,
         _privacy_placeholder_signature: Option<&str>,
     ) -> anyhow::Result<Option<SemanticLookupHit>> {
@@ -26,6 +25,7 @@ impl SemanticCache for NoopSemanticCache {
         _model: &str,
         _normalized_prompt: &str,
         _response: &ChatCompletionResponse,
+        _compatibility_scope: &str,
         _privacy_cache_scope: Option<&str>,
         _privacy_placeholder_signature: Option<&str>,
     ) -> anyhow::Result<Option<crate::embeddings::provider::EmbeddingUsage>> {

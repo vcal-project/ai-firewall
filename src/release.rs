@@ -2,7 +2,7 @@ pub const PRODUCT_NAME: &str = "AI Cost Firewall";
 
 pub const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const RELEASE_TITLE: &str = "Redis Recovery and Operational Resilience";
+pub const RELEASE_TITLE: &str = "Progressive Streaming and Cache-Aware SSE Delivery";
 
 pub const SUPPORTED_API_STYLE: &str = "openai_compatible";
 
@@ -10,7 +10,7 @@ pub const COMPATIBILITY_MODEL: &str =
     "OpenAI-compatible chat, model discovery, and embedding APIs through a simple flat configuration model";
 
 pub const SCOPE_NOTE: &str =
-    "v0.8.8 improves resilience when Redis exact caching becomes unavailable or rejects writes, including AOF-related MISCONF errors. A periodic SETEX write-health probe restores dependency readiness and exact-cache operation after Redis recovers without restarting AIF, even when no requests arrive. Fail-open or Observe startup retains a reconnectable Redis client; configured Enforce fail-closed startup remains unchanged. Runtime reload keeps readiness attached to the active dependency state, and --readycheck provides dependency-aware CLI readiness while --healthcheck remains liveness-only. New low-cardinality Prometheus metrics distinguish Redis write health, probe failures, reconnect attempts, and health transitions. Redis AOF persistence, configured fail-open/fail-closed policies, Observe/Enforce modes, Qdrant semantic caching, controlled SSE response delivery, Guard integrations, and TLS verification remain unchanged. Progressive upstream token streaming is not introduced. API and configuration schema versions remain unchanged.";
+    "v0.8.9 adds cache-aware progressive upstream Server-Sent Events (SSE) delivery for eligible streaming chat requests. The streaming_delivery_mode setting supports controlled, auto, and progressive selection. Eligible upstream cache misses can forward validated SSE content incrementally, while completed exact and semantic cache hits retain immediate SSE replay without artificial generation delays. Controlled delivery remains available and is selected when full-response Security Guard inspection, Privacy Guard restoration, or other safety constraints require buffering. Progressive generation reconstructs the completed response for cache storage and accounting, and distinguishes successful completion from upstream stream failures and client disconnections; incomplete streams must not be cached as successful responses. Updated startup diagnostics distinguish requested, selected, and request-dependent active delivery, and low-cardinality Prometheus counters expose selected streaming paths. Existing Observe/Enforce cache semantics, Redis AOF persistence, configured fail-open/fail-closed behavior, Guard enforcement, and TLS verification remain in effect. OpenAI-compatible API and configuration schema versions remain unchanged.";
 
 pub const API_COMPATIBILITY_VERSION: &str = "v1";
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;

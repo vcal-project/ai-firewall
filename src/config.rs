@@ -86,6 +86,40 @@ impl std::str::FromStr for AifEnforcementMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StreamingDeliveryMode {
+    #[default]
+    Controlled,
+    Progressive,
+    Auto,
+}
+
+impl StreamingDeliveryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Controlled => "controlled",
+            Self::Progressive => "progressive",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+impl std::str::FromStr for StreamingDeliveryMode {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "controlled" => Ok(Self::Controlled),
+            "progressive" => Ok(Self::Progressive),
+            "auto" => Ok(Self::Auto),
+            _ => Err(format!(
+                "unsupported streaming_delivery_mode '{}'. Supported modes: controlled, progressive, auto",
+                raw
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PrivacyGuardMode {
     #[default]
     DetectOnly,
@@ -240,6 +274,7 @@ pub struct Config {
     pub upstream_ca_bundle: Option<String>,
     pub upstream_api_key: String,
     pub streaming_enabled: bool,
+    pub streaming_delivery_mode: StreamingDeliveryMode,
     pub max_stream_upstream_bytes: usize,
 
     pub embedding_provider: ProviderKind,
@@ -340,12 +375,10 @@ impl Config {
             ));
         }
 
-        // ---- listen_addr
         if let Err(e) = self.listen_addr.parse::<std::net::SocketAddr>() {
             errors.push(format!("invalid listen_addr '{}': {}", self.listen_addr, e));
         }
 
-        // ---- redis
         if self.redis_url.trim().is_empty() {
             errors.push("redis_url must not be empty".into());
         } else if !self.redis_url.starts_with("redis://") {
@@ -358,7 +391,6 @@ impl Config {
             errors.push("redis_timeout_seconds must be > 0".into());
         }
 
-        // ---- upstream
         if let Some(err) =
             validate_openai_compatible_base_url("upstream_base_url", &self.upstream_base_url)
         {
@@ -385,14 +417,12 @@ impl Config {
             );
         }
 
-        // ---- upstream provider
         match self.upstream_provider {
             ProviderKind::OpenAiCompatible => {
                 // Currently all upstream providers are OpenAI-compatible HTTP endpoints.
             }
         }
 
-        // ---- timeouts
         if self.request_timeout_seconds == 0 {
             errors.push("request_timeout_seconds must be > 0".into());
         }
@@ -424,7 +454,6 @@ impl Config {
             errors.push("graceful_shutdown_timeout_seconds must be > 0".into());
         }
 
-        // ---- request size
         if self.max_request_body_bytes == 0 {
             errors.push("max_request_body_bytes must be > 0 (example: 1M, 512K, 1048576)".into());
         }
@@ -440,6 +469,15 @@ impl Config {
         }
         if self.max_stream_upstream_bytes == 0 {
             errors.push("max_stream_upstream_bytes must be > 0".into());
+        }
+        if self.streaming_delivery_mode == StreamingDeliveryMode::Progressive {
+            let blockers = self.progressive_streaming_blockers();
+            if !blockers.is_empty() {
+                errors.push(format!(
+                    "streaming_delivery_mode=progressive is incompatible with: {}",
+                    blockers.join(", ")
+                ));
+            }
         }
 
         if self.audit_enabled {
@@ -573,9 +611,6 @@ impl Config {
             }
         }
 
-        // ---- readiness invariants
-        // A disabled dependency is never initialized by build_runtime(), so requiring it
-        // for readiness would leave /readyz permanently false.
         if self.readiness_requires_redis && !self.exact_cache_enabled {
             errors.push("readiness_requires_redis=true requires exact_cache_enabled=true".into());
         }
@@ -584,7 +619,6 @@ impl Config {
                 .push("readiness_requires_qdrant=true requires semantic_cache_enabled=true".into());
         }
 
-        // ---- semantic threshold
         if !(0.0..=1.0).contains(&self.semantic_similarity_threshold) {
             errors.push(format!(
                 "semantic_similarity_threshold must be between 0.0 and 1.0, got {}",
@@ -592,12 +626,10 @@ impl Config {
             ));
         }
 
-        // ---- qdrant
         if self.qdrant_vector_size == 0 {
             errors.push("qdrant_vector_size must be > 0".into());
         }
 
-        // ---- semantic cache block (aggregated)
         if self.semantic_cache_enabled {
             let mut missing = Vec::new();
 
@@ -634,7 +666,6 @@ impl Config {
                 errors.push(err);
             }
 
-            // ---- embedding provider
             match self.embedding_provider {
                 ProviderKind::OpenAiCompatible => {
                     // Currently all embedding providers are OpenAI-compatible HTTP endpoints.
@@ -649,7 +680,6 @@ impl Config {
             }
         }
 
-        // ---- model pricing
         for (model, price) in &self.model_prices {
             if model.trim().is_empty() {
                 errors.push("model_prices contains an empty model name".into());
@@ -673,7 +703,6 @@ impl Config {
             }
         }
 
-        // ---- embedding price
         if let Some(price) = &self.embedding_price {
             if !price.usd_per_1m_tokens.is_finite() {
                 errors.push("embedding_price must be finite".into());
@@ -684,7 +713,6 @@ impl Config {
             }
         }
 
-        // ---- model allowlist logic (important improvement)
         if !self.allow_unknown_models_pass_through && self.model_prices.is_empty() {
             errors.push(
                 "no allowed models configured: add at least one `model_price <model> <input> <output>` \
@@ -693,7 +721,6 @@ impl Config {
             );
         }
 
-        // ---- FINAL
         if !errors.is_empty() {
             return Err(cfg_err(errors.join("; ")));
         }
@@ -701,8 +728,6 @@ impl Config {
         Ok(())
     }
 
-    /// Returns operational hardening warnings for configurations that are valid but
-    /// deserve explicit operator acknowledgement in production.
     pub fn hardening_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
 
@@ -767,8 +792,10 @@ impl Config {
                 self.semantic_cache_enabled, self.semantic_cache_fail_open
             ),
             format!(
-                "streaming_enabled={} delivery=controlled max_upstream_bytes={} idle_timeout={}s max_generation=900s",
+                "streaming_enabled={} requested_delivery={} selected_delivery={} active_delivery=request_dependent max_upstream_bytes={} idle_timeout={}s max_generation=900s",
                 self.streaming_enabled,
+                self.streaming_delivery_mode.as_str(),
+                self.selected_streaming_delivery_mode().as_str(),
                 self.max_stream_upstream_bytes,
                 self.upstream_timeout_seconds
             ),
@@ -898,6 +925,10 @@ impl Config {
             mask_secret_value(&self.upstream_api_key)
         ));
         out.push_str(&format!("streaming_enabled = {}\n", self.streaming_enabled));
+        out.push_str(&format!(
+            "streaming_delivery_mode = {}\n",
+            self.streaming_delivery_mode.as_str()
+        ));
         out.push_str(&format!(
             "max_stream_upstream_bytes = {}\n",
             self.max_stream_upstream_bytes
@@ -1211,6 +1242,11 @@ impl Config {
             upstream_ca_bundle: map.get("upstream_ca_bundle").cloned(),
             upstream_api_key: get_required(&map, "upstream_api_key")?,
             streaming_enabled: parse_or_default(&map, "streaming_enabled", true)?,
+            streaming_delivery_mode: parse_or_default(
+                &map,
+                "streaming_delivery_mode",
+                StreamingDeliveryMode::Controlled,
+            )?,
             max_stream_upstream_bytes: map
                 .get("max_stream_upstream_bytes")
                 .map(|value| Self::parse_bytes(value))
@@ -1495,6 +1531,10 @@ impl Config {
                 cfg_err("AIF_UPSTREAM_API_KEY is required when no config file is used")
             })?,
             streaming_enabled: parse_env_or_default("AIF_STREAMING_ENABLED", true)?,
+            streaming_delivery_mode: parse_env_or_default(
+                "AIF_STREAMING_DELIVERY_MODE",
+                StreamingDeliveryMode::Controlled,
+            )?,
             max_stream_upstream_bytes: {
                 let raw = env::var("AIF_MAX_STREAM_UPSTREAM_BYTES").unwrap_or_else(|_| {
                     crate::streaming::DEFAULT_MAX_CONTROLLED_STREAM_BYTES.to_string()
@@ -1912,16 +1952,52 @@ impl Config {
         Self::from_env()
     }
 
-    /// Return configuration fields that are bound into process/router state and
-    /// therefore cannot be made effective by the current SIGHUP reload path.
+    pub fn progressive_streaming_blockers(&self) -> Vec<&'static str> {
+        let mut blockers = Vec::new();
+        if !self.streaming_enabled {
+            blockers.push("streaming_enabled=false");
+        }
+        if self.security_guard_enabled {
+            blockers.push("security_guard_enabled=true");
+        }
+        if self.privacy_guard_enabled {
+            blockers.push("privacy_guard_enabled=true");
+        }
+        if self.exact_cache_enabled
+            && self.exact_cache_store_enabled
+            && !self.exact_cache_fail_open
+            && !self.aif_enforcement_mode.is_observe()
+        {
+            blockers.push("exact cache fail-closed storage");
+        }
+        if self.semantic_cache_enabled
+            && self.semantic_cache_store_enabled
+            && !self.semantic_cache_fail_open
+            && !self.aif_enforcement_mode.is_observe()
+        {
+            blockers.push("semantic cache fail-closed storage");
+        }
+        blockers
+    }
+
+    pub fn selected_streaming_delivery_mode(&self) -> StreamingDeliveryMode {
+        match self.streaming_delivery_mode {
+            StreamingDeliveryMode::Controlled => StreamingDeliveryMode::Controlled,
+            StreamingDeliveryMode::Progressive => StreamingDeliveryMode::Progressive,
+            StreamingDeliveryMode::Auto if self.progressive_streaming_blockers().is_empty() => {
+                StreamingDeliveryMode::Progressive
+            }
+            StreamingDeliveryMode::Auto => StreamingDeliveryMode::Controlled,
+        }
+    }
+
     pub fn restart_required_changes(&self, candidate: &Self) -> Vec<&'static str> {
         let mut changes = Vec::new();
 
         if self.listen_addr != candidate.listen_addr {
             changes.push("listen_addr");
         }
-        // CA trust configuration is restart-only: rotating a mounted CA or
-        // changing either path requires a pod restart rather than SIGHUP.
+
         if self.upstream_ca_bundle != candidate.upstream_ca_bundle {
             changes.push("upstream_ca_bundle");
         }
@@ -1971,8 +2047,10 @@ impl Config {
             format!("- upstream provider: {}", self.upstream_provider.as_str()),
             format!("- upstream base URL: {}", self.upstream_base_url),
             format!(
-                "- controlled streaming enabled: {} (max upstream response: {} bytes, idle timeout: {}s, max generation: 900s)",
+                "- streaming enabled: {} (requested: {}, selected: {}, active: request_dependent; max upstream response: {} bytes, idle timeout: {}s, max generation: 900s)",
                 self.streaming_enabled,
+                self.streaming_delivery_mode.as_str(),
+                self.selected_streaming_delivery_mode().as_str(),
                 self.max_stream_upstream_bytes,
                 self.upstream_timeout_seconds
             ),
@@ -2062,6 +2140,7 @@ impl fmt::Debug for Config {
             .field("upstream_ca_bundle", &self.upstream_ca_bundle)
             .field("upstream_api_key", &mask_secret(&self.upstream_api_key))
             .field("streaming_enabled", &self.streaming_enabled)
+            .field("streaming_delivery_mode", &self.streaming_delivery_mode)
             .field("max_stream_upstream_bytes", &self.max_stream_upstream_bytes)
             .field("embedding_provider", &self.embedding_provider.as_str())
             .field("embedding_base_url", &self.embedding_base_url)
@@ -2247,6 +2326,7 @@ fn allowed_directives() -> HashSet<&'static str> {
         "upstream_ca_bundle",
         "upstream_api_key",
         "streaming_enabled",
+        "streaming_delivery_mode",
         "max_stream_upstream_bytes",
         "embedding_provider",
         "embedding_base_url",
@@ -2483,8 +2563,6 @@ fn get_or_default(map: &HashMap<String, String>, key: &str, default: &str) -> St
     map.get(key).cloned().unwrap_or_else(|| default.to_string())
 }
 
-// An absent custom CA path means default TLS roots. A present but invalid
-// UTF-8 environment variable is a configuration error, never silently ignored.
 fn optional_env(key: &str) -> Result<Option<String>> {
     match env::var(key) {
         Ok(value) => Ok(Some(value)),
@@ -2496,8 +2574,6 @@ fn optional_env(key: &str) -> Result<Option<String>> {
     }
 }
 
-/// Validate a configured PEM root bundle before any HTTP clients are created.
-/// The TLS client constructors also read and install the roots at initialization.
 fn validate_ca_bundle(name: &str, path: Option<&str>) -> Option<String> {
     let path = path?;
     if path.trim().is_empty() {

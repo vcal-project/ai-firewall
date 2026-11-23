@@ -202,9 +202,6 @@ async fn config_reload_loop(
                             *svc = runtime.chat_service;
                         }
 
-                        // Install the new runtime's dependency handles, not
-                        // just a snapshot of their current boolean values.
-                        // Its Redis monitor and chat service share these Arcs.
                         {
                             let mut dependencies = state.dependencies.write().await;
                             *dependencies = runtime.dependencies;
@@ -390,11 +387,9 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("--healthcheck and --readycheck are mutually exclusive");
     }
     if healthcheck {
-        // Backward compatible liveness semantics (e.g. Docker HEALTHCHECK).
         return run_healthcheck("/healthz").await;
     }
     if readycheck {
-        // Use this for exec-based readiness probes, not --healthcheck.
         return run_healthcheck("/readyz").await;
     }
 

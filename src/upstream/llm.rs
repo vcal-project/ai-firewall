@@ -8,8 +8,6 @@ use crate::types::openai::{ChatCompletionRequest, ChatCompletionResponse};
 
 pub type UpstreamStreamError = Box<dyn Error + Send + Sync>;
 
-/// Default absolute ceiling for one provider-side controlled stream.
-/// Provider implementations may override this when they have a stronger bound.
 pub const DEFAULT_MAX_STREAM_GENERATION_DURATION: Duration = Duration::from_secs(15 * 60);
 
 pub type UpstreamByteStream =
@@ -113,16 +111,10 @@ impl UpstreamErrorKind {
 
 #[async_trait]
 pub trait LlmUpstream: Send + Sync {
-    /// Maximum idle interval between provider-side streaming body chunks.
-    /// OpenAI-compatible HTTP implementations should normally return their
-    /// configured upstream timeout here.
     fn stream_idle_timeout(&self) -> Duration {
         Duration::from_secs(120)
     }
 
-    /// Absolute ceiling for provider-side streaming generation, independent of
-    /// chunk activity. This prevents a malicious or broken drip-feed stream from
-    /// holding an upstream concurrency permit indefinitely.
     fn max_stream_generation_duration(&self) -> Duration {
         DEFAULT_MAX_STREAM_GENERATION_DURATION
     }
@@ -132,16 +124,12 @@ pub trait LlmUpstream: Send + Sync {
         req: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, AppError>;
 
-    /// Return the configured provider's OpenAI-compatible model list. This is
-    /// discovery traffic only; it must not be counted as a chat/inference call.
     async fn list_models(&self) -> Result<serde_json::Value, AppError> {
         Err(AppError::unprocessable(
             "model discovery is not supported by the configured upstream implementation",
         ))
     }
 
-    /// Opens the provider-side streaming transport. AI Firewall consumes this
-    /// stream internally and does not expose these bytes directly to clients.
     async fn chat_completion_stream(
         &self,
         _req: &ChatCompletionRequest,

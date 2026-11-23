@@ -172,11 +172,6 @@ impl AppState {
         }
     }
 
-    /// Strict startup dependency check for orchestrators. Unlike normal
-    /// readiness in Evaluation Mode, this verifies that cache backends marked
-    /// as required for readiness are available. Redis is recoverable after
-    /// startup in fail-open or Observe mode; Qdrant may still need a runtime
-    /// rebuild when its initialization failed.
     pub async fn startup_failure(&self) -> Option<&'static str> {
         if self.shutdown.is_shutting_down() {
             return Some("not started: shutting down\n");
@@ -364,6 +359,12 @@ pub struct RuntimeBuild {
 
 pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
     log_startup_summary(cfg);
+    tracing::info!(
+        requested = cfg.streaming_delivery_mode.as_str(),
+        selected = cfg.selected_streaming_delivery_mode().as_str(),
+        active = "request_dependent",
+        "streaming delivery strategy configured; active path depends on cache hits, guard capabilities, and cache-store policies"
+    );
 
     let effective_qdrant_collection = cfg.effective_qdrant_collection();
     let mut redis_available = false;
@@ -381,8 +382,6 @@ pub async fn build_runtime(cfg: &Config) -> Result<RuntimeBuild> {
             )
         })?;
 
-        // Bound initial connection establishment as well as later cache I/O.
-        // An unresponsive Redis must not hold fail-open startup indefinitely.
         let initial_connection = match tokio::time::timeout(
             Duration::from_secs(cfg.redis_timeout_seconds),
             ConnectionManager::new(redis_client.clone()),
@@ -663,8 +662,6 @@ pub async fn build_app(config: Config) -> Result<BuiltApp> {
     let state = Arc::new(AppState {
         config: Arc::new(RwLock::new(config.clone())),
         chat_service: Arc::new(RwLock::new(runtime.chat_service)),
-        // Readiness must follow the active runtime after SIGHUP: replacing
-        // only the flag values would strand it on the old monitor's Arcs.
         dependencies: Arc::new(RwLock::new(runtime.dependencies)),
         evidence_delivery: Arc::new(Mutex::new(runtime.evidence_delivery)),
         shutdown: ShutdownState::new(),
