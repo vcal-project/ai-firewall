@@ -19,7 +19,7 @@ visit the [AIF documentation portal](https://ai-firewall.docs.vcal-project.com/)
 - [Evaluation / Observe Mode](evaluation-mode.md) — isolated shadow caches and prospective savings.
 - [Assessment Context](assessment-context.md) — effective configuration identity and assessment
   reproducibility.
-- [Controlled streaming](controlled-streaming.md) — complete-response approval and SSE replay.
+- [Streaming delivery](controlled-streaming.md) — progressive SSE, controlled approval, and cache-aware replay.
 - [Structured content](structured-content.md) — JSON message content, guard inspection coverage, and
   privacy-aware caching.
 

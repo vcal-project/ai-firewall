@@ -48,6 +48,7 @@ It demonstrates:
 - net savings percentage
 - cache hit rate
 - exact and semantic cache activity
+- streaming delivery paths (progressive upstream, controlled upstream, cache replay, and policy completion)
 - cache bypass request rate
 - per-model spend and savings
 - savings by cache type
@@ -117,6 +118,7 @@ aif_guard_latency_seconds
 aif_security_blocks_total
 aif_privacy_restore_skipped_total
 aif_usage_blocks_total
+aif_stream_delivery_selected_total{path}
 aif_stream_requests_total
 aif_stream_completed_total
 aif_stream_errors_total
@@ -145,6 +147,18 @@ aif_redis_write_probes_total
 aif_redis_reconnect_attempts_total
 aif_redis_write_transitions_total
 ```
+
+### Streaming delivery diagnostics
+
+`aif_stream_delivery_selected_total{path}` counts the **actual selected response-delivery path**. Available `path` values include `progressive_upstream`, `controlled_upstream`, `exact_cache`, `semantic_cache`, and `policy_completion`. Use a counter increase over the same observation window as the request tests; a configuration summary showing `requested_delivery=auto` or `selected_delivery=progressive` does not guarantee every stream used progressive upstream delivery.
+
+For example:
+
+```promql
+sum by (path) (increase(aif_stream_delivery_selected_total[5m]))
+```
+
+Cache hit rate is an **aggregate of eligible gateway traffic**, not necessarily a hit rate for human-visible chat turns. Chatbot clients can issue auxiliary requests (for example, titles or suggested follow-ups). Without reliable request-purpose attribution, do not interpret an increasing aggregate hit rate as proof that the main chat responses are being cached.
 
 ### Redis recovery diagnostics
 

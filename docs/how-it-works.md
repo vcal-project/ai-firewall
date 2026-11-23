@@ -16,8 +16,8 @@ A typical successful request is processed as follows:
 3. Determine whether the request bypasses cache and whether exact and semantic caching are eligible.
 4. Check the Redis exact cache; if eligible and necessary, query the Qdrant semantic cache using an embedding from the configured embedding endpoint.
 5. In **Enforce mode** (`enforce`), use an eligible cache hit or call the upstream model. In **Observe mode** (`observe`), send the allowed request upstream while recording potential cache reuse in isolated evaluation state.
-6. Normalize the completion; run enabled response Security scanning; write eligible cache state (production or isolated evaluation), then restore Privacy placeholders using the current request mapping.
-7. Record usage, cost, metrics, and evidence; return JSON or replay the approved completion as SSE. Evidence delivery to optional VCAL Audit is asynchronous.
+6. For streaming misses, choose progressive or controlled delivery according to configuration, Guard capabilities, and request eligibility; assemble the response for finalization and apply the applicable response controls. Store only cache-admissible completions (production or isolated evaluation) before Privacy placeholder restoration.
+7. Record usage, cost, metrics, and evidence; return JSON, progressive SSE, or approved/cache-derived SSE. Evidence delivery to optional VCAL Audit is asynchronous.
 
 The ordering is important: Security Guard may block before any model/cache call, and Privacy Guard
 placeholder restoration occurs **after** eligible pre-restoration cache storage. Usage Guard is request-side
@@ -76,7 +76,7 @@ similarity result from ignoring completion-critical structured information.
 
 For eligible text requests, AIF requests an embedding and searches Qdrant. A candidate must satisfy the
 configured similarity threshold, be unexpired, contain a valid cached payload, and meet the applicable
-model/identity/scope requirements. Example:
+model/privacy scope and semantic compatibility requirements. Generation settings and earlier conversation context are checked independently of text similarity. A different final user wording may still match, but a different generation token budget must not reuse the same semantic entry. Example:
 
 ```text
 Query:       Explain Redis briefly
@@ -86,9 +86,15 @@ Threshold:   0.92
 Result:      candidate meets the similarity threshold
 ```
 
-Crossing the threshold is **necessary but not sufficient**: the other eligibility checks still apply.
+Crossing the threshold is **necessary but not sufficient**: the other eligibility checks still apply. Legacy semantic entries without the current compatibility scope are excluded from reuse.
 Similarity thresholds require application-specific tuning, particularly where apparently similar questions
 can require different factual answers.
+
+### Cache admission and semantic-to-exact reuse
+
+Cache storage and lookup exclude responses that do not represent a usable completed answer. In particular, a valid upstream response ending in `finish_reason: "length"` can still be returned to the caller but is not stored for reuse. The same admission rules cover JSON, completed SSE, and semantic hits promoted into Redis exact cache. Valid tool-call responses can remain eligible.
+
+Changing the request's generation parameters, such as `max_tokens` or `max_completion_tokens`, changes semantic compatibility without changing the embedding text or global similarity threshold. This reduces accidental cross-budget reuse while retaining compatible paraphrase matches.
 
 ### Embedding vector and retention
 
@@ -151,10 +157,11 @@ OpenAI-compatible upstream. Set its **base URL**, not a URL that already ends in
 `/v1/chat/completions`. Example compatible base URLs may be `https://api.openai.com`, `http://ollama:11434/v1`, or `http://vllm:8000/v1`, depending on
 the provider. See [Provider Compatibility](provider-compatibility.md).
 
-For `stream=false` or omitted `stream`, AIF processes a JSON completion. For `stream=true`, it consumes
-provider SSE, assembles the whole response, applies response controls, then generates downstream SSE with
-`[DONE]`. A client does **not** receive upstream tokens immediately as generated. Provider failures before
-approval do not expose partial content. See [Controlled Streaming](controlled-streaming.md).
+For `stream=false` or omitted `stream`, AIF processes a JSON completion. For `stream=true`,
+**controlled** delivery assembles and approves the whole response before SSE replay, while eligible
+**progressive** delivery can forward upstream SSE incrementally. Cached completions can also be
+rendered as SSE. Progressive failures after downstream commit cannot retract already delivered content.
+See [Streaming Delivery](controlled-streaming.md).
 
 Independent cache store switches allow lookup without writing new entries. Responses are normalized before
 storage and response processing; unsuccessful or otherwise ineligible flows must not be assumed cacheable.

@@ -11,7 +11,13 @@ every Guard.**
   fields.
 - Requests with **non-string** message content are not eligible for semantic cache lookup/store. Eligible
   structured-content requests may still use exact caching.
-- JSON versus controlled-SSE delivery does not change the eligible request's cache identity.
+- JSON versus SSE delivery (progressive, controlled, or cache-derived) does not change the eligible request's cache identity.
+
+## Completion suitability and semantic compatibility
+
+Exact and semantic stores only admit usable completed responses. A completion ending with `finish_reason: "length"` remains deliverable to the caller but is not eligible for reuse. Stored candidates are also validated when read. Valid tool-call completions are not rejected merely because they lack plain assistant text.
+
+For text-eligible semantic requests, generation parameters and prior conversation context must be compatible in addition to model, tenant/policy scope, TTL, and similarity. The final user's wording may vary for paraphrase matching. Cache compatibility is not the same as a guarantee that every high-scoring paraphrase is interchangeable.
 
 ## Privacy Guard inspection scope
 

@@ -447,7 +447,7 @@ Provider compatibility still matters for OpenAI-compatible chat request/response
 
 Privacy Guard inspects supported string and structured text-content arrays; Security Guard and Usage Guard have separate, more limited text inspection coverage. Non-text content such as images, audio, video, binary payloads, and referenced attachments is not inspected by these integrations. Recognized unsupported text-bearing content is rejected by Privacy Guard when enabled.
 
-AI Cost Firewall supports both ordinary JSON chat completions and controlled OpenAI-compatible SSE delivery. Optional guards use the same complete-response control pipeline for both delivery modes.
+AI Cost Firewall supports ordinary JSON chat completions and OpenAI-compatible SSE with progressive or controlled delivery. Optional Guards that need complete-response inspection require the controlled delivery path.
 
 ---
 ## Evaluation Mode and Provider Capacity
@@ -468,33 +468,25 @@ For `stream=true`, the upstream must still provide compatible SSE in observe mod
 
 ## Streaming Compatibility
 
-AI Cost Firewall supports controlled chat-completion streaming for providers that expose an OpenAI-compatible SSE response to `stream=true` requests.
+AI Cost Firewall accepts OpenAI-compatible SSE from providers when clients set `stream=true`. The provider must emit parseable stream events for content and supported tool/function-call deltas. AIF assembles a canonical completion for finalization even when eligible upstream content is forwarded progressively.
 
-The provider stream is not forwarded byte-for-byte. AI Cost Firewall consumes it internally and reconstructs a canonical completion before downstream delivery. Compatibility therefore depends on the provider emitting parseable OpenAI-style stream events for the fields used by the response, including fragmented content and tool/function-call deltas where applicable.
-
-Controlled streaming behavior:
-
-- `stream=true` is permitted when `streaming_enabled true`
-- exact and semantic cache lookup/store remain available when the request is otherwise eligible
-- cache identity is shared across JSON and SSE delivery
-- response Security Guard scanning and Privacy Guard restoration run on the complete response before client delivery
-- approved responses are re-encoded as OpenAI-compatible SSE and terminated with `[DONE]`
-- client-requested `stream_options.include_usage` is honored on replay
-- malformed, truncated, failed, oversized, idle, or excessively long provider streams fail before model content is committed downstream
+- In `controlled` mode, AIF consumes SSE internally, applies full-response controls and then re-encodes approved OpenAI-compatible SSE, ending with `[DONE]`. Provider framing is not reproduced byte-for-byte.
+- In `progressive` mode, eligible upstream SSE can reach the client as it arrives. Once response headers or content have been committed, upstream failures cannot be converted into an ordinary pre-stream HTTP error or retract previously sent content.
+- With `auto`, configuration and request eligibility determine the selected path. Enabled Guards requiring complete-response inspection use controlled delivery.
+- Redis and Qdrant cache identity is shared across JSON and SSE when the request and cached completion are eligible. Cached completions can be rendered as SSE without an upstream model call.
+- `stream_options.include_usage` is supported for controlled/cache-derived SSE where the provider supplies the required accounting information.
+- Ineligible completions, including `finish_reason: "length"`, can be delivered to the client but are not stored for future reuse.
 
 Configuration:
 
 ```conf
 streaming_enabled true;
+streaming_delivery_mode auto;
 max_stream_upstream_bytes 8M;
 upstream_timeout_seconds 120;
 ```
 
-`max_stream_upstream_bytes` limits cumulative provider SSE bytes accepted during one controlled request. It is especially relevant for providers that emit very large tool-call arguments, reasoning fields, or long generations. It is not a peak-memory-buffer setting.
-
-For controlled streaming, `upstream_timeout_seconds` is also the maximum idle gap between provider body chunks after headers arrive. A separate 15-minute absolute generation ceiling protects against providers that continue to drip-feed chunks without completing.
-
-Provider-specific SSE framing extensions that are not represented in the canonical OpenAI-compatible response may not be reproduced byte-for-byte in downstream SSE. Compatibility should therefore be validated semantically for each provider/version used in production.
+`max_stream_upstream_bytes` caps cumulative provider SSE bytes accepted during a streaming request; it is not a peak parser-buffer setting. Consult [Streaming Delivery](controlled-streaming.md) for the controlled commit barrier, progressive failure trade-off, and stream telemetry. Validate provider-specific SSE framing and accounting semantics against the deployed upstream.
 
 ---
 

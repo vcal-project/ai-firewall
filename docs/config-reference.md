@@ -49,7 +49,7 @@ The configuration is logically divided into:
 | Core Settings | Runtime and server behavior |
 | Evaluation Mode | AIF cache enforcement versus non-disruptive observation |
 | Upstream Provider | Chat-completion provider |
-| Controlled Streaming | Buffered provider SSE assembly and approved SSE replay |
+| Streaming Delivery | Progressive upstream SSE, controlled approval, and cache-aware SSE replay |
 | Embedding Provider | Embedding generation |
 | Qdrant | Semantic cache storage |
 | Cache Settings | TTL and retention |
@@ -81,6 +81,7 @@ upstream_base_url https://api.openai.com;
 upstream_api_key sk-your-key;
 
 streaming_enabled true;
+streaming_delivery_mode auto;
 max_stream_upstream_bytes 8M;
 
 embedding_provider openai_compatible;
@@ -430,9 +431,9 @@ upstream_api_key dummy;
 
 ---
 
-## Controlled Streaming Settings
+## Streaming Delivery Settings
 
-Controlled streaming accepts OpenAI-compatible provider SSE internally, reconstructs the complete response, applies response controls, and only then replays approved SSE to the client.
+AIF supports **controlled** delivery (complete-response approval before SSE replay), **progressive** delivery (eligible upstream SSE forwarded incrementally), and **auto** selection. Cache hits can be converted to SSE without upstream inference. Only controlled delivery provides the guarantee that no generated response content leaves AIF before full-response approval.
 
 ### streaming_enabled
 
@@ -458,9 +459,31 @@ Environment variable:
 AIF_STREAMING_ENABLED=true
 ```
 
+### streaming_delivery_mode
+
+Selects the configured SSE delivery strategy:
+
+```conf
+streaming_delivery_mode auto;
+```
+
+Supported values:
+
+- `controlled` — default; buffers/assembles upstream SSE, performs required response processing, and replays approved SSE.
+- `progressive` — forwards eligible upstream SSE as it arrives; rejected during configuration validation if enabled capabilities require controlled processing.
+- `auto` — selects a compatible strategy from configured capabilities. The actual request path also depends on cache hits, guard requirements, and cache-store eligibility.
+
+Environment variable:
+
+```text
+AIF_STREAMING_DELIVERY_MODE=auto
+```
+
+Do not assume that `selected_delivery=progressive` means every request uses progressive upstream streaming. Inspect `aif_stream_delivery_selected_total{path}` to distinguish upstream and cached/policy paths. Progressive delivery can expose partial client-visible content before an upstream error; use `controlled` when full-response approval before delivery is required.
+
 ### max_stream_upstream_bytes
 
-Maximum **cumulative provider SSE bytes accepted** for one controlled streaming request before canonical assembly and response controls.
+Maximum **cumulative provider SSE bytes accepted** for one streaming request, regardless of delivery strategy.
 
 Example:
 
@@ -478,7 +501,7 @@ The value must be greater than zero. Byte-size suffixes accepted by the configur
 
 The limit applies to total provider SSE bytes received during the request, not peak parser-buffer occupancy. A stream can therefore exceed the limit even when data is consumed incrementally and instantaneous memory use remains well below the configured value.
 
-If the provider stream exceeds the limit, the request fails before downstream SSE commit and partial provider content is not exposed to the client.
+When controlled delivery is active, exceeding the limit fails before downstream SSE commitment. When progressive delivery has already committed SSE, previously delivered content cannot be withdrawn.
 
 Environment variable:
 
@@ -486,7 +509,7 @@ Environment variable:
 AIF_MAX_STREAM_UPSTREAM_BYTES=8M
 ```
 
-Operationally, controlled streaming uses a commit barrier: no generated response content leaves AI Cost Firewall until the complete response has been assembled and approved.
+Operationally, **controlled** streaming uses a commit barrier: no generated response content leaves AIF until complete-response approval. **Progressive** streaming has different post-commit error semantics.
 
 ---
 
@@ -870,7 +893,7 @@ In normal `enforce` mode this does not bypass startup validation. In `observe`, 
 
 ### semantic_cache_store_enabled
 
-Controls whether successful upstream responses are stored in semantic cache.
+Controls whether eligible successful upstream responses are stored in semantic cache. AIF excludes length-limited or otherwise unusable completions; on lookup, semantic entries must also pass model/privacy scope, request-generation compatibility, prior-conversation-context compatibility, expiry, and response-admission checks.
 
 Example:
 
@@ -1006,7 +1029,7 @@ upstream_timeout_seconds 120;
 
 If omitted, `request_timeout_seconds` is used as the fallback.
 
-Controlled streaming also enforces a separate 15-minute absolute provider-generation ceiling. This prevents an upstream from holding a concurrency permit indefinitely by sending occasional chunks frequently enough to avoid the idle timeout.
+Controlled delivery also enforces a separate 15-minute absolute provider-generation ceiling. This prevents an upstream from holding a concurrency permit indefinitely by sending occasional chunks frequently enough to avoid the idle timeout.
 
 ---
 
@@ -1378,7 +1401,7 @@ Used for:
 
 ## Assessment Context and Configuration Identity
 
-AIF v0.8.3 does not add a new configuration directive for Assessment Context. The read-only:
+Assessment Context does not require an additional configuration directive. The read-only:
 
 ```text
 GET /assessment-context
@@ -1711,9 +1734,10 @@ aif_evaluation_errors_total{component,operation}
 
 Observe-mode would-have hits and savings are intentionally not added to the normal production cache-hit or savings counters.
 
-Controlled streaming:
+Streaming delivery:
 
 ```text
+aif_stream_delivery_selected_total{path}
 aif_stream_requests_total
 aif_stream_completed_total
 aif_stream_errors_total

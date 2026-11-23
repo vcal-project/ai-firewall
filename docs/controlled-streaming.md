@@ -1,53 +1,59 @@
-# Controlled Streaming
+# Streaming Delivery: Progressive and Controlled SSE
 
-AI Cost Firewall supports **controlled OpenAI-compatible chat-completion streaming** with `"stream": true`. Controlled streaming accepts provider SSE internally, assembles the complete response, applies response controls, and only then replays an OpenAI-compatible Server-Sent Events (`text/event-stream`) response to the client.
+AI Cost Firewall supports OpenAI-compatible chat completions with `"stream": true`. It can deliver generated content **progressively**, as upstream SSE arrives, or use **controlled delivery**, which assembles and approves the complete response before replaying SSE. Cached completions can also be rendered as OpenAI-compatible SSE. The historical filename of this guide is retained so existing documentation links continue to work.
 
-## Approval guarantee
+## Delivery strategies
 
-The core guarantee is:
+Configure the strategy with:
 
-> No generated response content leaves AI Cost Firewall until AI Cost Firewall has approved the complete response.
-
-## Request and response behavior
-
-Controlled streaming uses the same request controls, cache identity, response controls, Privacy restoration, accounting, and evidence pipeline as non-streaming requests:
-
-- Security Guard, Privacy Guard, and Usage Guard request-side processing runs before cache lookup or the upstream call.
-- Exact and semantic cache lookup/store remain active for streaming requests. JSON and SSE delivery share transport-independent cache identity, so an eligible cached completion can be reused across `stream=false` and `stream=true`.
-- On a cache miss, AI Cost Firewall requests provider SSE and consumes it internally. Provider chunks are parsed and assembled into the canonical chat-completion response before downstream delivery.
-- Security Guard response scanning runs on the complete assembled or cached response before any generated response content is committed to the client.
-- Eligible cache-miss responses are stored using the existing pre-Privacy-restore cache semantics.
-- Privacy Guard placeholder restoration runs before controlled SSE delivery, including flows that created an anonymization mapping on the request path.
-- Usage and model-cost accounting are derived from the assembled response. AI Cost Firewall requests upstream usage data for internal accounting; a downstream usage chunk is replayed when the client requests `stream_options.include_usage`.
-- After all controls and accounting complete successfully, AI Cost Firewall encodes the approved canonical response as OpenAI-compatible SSE and terminates it with `[DONE]`.
-- If the provider stream fails, is malformed, is truncated, exceeds the configured cumulative upstream SSE byte limit, becomes idle for too long, or exceeds the absolute generation ceiling before approval, AI Cost Firewall returns a normal HTTP error and does not expose partial provider content to the client.
-
-## Configuration and limits
-
-Controlled streaming is enabled by default and can be configured with:
-
-```text
+```conf
 streaming_enabled true;
+streaming_delivery_mode auto;
 max_stream_upstream_bytes 8M;
-upstream_timeout_seconds 120;
 ```
 
-`streaming_enabled` permits clients to use `"stream": true`; it does not force streaming for ordinary requests. Requests with `stream=false` or no `stream` field continue to use the normal JSON completion path.
+| Mode | Behavior | When to use |
+|---|---|---|
+| `controlled` | Buffer provider SSE, assemble the completion, apply response controls, then replay approved SSE. | Strict pre-delivery inspection; the default for backward compatibility. |
+| `progressive` | Forward eligible upstream SSE incrementally while assembling the canonical response for finalization and accounting. | Low-latency streams with a configuration compatible with progressive delivery. Explicit selection is rejected when incompatible configured capabilities are enabled. |
+| `auto` | Choose a compatible strategy from configured capabilities; each request can still take a cache-replay or controlled path. | Deployments that should use progressive streaming where safe and fall back to controlled delivery as needed. |
 
-`max_stream_upstream_bytes` limits the **cumulative provider SSE bytes accepted for one controlled streaming request**. It is a total-response-size limit, not a measurement of instantaneous parser buffer occupancy.
+**The default is `controlled` unless `streaming_delivery_mode` is explicitly set.** `streaming_enabled` only permits streaming requests; it does not convert ordinary JSON requests to SSE. Set `AIF_STREAMING_DELIVERY_MODE` when using environment-based configuration.
 
-For controlled provider streams, `upstream_timeout_seconds` also acts as the maximum idle gap between provider SSE body chunks after response headers have been received. In addition, controlled generation has a 15-minute absolute ceiling so a provider cannot hold an upstream concurrency permit indefinitely by continuously drip-feeding data.
+With `auto`, the selected strategy is not a promise that every request will forward upstream tokens progressively. Cache hits, guard capabilities, request-specific cache-store policy, and other eligibility checks affect the actual delivery path. For example, an eligible cache hit can be rendered as SSE without calling the upstream model. An enabled Guard requiring complete-response inspection selects controlled delivery.
 
-Provider SSE support is required only for requests that use `"stream": true`. An OpenAI-compatible provider without streaming support remains usable for ordinary non-streaming chat-completion requests.
+## Approval and error boundaries
 
-## Operational characteristics
+**Controlled delivery guarantee:** No generated response content leaves AIF until it has assembled and approved the complete response. A malformed, truncated, failed, oversized, idle, or over-duration provider stream fails before downstream SSE is committed.
 
-Operational characteristics:
+**Progressive delivery trade-off:** An eligible stream can reach the client before upstream generation finishes. If a failure occurs **after** downstream SSE has started, the gateway cannot retract already delivered content or replace the committed HTTP status with a pre-stream error. Partial content must not be treated as a completed answer. Use controlled delivery when response approval before exposure is required.
 
-- controlled streaming prioritizes response-control guarantees over token-by-token immediacy; client SSE delivery begins only after upstream generation and response controls complete
-- downstream SSE is generated from the canonical response and is OpenAI-compatible, but it is not guaranteed to be byte-for-byte identical to the provider's original SSE framing
-- fragmented content and tool-call deltas are reconstructed before replay
-- upstream and client time-to-first-byte are measured separately
-- provider SSE chunks and cumulative bytes, generation duration, timeout/failure outcomes, upstream response size, approved client-buffer size, request errors, and terminal stream lifecycle are exposed through Prometheus metrics and structured evidence
+Request-side Guard checks still happen before cache lookup or upstream inference. Progressive delivery is not a way to bypass enabled response controls: configurations requiring complete response inspection are handled using controlled delivery. Privacy placeholder restoration and other module constraints can also require controlled delivery.
 
-See [Operational behavior](operation.md) for runtime failure handling and [Configuration Reference](config-reference.md) for streaming directives.
+## Cache-aware JSON and SSE reuse
+
+- Redis exact cache and Qdrant semantic cache remain available for eligible requests, in both Observe and Enforce modes.
+- JSON and SSE delivery share transport-independent exact-cache identity: `stream` and `stream_options` do not cause separate exact entries.
+- A completed, cache-eligible response can be served as JSON or synthesized into OpenAI-compatible SSE terminated by `[DONE]`; it is not a byte-for-byte replay of the original provider framing.
+- In **Observe mode**, shadow cache hits are recorded but the client still receives the live upstream result. In **Enforce mode**, an eligible cache hit can avoid an upstream call.
+- Cache admission applies to **both streaming and non-streaming** response paths. A completion ending with `finish_reason: "length"`, or without usable assistant output, is delivered when valid but not cached. Valid tool-call completions can still be cache-eligible.
+- Semantic reuse requires more than an embedding similarity threshold: compatible generation settings and earlier conversation context are checked separately. For example, changing `max_tokens` or `max_completion_tokens` prevents reuse across incompatible budgets. Unscoped legacy semantic entries do not satisfy the updated compatibility check.
+- Suitable semantic hits may warm the Redis exact cache for the incoming request. Cache admission is checked on lookup as well as storage, including against previously stored unsuitable responses.
+
+Semantic similarity remains a heuristic; application-specific distinctions can still matter. See [How It Works](how-it-works.md) and [Structured Content](structured-content.md).
+
+## Limits and operational telemetry
+
+`max_stream_upstream_bytes` caps the **cumulative provider SSE bytes** accepted during a request, not instantaneous parser-buffer size. For controlled provider SSE, `upstream_timeout_seconds` also limits the idle gap between chunks, and an absolute generation ceiling prevents indefinite drip-feed occupancy. Consult [Configuration Reference](config-reference.md) for the active limits and timeout semantics.
+
+Monitor the actual delivery path with:
+
+```text
+aif_stream_delivery_selected_total{path="progressive_upstream"}
+aif_stream_delivery_selected_total{path="controlled_upstream"}
+aif_stream_delivery_selected_total{path="exact_cache"}
+aif_stream_delivery_selected_total{path="semantic_cache"}
+aif_stream_delivery_selected_total{path="policy_completion"}
+```
+
+Additional stream metrics record completed/failed streams, upstream chunks and bytes, upstream and client time to first byte, and generation duration. A reported configured or selected delivery strategy is **not** a substitute for checking the actual path counter. See [Metrics and Costs](metrics-and-costs.md) and [Troubleshooting](troubleshooting.md).

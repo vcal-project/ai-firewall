@@ -89,9 +89,7 @@ Context](assessment-context.md).
 
 ### Are streaming completions cacheable?
 
-Eligible streaming and non-streaming requests share cache identity. For `stream=true`, AIF assembles the
-provider response and applies controls **before** replaying SSE. It is not raw token-by-token pass-through.
-See [Controlled Streaming](controlled-streaming.md).
+Eligible streaming and non-streaming requests share exact-cache identity. With **controlled** delivery, AIF approves the assembled response before replaying SSE. With **progressive** delivery, eligible upstream content arrives incrementally, and failures after SSE commit cannot retract delivered content. Automatic mode selects an eligible path; complete cache hits can be rendered as SSE without an upstream call. Length-limited or unusable responses are not cached. See [Streaming Delivery](controlled-streaming.md).
 
 ### Are tool calls and structured message arrays cacheable?
 

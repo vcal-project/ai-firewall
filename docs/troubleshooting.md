@@ -853,11 +853,11 @@ curl -s http://localhost:8080/metrics | grep -E 'aif_guard_requests_total|aif_pr
 
 ---
 
-## Controlled Streaming Problems
+## Streaming Delivery Problems
 
 ### `stream=true` returns HTTP 422
 
-Check whether controlled streaming is disabled:
+Check whether streaming is disabled:
 
 ```conf
 streaming_enabled false;
@@ -873,7 +873,7 @@ A deliberately disabled deployment rejects `stream=true`; ordinary JSON requests
 
 ### `stream=true` returns an upstream/502-style error before SSE begins
 
-Controlled streaming does not expose partial provider output. AI Cost Firewall first consumes and assembles the provider stream. A malformed, truncated, failed, oversized, idle, or over-duration stream therefore returns a normal HTTP error before downstream `text/event-stream` is committed.
+With **controlled** delivery, AIF does not expose partial provider output: it assembles and checks the whole stream before committing downstream `text/event-stream`. A malformed, failed, oversized, idle, or over-duration stream can therefore return a normal HTTP error before SSE begins. With **progressive** delivery, failures after SSE commitment cannot be changed into a pre-stream HTTP status; inspect stream errors and the client-visible partial output.
 
 Check the stream metrics:
 
@@ -902,7 +902,7 @@ If a provider returns SSE headers and then stops producing body chunks, AI Cost 
 upstream_timeout_seconds 120;
 ```
 
-The same timeout resets whenever a provider body chunk is received. Check `aif_upstream_timeouts_total`, `aif_stream_upstream_errors_total`, `aif_stream_errors_total`, logs, and `upstream.stream.failed` evidence. No partial generated content is committed to the client.
+The same timeout resets whenever a provider body chunk is received. Check `aif_upstream_timeouts_total`, `aif_stream_upstream_errors_total`, `aif_stream_errors_total`, logs, and `upstream.stream.failed` evidence. Controlled delivery does not commit partial generated content before complete-response approval.
 
 ### Provider keeps sending data but never finishes
 
@@ -910,15 +910,24 @@ Controlled streaming has a separate 15-minute absolute provider-generation ceili
 
 ### Streaming feels less immediate than raw provider SSE
 
-This is expected. Controlled streaming prioritizes response-control guarantees over token-by-token immediacy. The client receives SSE only after upstream generation, canonical assembly, response Security Guard processing, cache-store processing, Privacy restoration, and accounting are complete.
+Check the actual delivery path. Controlled streaming prioritizes response-control guarantees over token-by-token immediacy, so client SSE starts after full-response approval. Progressive streaming can deliver tokens as upstream SSE arrives when the deployment and request are eligible. Cached SSE can arrive quickly without an upstream call.
 
 Compare:
 
 ```text
+aif_stream_delivery_selected_total{path}
 aif_stream_upstream_time_to_first_byte_seconds
 aif_stream_generation_duration_seconds
 aif_stream_client_time_to_first_byte_seconds
 ```
+
+### Progressive mode fails configuration validation or auto falls back to controlled
+
+The explicit `progressive` setting requires a compatible configuration. Enabled Guards or other controls requiring full-response processing can prevent progressive selection. With `auto`, AIF can select controlled delivery instead. Confirm the running binary supports `streaming_delivery_mode`, examine startup `requested_delivery`/`selected_delivery` and check `aif_stream_delivery_selected_total{path}` for actual paths. An `unknown directive` error may indicate an older image was deployed with a newer configuration; verify `GET /version` and the container image digest before changing the config.
+
+### An apparently similar request receives a fresh model response
+
+This can be expected. Semantic candidates must pass generation-parameter and prior-conversation-context compatibility checks as well as the similarity threshold. Requests differing in token limits are not interchangeable. A response ending with `finish_reason: "length"` is returned to the client but is excluded from caching; replaying it therefore calls upstream again. Cached older unsuitable responses are rejected on lookup.
 
 ---
 

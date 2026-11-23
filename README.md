@@ -57,15 +57,32 @@ In **Observe mode**, AIF uses isolated evaluation caches to identify potential c
 
 ## Key Capabilities
 
-- **Two-layer caching:** Redis exact cache and Qdrant semantic cache with configurable cache controls.
-- **OpenAI-compatible APIs:** chat completions, `GET /v1/models` proxying, and controlled SSE delivery for streaming chat completions.
+- **Two-layer caching:** Redis exact cache and Qdrant semantic cache, with response-admission checks and semantic compatibility safeguards for generation settings and conversation context.
+- **OpenAI-compatible APIs:** chat completions, `GET /v1/models` proxying, and streaming responses with progressive or controlled SSE delivery.
+- **Cache-aware streaming:** eligible upstream responses can stream progressively, while valid cached completions can be replayed as SSE or returned as JSON.
 - **Observe before Enforce:** measure potential savings with isolated evaluation caches, then serve eligible cache hits when you choose to enforce.
 - **Cost and operational visibility:** Prometheus metrics, Grafana dashboards, per-model cost estimates, cache diagnostics, and evidence events.
 - **Operational controls:** configuration validation, readiness/startup/liveness probes, configurable fail-open/fail-closed behavior, request limits, and graceful shutdown.
 - **Deployment flexibility:** Docker Compose examples and an OpenShift `restricted-v2` deployment baseline.
-- **Private-provider HTTPS:** optional CA bundles for upstream LLM and embedding endpoints, including controlled streaming, without disabling certificate or hostname verification.
+- **Private-provider HTTPS:** optional CA bundles for upstream LLM and embedding endpoints, including streaming, without disabling certificate or hostname verification.
 
-**Controlled streaming is buffered:** AIF assembles and checks the full provider response before replaying it as SSE. It does **not** forward model tokens immediately as they arrive. [Details](docs/controlled-streaming.md).
+### Streaming delivery
+
+For `stream=true`, AIF supports two upstream delivery paths:
+
+- **Progressive:** when eligible, AIF forwards SSE content as it arrives from the provider, reducing time to first visible output. Progressive delivery is not selected when enabled request/response controls require the completed response to be inspected or transformed first.
+- **Controlled:** AIF assembles the provider completion and applies the required controls before delivering a reconstructed SSE response. This prioritizes inspection and policy enforcement over immediate token delivery.
+
+With `streaming_delivery_mode auto;`, AIF selects the appropriate path for each request. In Enforce mode, eligible exact or semantic cache hits can be returned as SSE without another model call. Completed responses can also be reused across JSON and SSE request formats when cache identity and policy permit.
+
+```conf
+streaming_enabled true;
+streaming_delivery_mode auto;
+```
+
+**Cache safety:** AIF does not cache completions terminated by a generation-length limit or responses without usable assistant output. Semantic-cache reuse also requires compatible generation parameters and conversation context; text similarity alone is not sufficient. An incomplete response may still be delivered to the client but is not admitted into the cache. These checks apply to cached reads as well as new writes.
+
+[Controlled streaming details](docs/controlled-streaming.md) · [Structured content](docs/structured-content.md)
 
 ## Observe mode vs. Enforce mode
 
@@ -105,7 +122,7 @@ Guards can be enabled individually or together. Inspection coverage depends on e
 
 AIF expects **OpenAI-compatible** chat and embedding endpoints. Common patterns include OpenAI, Ollama, LM Studio, vLLM, LiteLLM, and OpenRouter. The chat and embedding endpoints can be configured separately.
 
-Current gateway routes include `POST /v1/chat/completions` and `GET /v1/models` (discovery through the configured chat upstream). Provider SSE support is needed for `stream=true`, not for normal JSON responses.
+Current gateway routes include `POST /v1/chat/completions` and `GET /v1/models` (discovery through the configured chat upstream). Provider SSE support is needed for upstream streaming requests, not for normal JSON responses. AIF can reconstruct SSE for eligible cached completions.
 
 **Limitations:** AIF is not a universal provider adapter. Native Anthropic, Gemini, Mistral, and Cohere APIs are not directly supported; use an appropriate OpenAI-compatible compatibility layer. Structured message arrays have specific cache and guard-inspection limits. AIF does **not** fetch or inspect referenced documents, file attachments, or opaque non-text parts.
 
@@ -113,7 +130,7 @@ Current gateway routes include `POST /v1/chat/completions` and `GET /v1/models` 
 
 ## Dashboards and Evidence
 
-The Docker deployment includes **Overview, Diagnostics, and Evaluation** Grafana dashboards for cost, cache effectiveness, runtime diagnostics, and potential savings. Observe-mode estimates are **not** counted as actual production cache savings.
+The Docker deployment includes **Overview, Diagnostics, and Evaluation** Grafana dashboards for cost, cache effectiveness, runtime diagnostics, streaming delivery paths, and potential savings. Observe-mode estimates are **not** counted as actual production cache savings.
 
 [![AIF Cost Savings Overview dashboard](assets/grafana/ai-firewall-overview-021.png)](assets/grafana/ai-firewall-overview-021.png)
 
@@ -173,7 +190,7 @@ Historical controlled tests with a **local simulated upstream** demonstrated cac
 |---|---|
 | Architecture and request flow | [Architecture](docs/architecture.md) · [How It Works](docs/how-it-works.md) |
 | Observe mode and assessments | [Evaluation Mode](docs/evaluation-mode.md) · [Assessment Context](docs/assessment-context.md) |
-| Streaming and content | [Controlled Streaming](docs/controlled-streaming.md) · [Structured Content](docs/structured-content.md) |
+| Streaming and content | [Streaming and controlled delivery](docs/controlled-streaming.md) · [Structured Content](docs/structured-content.md) |
 | Private HTTPS providers | [Private CA and TLS](docs/private-ca-tls.md) · [Provider Compatibility](docs/provider-compatibility.md) |
 | Monitoring | [Metrics and Costs](docs/metrics-and-costs.md) |
 | Audit and evidence | [Audit Integration](docs/audit-integration.md) |

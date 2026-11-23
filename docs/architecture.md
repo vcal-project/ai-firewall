@@ -50,9 +50,9 @@ The simplified order for enabled integrations is:
 2. Optionally scan the original request with **Security Guard**, then anonymize/redact supported text with **Privacy Guard**, then evaluate permitted usage with **Usage Guard**.
 3. Apply per-request cache bypass and eligibility rules; check exact cache and, if eligible, semantic cache.
 4. In **Enforce mode**, serve an eligible cache hit; otherwise call the chat provider. In **Observe mode**, record the potential cache decision in isolated evaluation state and forward the allowed request upstream.
-5. For `stream=true`, assemble upstream SSE internally into a complete response before downstream delivery.
-6. Run enabled response Security scanning, store eligible pre-restoration responses, restore Privacy placeholders using the current request's mapping, and emit accounting/evidence.
-7. Return approved JSON or replay approved OpenAI-compatible SSE. Queue optional VCAL Audit evidence asynchronously, outside the response path.
+5. For `stream=true`, select the eligible delivery path: progressive upstream SSE on suitable misses, controlled full-response approval when required, or cache-aware SSE rendering.
+6. Apply the response processing and cache-admission rules appropriate to that path; cache only eligible completed responses, with Privacy restoration using the current request mapping.
+7. Return JSON, progressively delivered SSE, or generated cached/controlled SSE. Queue optional VCAL Audit evidence asynchronously, outside the response path.
 
 This is deliberately a high-level control map, not a complete state machine. The authoritative detailed
 cache algorithm is in [How It Works](how-it-works.md); streaming ordering and error behavior are in
@@ -64,7 +64,8 @@ cache algorithm is in [How It Works](how-it-works.md); streaming ordering and er
   extension fields (tools, message metadata, response format, and other preserved parameters). Streaming
   transport flags do not force separate cache entries.
 - **Semantic cache** uses embeddings and similarity thresholds, subject to candidate eligibility, cache age,
-  and configured model/scope checks. Non-string message content is not eligible for semantic caching.
+  model/privacy scope, generation-parameter compatibility, and earlier conversation context. Non-string message content is not eligible for semantic caching.
+- **Cache admission** excludes length-limited or unusable completions from both caches and rejects unsuitable stored candidates during lookup; valid tool-call results remain eligible.
 - **Privacy-aware caching** adds the effective tenant and Privacy Guard policy identity to the cache scope
   when that integration is active. Cached answers are stored **before** placeholder restoration; missing
   effective policy identity or a fail-open Privacy Guard transport error causes cache bypass.
@@ -103,8 +104,8 @@ request path. See [Assessment Context](assessment-context.md).
 - JSON content-part arrays are not synonymous with file scanning. AIF does **not** fetch or inspect
   referenced documents, file attachments, or opaque non-text content. See
   [Structured Content](structured-content.md).
-- Controlled SSE prioritizes complete-response approval over immediate token-by-token streaming. See
-  [Controlled Streaming](controlled-streaming.md).
+- **Controlled** SSE prioritizes pre-delivery approval. **Progressive** SSE can deliver partial content before generation completes and cannot retract content if the upstream fails after commit. See
+  [Streaming Delivery](controlled-streaming.md).
 - Evidence contains operational metadata, not prompts/responses; delivery to external Audit is bounded,
   buffered, and best effort. See [Evidence and Audit](audit-integration.md).
 - The standalone **VCAL Semantic Cache Server** is a separate HTTP semantic-cache service for other

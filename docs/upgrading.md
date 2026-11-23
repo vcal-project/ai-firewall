@@ -1,5 +1,11 @@
 # Upgrade and Rollback Guide
 
+## Current deployment checks (version-neutral)
+
+Before deploying a newer AIF image, record the **immutable image digest** and confirm `GET /version` matches the intended binary. A configuration containing `streaming_delivery_mode` must run with a binary that recognizes it. In `auto` mode, verify `aif_stream_delivery_selected_total{path}` rather than assuming all streams are progressive.
+
+If semantic-cache compatibility or cache-admission rules have changed, previously stored Qdrant candidates may be excluded by the updated scope. This is a safe cache miss, not evidence of corruption; do not delete the collection merely to obtain new matches. Verify that limited (`finish_reason: "length"`) responses are delivered but not cached, that changed generation budgets do not reuse semantic results, and that valid complete responses still produce cache hits. Check both Observe and Enforce behavior and use the release notes for version-specific migration steps.
+
 ## v0.8.5 to v0.8.6
 
 v0.8.6 is described in the AIF release preparation as a hardening/compatibility update: Usage Guard v0.2.0 structured-content compatibility and enforcement-safety work, trusted-context foundation, input validation, and a `rustls` dependency security update. **Check the published tag and release notes** for exact migration and compatibility requirements; structured-content coverage must be validated in the deployment.

@@ -157,10 +157,10 @@ Use `max_request_body_bytes` for total body size and `max_prompt_chars` for pars
 operations; use the [Configuration Reference](config-reference.md) for defaults and fallback rules. Keep
 client, load balancer, and upstream timeouts mutually consistent.
 
-Controlled `stream=true` requests buffer/assemble the provider response until response controls approve it.
+With `stream=true`, **controlled** delivery buffers the provider response until approval, while eligible **progressive** delivery can forward SSE incrementally. `auto` chooses a compatible strategy and actual paths also depend on cache hits and guard processing.
 `max_stream_upstream_bytes` is a **cumulative** upstream SSE limit; `upstream_timeout_seconds` additionally
 bounds the idle gap between provider chunks, with a 15-minute absolute generation ceiling described in
-[Controlled Streaming](controlled-streaming.md). This trades token-level immediacy for pre-delivery policy
+[Controlled Streaming](controlled-streaming.md). Controlled delivery trades token-level immediacy for pre-delivery policy
 controls.
 
 ## Graceful shutdown and concurrency

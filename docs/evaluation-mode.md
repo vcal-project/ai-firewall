@@ -30,7 +30,7 @@ The core observe-mode guarantees are:
 - Redis, Qdrant, or embedding failures used only for evaluation do not interrupt live application traffic;
 - AIF remains ready when optional evaluation dependencies are temporarily unavailable; deployments that mark Redis or Qdrant as required for readiness can use `/startupz` to require successful initialization before the pod is considered started;
 - Redis and Qdrant evaluation paths recover after dependency restart;
-- controlled streaming and non-streaming requests retain the same transport-independent cache identity.
+- streaming and non-streaming requests retain the same transport-independent exact-cache identity; cache admission and semantic compatibility apply equally to shadow entries.
 
 Evaluation Mode is currently an **AI Cost Firewall cache/optimization feature**. It does not change the configured enforcement behavior of VCAL Security Guard, Privacy Guard, or Usage Guard. Guard-specific `off / observe / enforce` modes are not part of this release.
 
