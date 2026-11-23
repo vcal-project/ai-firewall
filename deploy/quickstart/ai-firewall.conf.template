@@ -28,16 +28,30 @@ aif_enforcement_mode observe;
 # Default: openai_compatible
 # Supports OpenAI-compatible /v1/chat/completions endpoints.
 #
-# Controlled streaming is enabled by default. For requests with stream=true,
-# AI Cost Firewall consumes the upstream SSE response internally, reconstructs
-# a canonical completion, applies response controls and Privacy restoration,
-# records accounting/evidence, and only then commits an SSE response to the
-# client. Streamed and non-streamed requests share the normal cache pipeline.
+# Streaming is enabled by default. For stream=true, the delivery strategy is:
+# - controlled (default): assemble the upstream SSE completion, apply response
+#   inspection/Privacy restoration, then deliver an OpenAI-compatible SSE reply.
+# - progressive: forward eligible upstream SSE events incrementally, without
+#   waiting for the complete model response.
+# - auto: use progressive delivery when eligible; otherwise use controlled.
+# Progressive delivery requires streaming to be enabled, Security and Privacy
+# Guards disabled, and no fail-closed cache-store requirement in Enforce mode.
+# Explicit progressive mode fails configuration validation if incompatible.
+# Usage Guard request-side policy decisions can run before either delivery path.
+# Cache hits can be returned as complete JSON or SSE without upstream inference;
+# cached SSE is not artificially paced token by token.
 streaming_enabled true;
-# Maximum cumulative provider SSE bytes accepted for one controlled streaming request.
+streaming_delivery_mode auto;
+# Maximum cumulative upstream SSE bytes accepted per streaming request.
 max_stream_upstream_bytes 8M;
+
 upstream_provider openai_compatible;
 upstream_base_url https://api.openai.com;
+# Optional: PEM CA bundle for upstream chat requests, including SSE streaming.
+# Adds to default root certificates; TLS certificate and hostname verification stay enabled.
+# Requires an AIF restart when the path or CA file contents change.
+# For OpenShift service CA mounts, for example:
+# upstream_ca_bundle /etc/aif-certs/service-ca.crt;
 upstream_api_key replace-with-upstream-api-key;
 
 # Embedding provider
@@ -45,6 +59,9 @@ upstream_api_key replace-with-upstream-api-key;
 # Supports OpenAI-compatible /v1/embeddings endpoints.
 embedding_provider openai_compatible;
 embedding_base_url https://api.openai.com;
+# Optional: separate PEM CA bundle for the embedding HTTPS client.
+# May point to the same service-ca.crt as upstream_ca_bundle.
+# embedding_ca_bundle /etc/aif-certs/service-ca.crt;
 embedding_api_key replace-with-embedding-api-key;
 embedding_model text-embedding-3-small;
 
@@ -86,8 +103,12 @@ semantic_similarity_threshold 0.92;
 semantic_cache_fail_open true;
 semantic_cache_store_enabled true;
 
-# Higher threshold = stricter similarity (fewer semantic hits)
-# Lower threshold = more reuse (potentially less precise)
+# Higher threshold = stricter similarity (fewer semantic hits).
+# Lower threshold = more reuse (potentially less precise).
+# Only cache-eligible completed responses are stored or served. In particular,
+# length-limited/incomplete or unusable completions are not reused. Semantic
+# reuse also requires compatible generation settings and conversation context;
+# the similarity threshold alone does not override these safety checks.
 
 # Semantic cache lifecycle behavior:
 # - Entries include inserted_at and expires_at metadata
@@ -102,8 +123,9 @@ semantic_cache_store_enabled true;
 # Specific timeout values override it.
 request_timeout_seconds 120;
 upstream_timeout_seconds 120;
-# For stream=true, this also bounds the idle gap between provider SSE chunks.
-# Controlled provider generation has an independent 15-minute absolute ceiling.
+# For stream=true, upstream_timeout_seconds also bounds the idle gap between
+# provider SSE chunks. Streaming has a separate 15-minute absolute generation
+# timeout, regardless of whether delivery is progressive or controlled.
 embedding_timeout_seconds 30;
 
 # Gateway protection controls.
@@ -126,7 +148,8 @@ metrics_auth_required false;
 # metrics_auth_token replace-with-prometheus-token;
 
 # Readiness dependency behavior.
-# These checks use dependency status known during startup/reload.
+# Redis readiness reflects periodic write-health checks during operation,
+# including after recovery or configuration reload.
 
 # Redis is required for readiness even though exact-cache request processing
 # is configured to fail open. Set this to false when Redis outages should not
@@ -259,11 +282,9 @@ guard_fail_open false;
 # 5. Security Guard response scan
 # 6. Privacy Guard restore
 #
-# Current guard modules inspect plain string message content only. OpenAI-style
-# content-part arrays are preserved and forwarded, but text nested inside those
-# arrays is not yet scanned, anonymized, or classified by AIF guard modules.
-# Requests containing non-string message content are ineligible for semantic
-# cache; exact-cache identity still preserves the complete JSON content.
+# Guard inspection applies to supported textual content, including supported
+# structured text parts. Opaque/non-text payloads such as images, audio, video,
+# and binary data are not inspected; consult each module's content support.
 
 # VCAL Audit integration
 #
@@ -271,7 +292,8 @@ guard_fail_open false;
 # vcal.evidence.event schema v1.1 batches to VCAL Audit. Delivery is asynchronous:
 # LLM requests are not failed when Audit is temporarily unavailable.
 # Audit delivery is currently in-memory/best-effort. A process crash, full queue,
-# or retry exhaustion can result in evidence loss. Durable local spooling is a not currently enabled.
+# or retry exhaustion can result in evidence loss. Durable local spooling is
+# not currently enabled.
 #
 # audit_api_key must match VCAL_AUDIT_API_KEY in the Audit service.
 audit_enabled false;

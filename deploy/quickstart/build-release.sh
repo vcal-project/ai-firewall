@@ -3,7 +3,9 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 SRC="$ROOT/deploy/quickstart"
 DIST="$ROOT/dist"
-VERSION='v0.8.7'
+[[ -f "$ROOT/Cargo.toml" ]] || { echo 'Missing repository Cargo.toml' >&2; exit 1; }
+VERSION="v$(awk -F'"' '/^version = / {print $2; exit}' "$ROOT/Cargo.toml")"
+[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid Cargo package version: $VERSION" >&2; exit 1; }
 ARCHIVE="aif-quickstart-${VERSION}.tar.gz"
 mkdir -p "$DIST"
 files=(
@@ -16,6 +18,13 @@ files=(
 )
 for f in "${files[@]}"; do [[ -f "$SRC/$f" ]] || { echo "Missing: $f" >&2; exit 1; }; done
 bash -n "$SRC/install.sh"
+# Validate all JSON dashboards before building the public archive.
+python3 - "$SRC" <<'PY_JSON'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for file in sorted((root / 'grafana/dashboards').glob('*.json')):
+    json.loads(file.read_text(encoding='utf-8'))
+PY_JSON
 # Prevent publishing an archive whose installer or Compose default uses a different AIF release.
 grep -Fq "readonly AIF_VERSION='${VERSION}'" "$SRC/install.sh" || { echo 'Installer version mismatch' >&2; exit 1; }
 grep -Fq "vcalproject/ai-firewall:\${AIF_VERSION:-${VERSION}}" "$SRC/compose.yaml" || { echo 'Compose default version mismatch' >&2; exit 1; }
