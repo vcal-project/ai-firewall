@@ -24,6 +24,103 @@
   "links": [],
   "panels": [
     {
+      "id": 27,
+      "type": "stat",
+      "title": "Current AIF Mode",
+      "description": "Runtime mode at the selected range end. Observe provides hypothetical cache savings only; guards may still enforce policy. Multiple active modes may be shown.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (mode) (aif_enforcement_mode_info) == 1",
+          "refId": "A",
+          "range": false,
+          "legendFormat": "{{mode}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "Unknown",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "observe"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "enforce"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -51,7 +148,7 @@
         "h": 5,
         "w": 3,
         "x": 0,
-        "y": 0
+        "y": 3
       },
       "id": 1,
       "options": {
@@ -74,8 +171,9 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_requests_total[$__range]))",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Total Requests",
@@ -110,7 +208,7 @@
         "h": 5,
         "w": 3,
         "x": 3,
-        "y": 0
+        "y": 3
       },
       "id": 2,
       "options": {
@@ -133,12 +231,14 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_model_cost_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
-      "title": "Estimated Chat Cost",
-      "type": "stat"
+      "title": "Chat Cost",
+      "type": "stat",
+      "description": "Estimated chat provider cost; excludes embedding overhead."
     },
     {
       "datasource": {
@@ -148,20 +248,22 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "light-blue"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "gray",
                 "value": null
               }
             ]
           },
           "unit": "currencyUSD",
-          "decimals": 4
+          "decimals": 4,
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -169,7 +271,7 @@
         "h": 5,
         "w": 3,
         "x": 6,
-        "y": 0
+        "y": 3
       },
       "id": 3,
       "options": {
@@ -190,14 +292,16 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(increase(aif_gross_saved_micro_usd_total[$__range])) / 1000000",
+          "expr": "(sum(increase(aif_gross_saved_micro_usd_total[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1))) / 1000000",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Gross Savings",
-      "type": "stat"
+      "type": "stat",
+      "description": "Actual production savings only; a missing lazy series is shown as zero when request history and runtime telemetry exist. Evaluation savings are excluded."
     },
     {
       "datasource": {
@@ -228,7 +332,7 @@
         "h": 5,
         "w": 3,
         "x": 9,
-        "y": 0
+        "y": 3
       },
       "id": 4,
       "options": {
@@ -251,12 +355,14 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_embedding_overhead_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
-      "title": "Embedding Overhead",
-      "type": "stat"
+      "title": "Embedding Cost",
+      "type": "stat",
+      "description": "Embedding overhead cost, including applicable lookup and store operations."
     },
     {
       "datasource": {
@@ -266,20 +372,22 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "light-blue"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "gray",
                 "value": null
               }
             ]
           },
           "unit": "currencyUSD",
-          "decimals": 4
+          "decimals": 4,
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -287,7 +395,7 @@
         "h": 5,
         "w": 3,
         "x": 12,
-        "y": 0
+        "y": 3
       },
       "id": 5,
       "options": {
@@ -308,14 +416,16 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(increase(aif_net_saved_micro_usd_total[$__range])) / 1000000",
+          "expr": "(sum(increase(aif_net_saved_micro_usd_total[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1))) / 1000000",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Net Savings",
-      "type": "stat"
+      "type": "stat",
+      "description": "Actual production savings only; a missing lazy series is shown as zero when request history and runtime telemetry exist. Evaluation savings are excluded."
     },
     {
       "datasource": {
@@ -325,28 +435,22 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "light-blue"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "gray",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 10
-              },
-              {
-                "color": "green",
-                "value": 30
               }
             ]
           },
           "unit": "percent",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -354,11 +458,11 @@
         "h": 5,
         "w": 3,
         "x": 15,
-        "y": 0
+        "y": 3
       },
       "id": 6,
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
@@ -375,14 +479,16 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * sum(increase(aif_net_saved_micro_usd_total[$__range])) / clamp_min(sum(increase(aif_model_cost_micro_usd_total[$__range])) + sum(increase(aif_net_saved_micro_usd_total[$__range])), 1)",
+          "expr": "100 * (sum(increase(aif_net_saved_micro_usd_total[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1))) / ((sum(increase(aif_model_cost_micro_usd_total[$__range])) + (sum(increase(aif_net_saved_micro_usd_total[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1)))) > 0)",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Net Savings %",
-      "type": "stat"
+      "type": "stat",
+      "description": "Actual net savings divided by estimated chat spend plus actual net savings. No percentage without a positive denominator."
     },
     {
       "datasource": {
@@ -392,28 +498,22 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "light-blue"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "gray",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 30
-              },
-              {
-                "color": "green",
-                "value": 50
               }
             ]
           },
           "unit": "percent",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -421,11 +521,11 @@
         "h": 5,
         "w": 3,
         "x": 18,
-        "y": 0
+        "y": 3
       },
       "id": 7,
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
@@ -442,14 +542,16 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * sum(increase(aif_cache_hits_total[$__range])) / clamp_min(sum(increase(aif_cache_hits_total[$__range])) + sum(increase(aif_cache_misses[$__range])), 1)",
+          "expr": "(100 * (sum(increase(aif_cache_hits_total[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1))) / (((sum(increase(aif_cache_hits_total[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1))) + (sum(increase(aif_cache_misses[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1)))) > 0)) or on() ((0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1)) and on() (max(aif_enforcement_mode_info{mode=\"observe\"}) == 1) unless on() (max(aif_enforcement_mode_info{mode=\"enforce\"}) == 1))",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Cache Hit Rate",
-      "type": "stat"
+      "type": "stat",
+      "description": "Actual hits / (hits + misses). Zero in Observe when there are no production lookups; historical production lookups remain visible. N/A when no production lookup denominator exists in Enforce."
     },
     {
       "datasource": {
@@ -511,7 +613,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 5
+        "y": 8
       },
       "id": 9,
       "options": {
@@ -623,7 +725,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 5
+        "y": 8
       },
       "id": 10,
       "options": {
@@ -651,7 +753,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum(rate(aif_gross_saved_micro_usd_total[$__rate_interval])) / 1000000",
+          "expr": "(sum(rate(aif_gross_saved_micro_usd_total[$__rate_interval])) / 1000000) or on() (0 * sum(rate(aif_requests_total[$__rate_interval])) and on() (max(aif_enforcement_mode_info) == 1))",
           "legendFormat": "Gross savings/sec",
           "range": true,
           "refId": "B"
@@ -665,7 +767,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum(rate(aif_net_saved_micro_usd_total[$__rate_interval])) / 1000000",
+          "expr": "(sum(rate(aif_net_saved_micro_usd_total[$__rate_interval])) / 1000000) or on() (0 * sum(rate(aif_requests_total[$__rate_interval])) and on() (max(aif_enforcement_mode_info) == 1))",
           "legendFormat": "Net savings/sec",
           "range": true,
           "refId": "D"
@@ -735,7 +837,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 13
+        "y": 16
       },
       "id": 11,
       "options": {
@@ -770,7 +872,8 @@
         }
       ],
       "title": "Savings Rate by Cache Type",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Production savings only; no series is expected before actual cache reuse. Per-model/cache series are not fabricated."
     },
     {
       "datasource": {
@@ -833,7 +936,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 13
+        "y": 16
       },
       "id": 12,
       "options": {
@@ -868,7 +971,8 @@
         }
       ],
       "title": "Spend and Savings Rate by Model",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Production savings only; no series is expected before actual cache reuse. Per-model/cache series are not fabricated."
     },
     {
       "datasource": {
@@ -930,7 +1034,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 21
+        "y": 24
       },
       "id": 13,
       "options": {
@@ -964,7 +1068,7 @@
           "refId": "B"
         }
       ],
-      "title": "Exact vs Semantic Hit Rate",
+      "title": "Production Cache Hits and Misses / second",
       "type": "timeseries"
     },
     {
@@ -1028,7 +1132,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 21
+        "y": 24
       },
       "id": 14,
       "options": {
@@ -1119,7 +1223,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 21
+        "y": 24
       },
       "id": 15,
       "options": {
@@ -1147,7 +1251,8 @@
         }
       ],
       "title": "Net Saved per Cache Hit",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Production savings only; no series is expected before actual cache reuse. Per-model/cache series are not fabricated."
     },
     {
       "datasource": {
@@ -1178,7 +1283,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 31
       },
       "id": 16,
       "options": {
@@ -1242,7 +1347,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 31
       },
       "id": 17,
       "options": {
@@ -1275,7 +1380,8 @@
         }
       ],
       "title": "Top Models by Net Savings",
-      "type": "bargauge"
+      "type": "bargauge",
+      "description": "Production savings only; no series is expected before actual cache reuse. Per-model/cache series are not fabricated."
     },
     {
       "datasource": {
@@ -1338,7 +1444,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 35
+        "y": 38
       },
       "id": 18,
       "options": {
@@ -1429,7 +1535,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 35
+        "y": 38
       },
       "id": 19,
       "options": {
@@ -1496,7 +1602,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 42
+        "y": 45
       },
       "id": 20,
       "options": {
@@ -1519,8 +1625,9 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_guard_requests_total{result=\"error\"}[$__range])) or vector(0)",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Guard Orchestration Errors",
@@ -1558,7 +1665,7 @@
         "h": 5,
         "w": 3,
         "x": 21,
-        "y": 0
+        "y": 3
       },
       "id": 21,
       "options": {
@@ -1581,8 +1688,9 @@
           "editorMode": "code",
           "expr": "max(aif_readiness_state)",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Readiness",
@@ -1625,7 +1733,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 42
+        "y": 45
       },
       "id": 22,
       "options": {
@@ -1648,8 +1756,9 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_usage_blocks_total[$__range])) or vector(0)",
           "legendFormat": "policy stops",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Usage Policy Stops",
@@ -1684,7 +1793,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 42
+        "y": 45
       },
       "id": 23,
       "options": {
@@ -1707,8 +1816,9 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_stream_requests_total[$__range])) or vector(0)",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Streaming Requests",
@@ -1751,7 +1861,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 42
+        "y": 45
       },
       "id": 24,
       "options": {
@@ -1774,12 +1884,319 @@
           "editorMode": "code",
           "expr": "(sum(increase(aif_stream_errors_total[$__range])) or vector(0)) + (sum(increase(aif_stream_aborted_total[$__range])) or vector(0))",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Stream Errors / Aborts",
-      "type": "stat"
+      "type": "stat",
+      "description": "Streaming failures and cancellations before delivery completion, across all streaming paths; not a count of upstream failures alone."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "progressive_upstream"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "controlled_upstream"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exact_cache"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "semantic_cache"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "policy_completion"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 24,
+        "h": 8
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (path) (rate(aif_stream_delivery_selected_total[$__rate_interval]))",
+          "legendFormat": "{{path}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Streaming Execution Paths / second",
+      "type": "timeseries",
+      "description": "Execution path selections, not completed responses or client delivery acknowledgements. Observe-mode shadow hits do not serve cached content. Unseen paths may have no series until first selected."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "progressive_upstream"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "controlled_upstream"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exact_cache"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "semantic_cache"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "policy_completion"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 24,
+        "h": 5
+      },
+      "id": 26,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (path) (increase(aif_stream_delivery_selected_total[$__range]))",
+          "legendFormat": "{{path}}",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Streaming Path Selections in Range",
+      "type": "stat",
+      "description": "Execution path selections, not completed responses or client delivery acknowledgements. Observe-mode shadow hits do not serve cached content. Unseen paths may have no series until first selected."
     }
   ],
   "refresh": "30s",
@@ -1809,7 +2226,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Overview",
   "uid": "ai-cost-firewall",
-  "version": 10,
+  "version": 14,
   "weekStart": "",
   "description": "Overview dashboard for AI Cost Firewall: estimated chat cost, gross savings, embedding overhead, net savings, per-model spend, per-cache-type savings, request-level cost indicators, cache bypass activity, Usage Guard policy stops, and high-level guard orchestration health. Intentional Security/Usage policy decisions are control outcomes and are not treated as operational errors, with high-level streaming request and failure/abort visibility."
 }

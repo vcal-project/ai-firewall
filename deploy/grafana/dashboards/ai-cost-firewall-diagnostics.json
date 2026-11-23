@@ -24,6 +24,161 @@
   "links": [],
   "panels": [
     {
+      "id": 31,
+      "type": "stat",
+      "title": "Current AIF Mode",
+      "description": "Runtime mode at the selected range end. Observe provides hypothetical cache savings only; guards may still enforce policy. Multiple active modes may be shown.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max by (mode) (aif_enforcement_mode_info) == 1",
+          "legendFormat": "{{mode}}",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "Unknown",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "observe"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "enforce"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "Running AIF Version",
+      "description": "Build version reported by aif_runtime_info; multiple versions may appear during a rolling deployment.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max by (version) (aif_runtime_info) == 1",
+          "legendFormat": "{{version}}",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -55,7 +210,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 0
+        "y": 4
       },
       "id": 1,
       "options": {
@@ -78,8 +233,9 @@
           "editorMode": "code",
           "expr": "max(aif_readiness_state)",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Readiness",
@@ -114,7 +270,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 0
+        "y": 4
       },
       "id": 2,
       "options": {
@@ -137,8 +293,9 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_semantic_lookup_duration_seconds_count[$__range]))",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Semantic Lookups",
@@ -152,28 +309,22 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "light-blue"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "gray",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 20
-              },
-              {
-                "color": "green",
-                "value": 60
               }
             ]
           },
           "unit": "percent",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -181,11 +332,11 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 0
+        "y": 4
       },
       "id": 3,
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
@@ -202,14 +353,16 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * sum(increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range])) / clamp_min(sum(increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range])) + sum(increase(aif_semantic_threshold_results_total{result=\"fail\"}[$__range])), 1)",
+          "expr": "100 * (sum(increase(aif_semantic_threshold_results_total{result=\"pass\"}[$__range])) or on() (0 * sum(increase(aif_semantic_threshold_results_total{result=~\"pass|fail\"}[$__range])))) / (sum(increase(aif_semantic_threshold_results_total{result=~\"pass|fail\"}[$__range])) > 0)",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Threshold Pass Share",
-      "type": "stat"
+      "type": "stat",
+      "description": "Threshold passes / (passes + failures); candidate-level diagnostic, not a request-level cache hit rate. No fixed healthy threshold."
     },
     {
       "datasource": {
@@ -239,7 +392,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 0
+        "y": 4
       },
       "id": 4,
       "options": {
@@ -262,8 +415,9 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_semantic_expired_entries_skipped_total[$__range]))",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Expired Entries Skipped",
@@ -298,7 +452,7 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 0
+        "y": 4
       },
       "id": 5,
       "options": {
@@ -321,8 +475,9 @@
           "editorMode": "code",
           "expr": "sum(increase(aif_embedding_overhead_micro_usd_total[$__range])) / 1000000",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "Embedding Overhead",
@@ -336,20 +491,22 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "light-blue"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "gray",
                 "value": null
               }
             ]
           },
           "unit": "currencyUSD",
-          "decimals": 4
+          "decimals": 4,
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -357,7 +514,7 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 0
+        "y": 4
       },
       "id": 6,
       "options": {
@@ -378,14 +535,16 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(increase(aif_net_saved_micro_usd_total{cache_type=\"semantic\"}[$__range])) / 1000000",
+          "expr": "(sum(increase(aif_net_saved_micro_usd_total{cache_type=\"semantic\"}[$__range])) or on() (0 * sum(increase(aif_requests_total[$__range])) and on() (max(aif_enforcement_mode_info) == 1))) / 1000000",
           "legendFormat": "",
-          "range": true,
-          "refId": "A"
+          "range": false,
+          "refId": "A",
+          "instant": true
         }
       ],
-      "title": "Semantic Net Savings",
-      "type": "stat"
+      "title": "Production Semantic Net Savings",
+      "type": "stat",
+      "description": "Actual semantic-cache net savings only; evaluation savings are displayed in the Evaluation dashboard."
     },
     {
       "datasource": {
@@ -447,7 +606,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 5
+        "y": 9
       },
       "id": 7,
       "options": {
@@ -544,7 +703,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 5
+        "y": 9
       },
       "id": 8,
       "options": {
@@ -655,7 +814,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 13
+        "y": 17
       },
       "id": 9,
       "options": {
@@ -767,7 +926,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 13
+        "y": 17
       },
       "id": 10,
       "options": {
@@ -865,7 +1024,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 21
+        "y": 25
       },
       "id": 11,
       "options": {
@@ -899,8 +1058,9 @@
           "refId": "B"
         }
       ],
-      "title": "Gross vs Net Semantic Savings",
-      "type": "timeseries"
+      "title": "Production Gross vs Net Semantic Savings",
+      "type": "timeseries",
+      "description": "Actual cache savings only; absent series in Observe are expected."
     },
     {
       "datasource": {
@@ -963,7 +1123,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 25
       },
       "id": 12,
       "options": {
@@ -997,8 +1157,9 @@
           "refId": "B"
         }
       ],
-      "title": "Exact vs Semantic Savings",
-      "type": "timeseries"
+      "title": "Production Exact vs Semantic Savings",
+      "type": "timeseries",
+      "description": "Actual cache savings only; absent series in Observe are expected."
     },
     {
       "datasource": {
@@ -1060,7 +1221,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 29
+        "y": 33
       },
       "id": 13,
       "options": {
@@ -1108,8 +1269,9 @@
           "refId": "D"
         }
       ],
-      "title": "Semantic Cache Misses vs Passes",
-      "type": "timeseries"
+      "title": "Production Cache Outcomes and Threshold Decisions",
+      "type": "timeseries",
+      "description": "Production cache outcomes and semantic candidate threshold decisions (including evaluation activity). These are distinct populations."
     },
     {
       "datasource": {
@@ -1171,7 +1333,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 29
+        "y": 33
       },
       "id": 14,
       "options": {
@@ -1244,7 +1406,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 40
       },
       "id": 15,
       "options": {
@@ -1276,8 +1438,9 @@
           "refId": "A"
         }
       ],
-      "title": "Semantic Net Savings by Model",
-      "type": "bargauge"
+      "title": "Production Semantic Net Savings by Model",
+      "type": "bargauge",
+      "description": "Actual cache savings only; absent series in Observe are expected."
     },
     {
       "datasource": {
@@ -1308,7 +1471,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 40
       },
       "id": 16,
       "options": {
@@ -1340,8 +1503,9 @@
           "refId": "A"
         }
       ],
-      "title": "Potentially Low-Value Semantic Models",
-      "type": "bargauge"
+      "title": "Production Potentially Low-Value Semantic Models",
+      "type": "bargauge",
+      "description": "Actual cache savings only; absent series in Observe are expected."
     },
     {
       "datasource": {
@@ -1403,7 +1567,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 43
+        "y": 47
       },
       "id": 17,
       "options": {
@@ -1521,7 +1685,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 43
+        "y": 47
       },
       "id": 18,
       "options": {
@@ -1660,7 +1824,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 50
+        "y": 54
       },
       "id": 19,
       "options": {
@@ -1750,7 +1914,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 50
+        "y": 54
       },
       "id": 20,
       "options": {
@@ -1847,7 +2011,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 62
       },
       "id": 21,
       "options": {
@@ -1937,7 +2101,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 62
       },
       "id": 22,
       "options": {
@@ -2048,7 +2212,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 70
       },
       "id": 23,
       "options": {
@@ -2166,7 +2330,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 74
+        "y": 78
       },
       "id": 24,
       "options": {
@@ -2256,7 +2420,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 82
+        "y": 86
       },
       "id": 25,
       "options": {
@@ -2277,42 +2441,43 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(aif_stream_requests_total[$__rate_interval])",
+          "expr": "sum(rate(aif_stream_requests_total[$__rate_interval]))",
           "legendFormat": "requests/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "rate(aif_stream_completed_total[$__rate_interval])",
+          "expr": "sum(rate(aif_stream_completed_total[$__rate_interval]))",
           "legendFormat": "completed/sec",
           "range": true,
           "refId": "B"
         },
         {
           "editorMode": "code",
-          "expr": "rate(aif_stream_errors_total[$__rate_interval])",
-          "legendFormat": "failed before commit/sec",
+          "expr": "sum(rate(aif_stream_errors_total[$__rate_interval]))",
+          "legendFormat": "stream errors/sec",
           "range": true,
           "refId": "C"
         },
         {
           "editorMode": "code",
-          "expr": "rate(aif_stream_aborted_total[$__rate_interval])",
-          "legendFormat": "cancelled before commit/sec",
+          "expr": "sum(rate(aif_stream_aborted_total[$__rate_interval]))",
+          "legendFormat": "cancelled before completion/sec",
           "range": true,
           "refId": "D"
         },
         {
           "editorMode": "code",
-          "expr": "rate(aif_stream_upstream_errors_total[$__rate_interval])",
+          "expr": "sum(rate(aif_stream_upstream_errors_total[$__rate_interval]))",
           "legendFormat": "upstream stream failures/sec",
           "range": true,
           "refId": "E"
         }
       ],
-      "title": "Controlled Streaming Outcomes",
-      "type": "timeseries"
+      "title": "Streaming Outcomes",
+      "type": "timeseries",
+      "description": "All streaming strategies. Upstream stream failures can also increment request-level errors; series are not mutually exclusive."
     },
     {
       "datasource": {
@@ -2374,7 +2539,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 82
+        "y": 86
       },
       "id": 26,
       "options": {
@@ -2417,20 +2582,21 @@
         {
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le) (rate(aif_stream_client_time_to_first_byte_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "client commit TTFB p95",
+          "legendFormat": "AIF client TTFB p95",
           "range": true,
           "refId": "D"
         },
         {
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le) (rate(aif_stream_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "controlled stream total p95",
+          "legendFormat": "stream duration p95",
           "range": true,
           "refId": "E"
         }
       ],
-      "title": "Controlled Streaming Latency",
-      "type": "timeseries"
+      "title": "Streaming Latency",
+      "type": "timeseries",
+      "description": "Shared histograms aggregate delivery paths. Client TTFB is measured by AIF, not by a remote client; it is not necessarily first content-token latency. No path labels are available on these histograms."
     },
     {
       "datasource": {
@@ -2492,7 +2658,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 90
+        "y": 94
       },
       "id": 27,
       "options": {
@@ -2513,21 +2679,22 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(aif_stream_upstream_chunks_total[$__rate_interval])",
+          "expr": "sum(rate(aif_stream_upstream_chunks_total[$__rate_interval]))",
           "legendFormat": "upstream chunks/sec",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "rate(aif_stream_upstream_errors_total[$__rate_interval])",
+          "expr": "sum(rate(aif_stream_upstream_errors_total[$__rate_interval]))",
           "legendFormat": "upstream failures/sec",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Controlled Streaming Upstream Intake",
-      "type": "timeseries"
+      "title": "Streaming Upstream Intake",
+      "type": "timeseries",
+      "description": "Upstream byte chunks are transport chunks, not tokens or necessarily complete SSE events."
     },
     {
       "datasource": {
@@ -2589,7 +2756,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 90
+        "y": 94
       },
       "id": 28,
       "options": {
@@ -2637,8 +2804,269 @@
           "refId": "D"
         }
       ],
-      "title": "Controlled Streaming Payload Sizes",
-      "type": "timeseries"
+      "title": "Streaming Payload Sizes",
+      "type": "timeseries",
+      "description": "Upstream response sizes cover completed upstream streams. Client replay buffer measurements describe buffered SSE replay, not progressive stream payload size or process memory."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "progressive_upstream"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "controlled_upstream"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exact_cache"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "semantic_cache"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "policy_completion"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 102,
+        "w": 12,
+        "h": 8
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (path) (rate(aif_stream_delivery_selected_total[$__rate_interval]))",
+          "legendFormat": "{{path}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Streaming Execution Paths / second",
+      "type": "timeseries",
+      "description": "Execution path selections, not completed responses or client delivery acknowledgements. Observe-mode shadow hits do not serve cached content. Unseen paths may have no series until first selected."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 102,
+        "w": 12,
+        "h": 8
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(rate(aif_stream_upstream_bytes_total[$__rate_interval]))",
+          "legendFormat": "upstream bytes/sec",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Upstream Streaming Bytes / second",
+      "type": "timeseries",
+      "description": "Transport bytes consumed by AIF across controlled and progressive upstream streams."
     }
   ],
   "refresh": "30s",
@@ -2667,7 +3095,7 @@
   "timezone": "",
   "title": "AI Cost Firewall Diagnostics",
   "uid": "ai-cost-firewall-diagnostics",
-  "version": 12,
+  "version": 14,
   "weekStart": "",
-  "description": "Diagnostics dashboard for AI Cost Firewall v0.7.0 including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, dependency failures, evidence delivery health, guard orchestration outcomes and latency, Usage Guard policy stops, operational health, and controlled-streaming outcomes, provider/client latency, upstream intake, timeout failures, and payload sizes. Intentional Security/Usage policy decisions remain control outcomes rather than operational errors. Detailed Privacy Guard, Security Guard, and Usage Guard findings remain in their product-specific dashboards."
+  "description": "Diagnostics dashboard for AI Cost Firewall including readiness, semantic lookup counts, threshold decisions, embedding overhead, cache-type savings, provider latency/errors, dependency failures, evidence delivery health, guard orchestration outcomes and latency, Usage Guard policy stops, operational health, and streaming outcomes, provider/client latency, upstream intake, timeout failures, and payload sizes. Intentional Security/Usage policy decisions remain control outcomes rather than operational errors. Detailed Privacy Guard, Security Guard, and Usage Guard findings remain in their product-specific dashboards."
 }
